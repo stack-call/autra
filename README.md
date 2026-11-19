@@ -33,3 +33,9 @@ cargo run -p autra-cli -- run "hello"
 async-trait, serde, serde_json and thiserror; its tests use Tokio but the
 library does not. `autra-runtime` and `autra-cli` use Tokio. There is no
 database, network or sandbox dependency yet.
+
+## CLI
+
+- `autractl run <prompt>` — run one EchoModel agent and print its events.
+- `autractl demo [path]` — deterministic list-files, read-README demo.
+- `autractl tools` — list the built-in tools.

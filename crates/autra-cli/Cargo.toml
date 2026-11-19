@@ -10,6 +10,7 @@ name = "autractl"
 path = "src/main.rs"
 
 [dependencies]
+autra-core = { path = "../autra-core" }
 autra-harness = { path = "../autra-harness" }
 autra-runtime = { path = "../autra-runtime" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

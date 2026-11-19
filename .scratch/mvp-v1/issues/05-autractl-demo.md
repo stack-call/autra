@@ -4,12 +4,12 @@
 
 **Blocked by:** 03: Workspace read-only tools
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `autractl demo` completes the list-files, read-README, final-answer sequence and exits successfully.
-- [ ] `autractl tools` lists read_file, list_files and echo with descriptions.
-- [ ] `autractl --help` lists the run, demo and tools commands.
-- [ ] CLI display truncates tool content to 400 characters while event payloads keep the full content.
-- [ ] An unknown command exits non-zero and prints usage.
-- [ ] README documents build, run, demo and test commands.
-- [ ] CLI smoke tests and workspace tests pass.
+- [x] `autractl demo` completes the list-files, read-README, final-answer sequence and exits successfully.
+- [x] `autractl tools` lists read_file, list_files and echo with descriptions.
+- [x] `autractl --help` lists the run, demo and tools commands.
+- [x] CLI display truncates tool content to 400 characters while event payloads keep the full content.
+- [x] An unknown command exits non-zero and prints usage.
+- [x] README documents build, run, demo and test commands.
+- [x] CLI smoke tests and workspace tests pass.

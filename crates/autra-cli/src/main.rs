@@ -1,6 +1,9 @@
 use std::process::ExitCode;
 
-use autra_harness::EchoModel;
+use autra_core::{ModelOutput, ToolCallRequest};
+use autra_harness::{
+    EchoModel, EchoTool, FakeModel, ListFilesTool, LocalWorkspace, ReadFileTool, ToolRegistry,
+};
 use autra_runtime::{Agent, RunEvent, RunOptions};
 
 #[tokio::main]
@@ -12,6 +15,8 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("run") => run_command(&args[1..]).await,
+        Some("demo") => demo_command(args.get(1).map(String::as_str).unwrap_or(".")).await,
+        Some("tools") => tools_command(),
         Some(other) => {
             eprintln!("unknown command `{other}`");
             print_usage();
@@ -38,9 +43,81 @@ async fn run_command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    run_agent(agent, &prompt).await
+}
 
+async fn demo_command(root: &str) -> ExitCode {
+    let workspace = match LocalWorkspace::open(root) {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let model = FakeModel::new(vec![
+        ModelOutput {
+            text: None,
+            tool_calls: vec![ToolCallRequest {
+                call_id: "demo-1".to_owned(),
+                name: "list_files".to_owned(),
+                arguments: r#"{"path":"."}"#.to_owned(),
+            }],
+        },
+        ModelOutput {
+            text: None,
+            tool_calls: vec![ToolCallRequest {
+                call_id: "demo-2".to_owned(),
+                name: "read_file".to_owned(),
+                arguments: r#"{"path":"README.md"}"#.to_owned(),
+            }],
+        },
+        ModelOutput {
+            text: Some("Demo complete: listed the workspace and read README.md.".to_owned()),
+            tool_calls: Vec::new(),
+        },
+    ]);
+    let agent = match Agent::builder("demo-agent")
+        .instructions("Inspect the workspace using the available tools.")
+        .model(model)
+        .tool(ListFilesTool::new(workspace.clone()))
+        .tool(ReadFileTool::new(workspace))
+        .build()
+    {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    run_agent(agent, "Inspect this project.").await
+}
+
+fn tools_command() -> ExitCode {
+    let workspace = match LocalWorkspace::open(".") {
+        Ok(workspace) => workspace,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let registry = builtin_registry(workspace);
+    for spec in registry.specs() {
+        println!("{}\t{}", spec.name, spec.description);
+    }
+    ExitCode::SUCCESS
+}
+
+fn builtin_registry(workspace: LocalWorkspace) -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(EchoTool);
+    registry.register(ListFilesTool::new(workspace.clone()));
+    registry.register(ReadFileTool::new(workspace));
+    registry
+}
+
+async fn run_agent(agent: Agent, prompt: &str) -> ExitCode {
     match agent
-        .run_with_options(&prompt, RunOptions::default(), print_event)
+        .run_with_options(prompt, RunOptions::default(), print_event)
         .await
     {
         Ok(outcome) => {
@@ -115,6 +192,6 @@ fn preview(text: &str) -> String {
 
 fn print_usage() {
     println!(
-        "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run <prompt>\n  autractl --help"
+        "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run <prompt>\n  autractl demo [path]\n  autractl tools\n  autractl --help"
     );
 }

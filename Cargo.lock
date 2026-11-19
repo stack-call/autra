@@ -17,6 +17,7 @@ dependencies = [
 name = "autra-cli"
 version = "0.1.0"
 dependencies = [
+ "autra-core",
  "autra-harness",
  "autra-runtime",
  "tokio",
