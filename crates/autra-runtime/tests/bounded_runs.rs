@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use autra_core::{ModelCallSpec, ModelOutput, ToolCallRequest, ToolSpec};
+use autra_core::{CancelFlag, ModelCallSpec, ModelOutput, ToolCallRequest, ToolSpec};
 use autra_harness::{EchoTool, FakeModel, ModelError, ModelProvider, Tool, ToolError};
 use autra_runtime::{Agent, RunEvent, RunOptions, RunStatus};
 
@@ -187,16 +187,20 @@ async fn tool_timeout_becomes_an_error_outcome() {
 
     assert_eq!(outcome.status(), RunStatus::Completed);
     assert_eq!(outcome.answer(), Some("recovered"));
-    let (content, is_error) = events
+    let (content, is_error, outcome_unknown) = events
         .iter()
         .find_map(|event| match event {
             RunEvent::ToolResult {
-                content, is_error, ..
-            } => Some((content.clone(), *is_error)),
+                content,
+                is_error,
+                outcome_unknown,
+                ..
+            } => Some((content.clone(), *is_error, *outcome_unknown)),
             _ => None,
         })
         .unwrap();
     assert!(is_error);
+    assert!(outcome_unknown);
     assert!(content.contains("timed out"));
 }
 
@@ -218,4 +222,96 @@ async fn run_options_timeout_overrides_builder_timeout() {
         .unwrap_err();
 
     assert!(error.to_string().contains("model call exceeded"));
+}
+
+#[tokio::test]
+async fn default_max_turns_is_eight() {
+    let model = FakeModel::new(
+        (0..8).map(|index| tool_call(call(&format!("call-{index}"), "echo", r#"{"text":"x"}"#))),
+    );
+    let agent = Agent::builder("default-turns")
+        .model(model)
+        .tool(EchoTool)
+        .max_tool_calls(100)
+        .build()
+        .unwrap();
+
+    let error = agent.run("go").await.unwrap_err();
+
+    assert!(error.to_string().contains("max turns exceeded"));
+}
+
+#[tokio::test]
+async fn default_max_tool_calls_is_eight() {
+    let model = FakeModel::new(vec![ModelOutput {
+        text: None,
+        tool_calls: (0..9)
+            .map(|index| call(&format!("call-{index}"), "echo", r#"{"text":"x"}"#))
+            .collect(),
+    }]);
+    let agent = Agent::builder("default-tools")
+        .model(model)
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+    let mut events = Vec::new();
+
+    let error = agent
+        .run_with_options("go", RunOptions::default(), |event| {
+            events.push(event.clone());
+        })
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("max tool calls exceeded"));
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, RunEvent::ToolCallStarted { .. }))
+    );
+}
+
+#[tokio::test]
+async fn builder_effect_timeout_applies_with_default_options() {
+    let agent = Agent::builder("builder-timeout")
+        .model(SlowModel)
+        .effect_timeout(Duration::from_millis(10))
+        .build()
+        .unwrap();
+
+    let error = agent.run("go").await.unwrap_err();
+
+    assert!(error.to_string().contains("model call exceeded"));
+}
+
+struct CancellingModel {
+    cancel: CancelFlag,
+}
+
+#[async_trait]
+impl ModelProvider for CancellingModel {
+    async fn complete(&self, _request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
+        self.cancel.cancel();
+        Ok(final_answer("finished"))
+    }
+}
+
+#[tokio::test]
+async fn cancel_during_final_model_call_completes_the_run() {
+    let cancel = CancelFlag::new();
+    let agent = Agent::builder("cancel-final")
+        .model(CancellingModel {
+            cancel: cancel.clone(),
+        })
+        .build()
+        .unwrap();
+    let options = RunOptions {
+        cancel: cancel.clone(),
+        ..RunOptions::default()
+    };
+
+    let outcome = agent.run_with_options("go", options, |_| {}).await.unwrap();
+
+    assert_eq!(outcome.status(), RunStatus::Completed);
+    assert_eq!(outcome.answer(), Some("finished"));
 }

@@ -78,14 +78,18 @@ fn print_event(event: &RunEvent) {
         RunEvent::ToolResult {
             name,
             is_error,
+            outcome_unknown,
             content,
             ..
         } => {
-            println!(
-                "[tool] {name} {}: {}",
-                if *is_error { "error" } else { "ok" },
-                preview(content)
-            );
+            let status = if *outcome_unknown {
+                "unknown"
+            } else if *is_error {
+                "error"
+            } else {
+                "ok"
+            };
+            println!("[tool] {name} {status}: {}", preview(content));
         }
         RunEvent::RunCompleted { answer } => {
             println!(

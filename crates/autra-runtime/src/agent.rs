@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -60,6 +61,7 @@ pub enum RunEvent {
         call_id: String,
         name: String,
         is_error: bool,
+        outcome_unknown: bool,
         content: String,
     },
     RunCompleted {
@@ -225,19 +227,14 @@ impl Agent {
                         on_event(&RunEvent::ModelCallStarted {
                             turn: state.budget.turns_used,
                         });
-                        let output_result = match effect_timeout {
-                            Some(timeout) => {
-                                match tokio::time::timeout(timeout, self.model.complete(&request))
-                                    .await
-                                {
-                                    Ok(result) => result,
-                                    Err(_) => Err(ModelError::new(format!(
-                                        "model call exceeded {timeout:?}"
-                                    ))),
-                                }
-                            }
-                            None => self.model.complete(&request).await,
-                        };
+                        let output_result =
+                            match with_timeout(effect_timeout, self.model.complete(&request)).await
+                            {
+                                Ok(result) => result,
+                                Err(()) => Err(ModelError::new(
+                                    "model call exceeded the configured timeout",
+                                )),
+                            };
                         let output = match output_result {
                             Ok(output) => output,
                             Err(error) => {
@@ -258,40 +255,43 @@ impl Agent {
                             call_id: call.call_id.clone(),
                             name: call.name.clone(),
                         });
-                        let result = match self.tools.get(&call.name) {
-                            Some(tool) => match effect_timeout {
-                                Some(timeout) => {
-                                    match tokio::time::timeout(timeout, tool.call(&call.arguments))
-                                        .await
-                                    {
-                                        Ok(result) => result.map_err(|error| error.to_string()),
-                                        Err(_) => Err(format!(
-                                            "tool `{}` timed out after {timeout:?}",
-                                            call.name
-                                        )),
+                        let result: Result<String, (String, bool)> = match self
+                            .tools
+                            .get(&call.name)
+                        {
+                            Some(tool) => {
+                                match with_timeout(effect_timeout, tool.call(&call.arguments)).await
+                                {
+                                    Ok(result) => {
+                                        result.map_err(|error| (error.to_string(), false))
                                     }
+                                    Err(()) => Err((
+                                        format!(
+                                            "tool `{}` timed out; it may still have run and its outcome is unknown",
+                                            call.name
+                                        ),
+                                        true,
+                                    )),
                                 }
-                                None => tool
-                                    .call(&call.arguments)
-                                    .await
-                                    .map_err(|error| error.to_string()),
-                            },
-                            None => Err(format!("unknown tool `{}`", call.name)),
+                            }
+                            None => Err((format!("unknown tool `{}`", call.name), false)),
                         };
-                        let (content, is_error) = match result {
-                            Ok(content) => (content, false),
-                            Err(message) => (message, true),
+                        let (content, is_error, outcome_unknown) = match result {
+                            Ok(content) => (content, false, false),
+                            Err((message, unknown)) => (message, true, unknown),
                         };
                         let outcome = ToolOutcome {
                             call_id: call.call_id,
                             name: call.name,
                             content,
                             is_error,
+                            outcome_unknown,
                         };
                         on_event(&RunEvent::ToolResult {
                             call_id: outcome.call_id.clone(),
                             name: outcome.name.clone(),
                             is_error: outcome.is_error,
+                            outcome_unknown: outcome.outcome_unknown,
                             content: outcome.content.clone(),
                         });
                         enqueue(&mut queue, &mut seq, EventKind::ToolResult(outcome));
@@ -380,5 +380,15 @@ fn queue_cancel(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, cancel_queue
     if !*cancel_queued {
         enqueue(queue, seq, EventKind::CancelRequested);
         *cancel_queued = true;
+    }
+}
+
+async fn with_timeout<F, T, E>(timeout: Option<Duration>, future: F) -> Result<Result<T, E>, ()>
+where
+    F: Future<Output = Result<T, E>>,
+{
+    match timeout {
+        Some(duration) => tokio::time::timeout(duration, future).await.map_err(|_| ()),
+        None => Ok(future.await),
     }
 }

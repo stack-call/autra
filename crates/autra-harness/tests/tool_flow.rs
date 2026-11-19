@@ -26,6 +26,7 @@ fn outcome(id: &str, content: &str) -> ToolOutcome {
         name: "echo".to_owned(),
         content: content.to_owned(),
         is_error: false,
+        outcome_unknown: false,
     }
 }
 

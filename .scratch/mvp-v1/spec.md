@@ -157,6 +157,9 @@ without a network, database, sandbox or approval flow.
   truncation marker; an empty directory returns `(empty directory)` and empty
   arguments default to the workspace root. `echo` returns its text argument.
 - Built-in tools are read-only and declare `EffectClass::ReadOnly`.
+- A timed-out tool produces an `is_error` outcome with `outcome_unknown = true`:
+  the model sees a failed observation, while the ledger records that the tool
+  may still have run.
 - `LocalWorkspace` is user-space path validation, not a sandbox: it provides
   no process, mount or network isolation. Strong isolation requires a trusted
   sandbox backend, which is out of scope for v1.
@@ -173,7 +176,10 @@ without a network, database, sandbox or approval flow.
 - Cancellation is checked before dispatching each new Effect. An Effect already
   in flight is allowed to finish and its outcome is accepted. After that the
   coordinator enqueues CancelRequested, emits no further Effects, and returns a
-  Cancelled outcome.
+  Cancelled outcome. If the accepted outcome itself completes the Run, the Run
+  stays Completed; cancellation only prevents new Effects. Tool-call budget
+  accounting charges the accepted intents of a batch, so a batch cancelled
+  mid-dispatch still consumes its full budget.
 - `RunEvent` variants: RunStarted, ModelCallStarted, ModelResult,
   ToolCallStarted, ToolResult (full content), RunCompleted, RunCancelled and
   RunFailed.
@@ -243,8 +249,9 @@ Testing decisions:
   and must land behind the existing ModelProvider seam.
 - Token-level streaming; v1 emits one ModelResult per accepted response.
 - Tool approval, approval binding and the WaitingApproval state.
-- Durable execution, SQLite, Outbox, checkpoints, recovery and OutcomeUnknown
-  handling.
+- Durable execution, SQLite, Outbox, checkpoints and recovery. A minimal
+  `outcome_unknown` marker is recorded for timed-out tools, but there is no
+  reconciliation.
 - Parallel tool execution, tool concurrency limits and result merging.
 - ChildRun, Subagents, budgets for nested runs and structured concurrency.
 - Sessions, multiple turns per session and any session store.

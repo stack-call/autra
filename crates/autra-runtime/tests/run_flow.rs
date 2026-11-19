@@ -336,5 +336,11 @@ async fn cancellation_stops_remaining_tool_intents() {
 
     assert_eq!(outcome.status(), RunStatus::Cancelled);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(
+        events.iter().any(
+            |event| matches!(event, RunEvent::ToolResult { call_id, .. } if call_id == "call-1")
+        )
+    );
+    assert_eq!(outcome.tool_calls_used(), 2);
     assert_eq!(event_names(&events).last(), Some(&"RunCancelled"));
 }

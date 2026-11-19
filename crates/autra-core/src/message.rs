@@ -15,6 +15,8 @@ pub struct ToolOutcome {
     pub name: String,
     pub content: String,
     pub is_error: bool,
+    #[serde(default)]
+    pub outcome_unknown: bool,
 }
 
 /// A tool description visible to the model. `input_schema` is a JSON Schema.
