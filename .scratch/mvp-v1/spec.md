@@ -238,8 +238,8 @@ Testing decisions:
   are fed back before the next model call.
 - Cover unknown tool, malformed arguments, budget exhaustion, duplicate call
   IDs, empty call IDs and unknown result IDs.
-- Keep a CLI smoke test limited to `--help` and `tools`; `demo` is verified by
-  the library test that mirrors its script.
+- CLI smoke tests cover `--help`, `tools`, and the demo success/failure exit
+  code; deeper demo behaviour is verified at the Agent seam.
 - Run `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D
   warnings` and `cargo test --workspace` as the repository gate.
 

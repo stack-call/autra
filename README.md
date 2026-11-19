@@ -27,6 +27,8 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p autra-cli -- run "hello"
+cargo run -p autra-cli -- demo
+cargo run -p autra-cli -- tools
 ```
 
 `autra-core` is dependency-light (serde, thiserror). `autra-harness` adds
@@ -36,6 +38,9 @@ database, network or sandbox dependency yet.
 
 ## CLI
 
+After building, the binary is `autractl` (or prefix with
+`cargo run -p autra-cli --`).
+
 - `autractl run <prompt>` — run one EchoModel agent and print its events.
-- `autractl demo [path]` — deterministic list-files, read-README demo.
+- `autractl demo` — deterministic list-files, read-README demo.
 - `autractl tools` — list the built-in tools.

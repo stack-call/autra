@@ -340,6 +340,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn tools(mut self, tools: ToolRegistry) -> Self {
+        self.tools = tools;
+        self
+    }
+
     pub fn tool(mut self, tool: impl Tool + 'static) -> Self {
         self.tools.register(tool);
         self

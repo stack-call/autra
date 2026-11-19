@@ -1,25 +1,25 @@
 use std::process::ExitCode;
 
-use autra_core::{ModelOutput, ToolCallRequest};
 use autra_harness::{
-    EchoModel, EchoTool, FakeModel, ListFilesTool, LocalWorkspace, ReadFileTool, ToolRegistry,
+    EchoModel, EchoTool, FakeModel, HistoryItem, ListFilesTool, LocalWorkspace, ModelOutput,
+    ReadFileTool, ToolCallRequest, ToolRegistry,
 };
-use autra_runtime::{Agent, RunEvent, RunOptions};
+use autra_runtime::{Agent, RunError, RunEvent, RunOptions, RunOutcome};
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None | Some("-h" | "--help" | "help") => {
-            print_usage();
+            println!("{}", usage());
             ExitCode::SUCCESS
         }
         Some("run") => run_command(&args[1..]).await,
-        Some("demo") => demo_command(args.get(1).map(String::as_str).unwrap_or(".")).await,
+        Some("demo") => demo_command().await,
         Some("tools") => tools_command(),
         Some(other) => {
             eprintln!("unknown command `{other}`");
-            print_usage();
+            eprintln!("{}", usage());
             ExitCode::FAILURE
         }
     }
@@ -43,11 +43,21 @@ async fn run_command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    run_agent(agent, &prompt).await
+
+    match execute(agent, &prompt).await {
+        Ok(outcome) => {
+            print_status(&outcome);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("run failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
-async fn demo_command(root: &str) -> ExitCode {
-    let workspace = match LocalWorkspace::open(root) {
+async fn demo_command() -> ExitCode {
+    let workspace = match LocalWorkspace::open(".") {
         Ok(workspace) => workspace,
         Err(error) => {
             eprintln!("{error}");
@@ -72,15 +82,14 @@ async fn demo_command(root: &str) -> ExitCode {
             }],
         },
         ModelOutput {
-            text: Some("Demo complete: listed the workspace and read README.md.".to_owned()),
+            text: Some("Demo run finished.".to_owned()),
             tool_calls: Vec::new(),
         },
     ]);
     let agent = match Agent::builder("demo-agent")
         .instructions("Inspect the workspace using the available tools.")
         .model(model)
-        .tool(ListFilesTool::new(workspace.clone()))
-        .tool(ReadFileTool::new(workspace))
+        .tools(builtin_registry(workspace))
         .build()
     {
         Ok(agent) => agent,
@@ -89,7 +98,31 @@ async fn demo_command(root: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    run_agent(agent, "Inspect this project.").await
+    let outcome = match execute(agent, "Inspect this project.").await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            eprintln!("demo failed: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    print_status(&outcome);
+    if demo_tools_succeeded(&outcome) {
+        println!("demo: listed the workspace and read README.md");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("demo failed: the list-files/read-README sequence did not complete");
+        ExitCode::FAILURE
+    }
+}
+
+fn demo_tools_succeeded(outcome: &RunOutcome) -> bool {
+    let succeeded = |name: &str| {
+        outcome.state().history.iter().any(
+            |item| matches!(item, HistoryItem::Tool(tool) if tool.name == name && !tool.is_error),
+        )
+    };
+    succeeded("list_files") && succeeded("read_file")
 }
 
 fn tools_command() -> ExitCode {
@@ -115,26 +148,20 @@ fn builtin_registry(workspace: LocalWorkspace) -> ToolRegistry {
     registry
 }
 
-async fn run_agent(agent: Agent, prompt: &str) -> ExitCode {
-    match agent
+async fn execute(agent: Agent, prompt: &str) -> Result<RunOutcome, RunError> {
+    agent
         .run_with_options(prompt, RunOptions::default(), print_event)
         .await
-    {
-        Ok(outcome) => {
-            println!();
-            println!(
-                "status: {:?}, turns: {}, tool calls: {}",
-                outcome.status(),
-                outcome.turns_used(),
-                outcome.tool_calls_used()
-            );
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("run failed: {error}");
-            ExitCode::FAILURE
-        }
-    }
+}
+
+fn print_status(outcome: &RunOutcome) {
+    println!();
+    println!(
+        "status: {:?}, turns: {}, tool calls: {}",
+        outcome.status(),
+        outcome.turns_used(),
+        outcome.tool_calls_used()
+    );
 }
 
 fn print_event(event: &RunEvent) {
@@ -190,8 +217,22 @@ fn preview(text: &str) -> String {
     preview
 }
 
-fn print_usage() {
-    println!(
-        "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run <prompt>\n  autractl demo [path]\n  autractl tools\n  autractl --help"
-    );
+fn usage() -> &'static str {
+    "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run <prompt>\n  autractl demo\n  autractl tools\n  autractl --help"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preview;
+
+    #[test]
+    fn preview_truncates_at_400_chars() {
+        let long = "a".repeat(401);
+
+        let truncated = preview(&long);
+
+        assert_eq!(truncated.chars().count(), 401);
+        assert!(truncated.ends_with('…'));
+        assert_eq!(preview("short"), "short");
+    }
 }
