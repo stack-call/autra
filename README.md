@@ -30,5 +30,6 @@ cargo run -p autra-cli -- run "hello"
 ```
 
 `autra-core` is dependency-light (serde, thiserror). `autra-harness` adds
-async-trait and thiserror; `autra-runtime` and `autra-cli` use Tokio. There is
-no database, network or sandbox dependency yet.
+async-trait, serde, serde_json and thiserror; its tests use Tokio but the
+library does not. `autra-runtime` and `autra-cli` use Tokio. There is no
+database, network or sandbox dependency yet.

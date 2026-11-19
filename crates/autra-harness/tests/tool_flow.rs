@@ -1,6 +1,6 @@
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, BudgetSnapshot, Disposition, EffectIntent,
-    EventKind, ModelOutput, RunId, ToolCallRequest, ToolOutcome, ToolSpec,
+    EventKind, HistoryItem, ModelOutput, RunId, ToolCallRequest, ToolOutcome, ToolSpec,
 };
 use autra_harness::ReActStepper;
 
@@ -89,7 +89,17 @@ fn model_tool_calls_become_tool_effects_and_are_joined() {
         .unwrap();
     assert_eq!(transition.next.phase, AgentPhase::AwaitingModel);
     assert_eq!(transition.next.budget.turns_used, 2);
-    assert!(matches!(transition.intents[0], EffectIntent::CallModel(_)));
+    match &transition.intents[0] {
+        EffectIntent::CallModel(spec) => {
+            let tool_items = spec
+                .messages
+                .iter()
+                .filter(|item| matches!(item, HistoryItem::Tool(_)))
+                .count();
+            assert_eq!(tool_items, 2);
+        }
+        other => panic!("expected a model call, got {other:?}"),
+    }
     assert_eq!(transition.disposition, Disposition::Continue);
 }
 
@@ -146,7 +156,7 @@ fn empty_call_ids_fail_the_run() {
 }
 
 #[test]
-fn unknown_tool_result_is_a_step_error() {
+fn unknown_tool_result_fails_the_run() {
     let stepper = ReActStepper::new(None, vec![echo_spec()]);
     let state = AgentState::new(RunId::new("run-unknown"), BudgetSnapshot::new(4, 4));
     let state = stepper.transition(&state, &started(1)).unwrap().next;
@@ -155,13 +165,24 @@ fn unknown_tool_result_is_a_step_error() {
         .unwrap()
         .next;
 
-    let result = stepper.transition(
-        &state,
-        &AcceptedEvent {
-            seq: 3,
-            kind: EventKind::ToolResult(outcome("other", "x")),
-        },
-    );
+    let transition = stepper
+        .transition(
+            &state,
+            &AcceptedEvent {
+                seq: 3,
+                kind: EventKind::ToolResult(outcome("other", "x")),
+            },
+        )
+        .unwrap();
 
-    assert!(result.is_err());
+    assert_eq!(transition.next.phase, AgentPhase::Failed);
+    assert_eq!(transition.disposition, Disposition::Failed);
+    assert!(
+        transition
+            .next
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("unknown call id")
+    );
 }

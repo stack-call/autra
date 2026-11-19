@@ -4,12 +4,12 @@
 
 **Blocked by:** 01: Echo agent end-to-end
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] An Agent with the echo tool completes a FakeModel script of tool call followed by final answer, with one tool call counted.
-- [ ] Multiple tool calls in one model response execute in model order, and all outcomes are fed back before the next model call.
-- [ ] An unknown tool name produces an error outcome and the Run continues to a final answer.
-- [ ] Malformed tool arguments produce an error outcome and the Run continues.
-- [ ] The Stepper emits one tool Effect per call and waits for the whole batch before requesting the next model call.
-- [ ] Run events include ToolCallStarted and ToolResult with full tool content.
-- [ ] Format, clippy with warnings denied, and workspace tests pass.
+- [x] An Agent with the echo tool completes a FakeModel script of tool call followed by final answer, with one tool call counted.
+- [x] Multiple tool calls in one model response execute in model order, and all outcomes are fed back before the next model call.
+- [x] An unknown tool name produces an error outcome and the Run continues to a final answer.
+- [x] Malformed tool arguments produce an error outcome and the Run continues.
+- [x] The Stepper emits one tool Effect per call and waits for the whole batch before requesting the next model call.
+- [x] Run events include ToolCallStarted and ToolResult with full tool content.
+- [x] Format, clippy with warnings denied, and workspace tests pass.

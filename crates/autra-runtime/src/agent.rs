@@ -212,6 +212,10 @@ impl Agent {
             }
 
             for intent in transition.intents {
+                if options.cancel.is_cancelled() {
+                    queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
+                    break;
+                }
                 match intent {
                     EffectIntent::CallModel(request) => {
                         on_event(&RunEvent::ModelCallStarted {
@@ -232,31 +236,27 @@ impl Agent {
                         enqueue(&mut queue, &mut seq, EventKind::ModelResult(output));
                     }
                     EffectIntent::CallTool(spec) => {
+                        let call = spec.call;
                         on_event(&RunEvent::ToolCallStarted {
-                            call_id: spec.call.call_id.clone(),
-                            name: spec.call.name.clone(),
+                            call_id: call.call_id.clone(),
+                            name: call.name.clone(),
                         });
-                        let outcome = match self.tools.get(&spec.call.name) {
-                            Some(tool) => match tool.call(&spec.call.arguments).await {
-                                Ok(content) => ToolOutcome {
-                                    call_id: spec.call.call_id,
-                                    name: spec.call.name,
-                                    content,
-                                    is_error: false,
-                                },
-                                Err(error) => ToolOutcome {
-                                    call_id: spec.call.call_id,
-                                    name: spec.call.name,
-                                    content: error.to_string(),
-                                    is_error: true,
-                                },
-                            },
-                            None => ToolOutcome {
-                                call_id: spec.call.call_id.clone(),
-                                name: spec.call.name.clone(),
-                                content: format!("unknown tool `{}`", spec.call.name),
-                                is_error: true,
-                            },
+                        let result = match self.tools.get(&call.name) {
+                            Some(tool) => tool
+                                .call(&call.arguments)
+                                .await
+                                .map_err(|error| error.to_string()),
+                            None => Err(format!("unknown tool `{}`", call.name)),
+                        };
+                        let (content, is_error) = match result {
+                            Ok(content) => (content, false),
+                            Err(message) => (message, true),
+                        };
+                        let outcome = ToolOutcome {
+                            call_id: call.call_id,
+                            name: call.name,
+                            content,
+                            is_error,
                         };
                         on_event(&RunEvent::ToolResult {
                             call_id: outcome.call_id.clone(),

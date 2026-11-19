@@ -89,10 +89,7 @@ impl ReActStepper {
 
         let requested = output.tool_calls.len() as u32;
         if !next.budget.tool_calls_available(requested) {
-            let remaining = next
-                .budget
-                .max_tool_calls
-                .saturating_sub(next.budget.tool_calls_used);
+            let remaining = next.budget.remaining_tool_calls();
             return Ok(Self::failed(
                 next,
                 format!("max tool calls exceeded: {requested} requested, {remaining} remaining"),
@@ -126,10 +123,10 @@ impl ReActStepper {
             .iter()
             .any(|call| call.call_id == outcome.call_id)
         {
-            return Err(StepError::new(format!(
-                "tool result for unknown call id `{}`",
-                outcome.call_id
-            )));
+            return Ok(Self::failed(
+                state.clone(),
+                format!("tool result for unknown call id `{}`", outcome.call_id),
+            ));
         }
 
         let mut next = state.clone();

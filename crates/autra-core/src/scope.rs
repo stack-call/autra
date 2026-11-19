@@ -72,3 +72,9 @@ impl ExecutionScope {
         }
     }
 }
+
+impl BudgetSnapshot {
+    pub fn remaining_tool_calls(&self) -> u32 {
+        self.max_tool_calls.saturating_sub(self.tool_calls_used)
+    }
+}

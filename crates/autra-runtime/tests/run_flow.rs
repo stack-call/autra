@@ -1,6 +1,9 @@
 use async_trait::async_trait;
-use autra_core::{ModelCallSpec, ModelOutput, ToolCallRequest};
-use autra_harness::{EchoModel, EchoTool, FakeModel, ModelError, ModelProvider};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use autra_core::{CancelFlag, ModelCallSpec, ModelOutput, ToolCallRequest, ToolSpec};
+use autra_harness::{EchoModel, EchoTool, FakeModel, ModelError, ModelProvider, Tool, ToolError};
 use autra_runtime::{Agent, RunEvent, RunOptions, RunStatus};
 
 #[tokio::test]
@@ -277,4 +280,60 @@ async fn malformed_tool_arguments_become_an_error_outcome() {
     let (content, is_error) = tool_result(&events);
     assert!(is_error);
     assert!(content.contains("invalid echo arguments"));
+}
+
+struct CancellingTool {
+    calls: Arc<AtomicUsize>,
+    cancel: CancelFlag,
+}
+
+#[async_trait]
+impl Tool for CancellingTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "cancel".to_owned(),
+            description: "Cancel the run after recording a call.".to_owned(),
+            input_schema: "{}".to_owned(),
+        }
+    }
+
+    async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.cancel.cancel();
+        Ok("cancelled".to_owned())
+    }
+}
+
+#[tokio::test]
+async fn cancellation_stops_remaining_tool_intents() {
+    let cancel = CancelFlag::new();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let model = FakeModel::new(vec![ModelOutput {
+        text: None,
+        tool_calls: vec![
+            call("call-1", "cancel", "{}"),
+            call("call-2", "cancel", "{}"),
+        ],
+    }]);
+    let agent = Agent::builder("cancel-batch")
+        .model(model)
+        .tool(CancellingTool {
+            calls: calls.clone(),
+            cancel: cancel.clone(),
+        })
+        .build()
+        .unwrap();
+    let options = RunOptions {
+        cancel: cancel.clone(),
+    };
+
+    let mut events = Vec::new();
+    let outcome = agent
+        .run_with_options("go", options, |event| events.push(event.clone()))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status(), RunStatus::Cancelled);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(event_names(&events).last(), Some(&"RunCancelled"));
 }
