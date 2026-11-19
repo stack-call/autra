@@ -53,7 +53,8 @@ async fn read_file_rejects_symlink_escapes() {
     let secret = outside.path().join("secret.txt");
     fs::write(&secret, "secret").unwrap();
     let link = dir.path().join("link.txt");
-    if make_symlink(&secret, &link).is_err() {
+    if let Err(error) = make_symlink(&secret, &link) {
+        eprintln!("skipping symlink escape test: cannot create symlink ({error})");
         return;
     }
     let tool = ReadFileTool::new(workspace(dir.path()));
@@ -114,4 +115,17 @@ async fn read_file_defaults_to_32_kib() {
     let output = tool.call(r#"{"path":"big.txt"}"#).await.unwrap();
 
     assert!(output.contains("truncated at 32768 bytes"));
+}
+
+#[tokio::test]
+async fn read_file_truncates_on_a_char_boundary() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("text.txt"), "aébc").unwrap();
+    let tool = ReadFileTool::new(workspace(dir.path())).with_max_bytes(2);
+
+    let output = tool.call(r#"{"path":"text.txt"}"#).await.unwrap();
+
+    assert!(output.starts_with('a'));
+    assert!(!output.contains('\u{fffd}'));
+    assert!(output.contains("truncated at 2 bytes"));
 }

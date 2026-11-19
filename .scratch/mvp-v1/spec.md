@@ -151,11 +151,15 @@ without a network, database, sandbox or approval flow.
 - `LocalWorkspace::open(root)` canonicalises the root. Resolution rejects
   absolute paths, parent-directory components and any canonicalised target that
   falls outside the root.
-- `read_file` returns UTF-8 text with a default 32 KiB cap and an explicit
-  truncation marker. `list_files` lists one directory, sorted, with `/` on
-  directories, a 200-entry cap and a truncation marker. `echo` returns its text
-  argument.
+- `read_file` returns UTF-8 text with a default 32 KiB cap, truncates on a
+  character boundary and adds an explicit truncation marker. `list_files` lists
+  one directory, sorted, with `/` on directories, a 200-entry cap and a
+  truncation marker; an empty directory returns `(empty directory)` and empty
+  arguments default to the workspace root. `echo` returns its text argument.
 - Built-in tools are read-only and declare `EffectClass::ReadOnly`.
+- `LocalWorkspace` is user-space path validation, not a sandbox: it provides
+  no process, mount or network isolation. Strong isolation requires a trusted
+  sandbox backend, which is out of scope for v1.
 
 ### Runtime coordinator
 

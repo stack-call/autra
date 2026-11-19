@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -89,13 +90,17 @@ impl Tool for EchoTool {
     }
 
     async fn call(&self, arguments: &str) -> Result<String, ToolError> {
-        let args: EchoArgs = serde_json::from_str(arguments)
-            .map_err(|error| ToolError::new(format!("invalid echo arguments: {error}")))?;
+        let args: EchoArgs =
+            serde_json::from_str(arguments).map_err(|error| invalid_arguments("echo", error))?;
         Ok(args.text)
     }
 }
 
 /// A filesystem root that read-only tools are confined to.
+///
+/// Confinement is user-space path validation, not a sandbox: it does not
+/// isolate processes, mounts or the network. Use a trusted Sandbox backend
+/// when isolation is required.
 #[derive(Clone, Debug)]
 pub struct LocalWorkspace {
     root: std::path::PathBuf,
@@ -117,10 +122,6 @@ impl LocalWorkspace {
             )));
         }
         Ok(Self { root })
-    }
-
-    pub fn root(&self) -> &std::path::Path {
-        &self.root
     }
 
     fn resolve(&self, relative: &str) -> Result<std::path::PathBuf, ToolError> {
@@ -152,6 +153,21 @@ impl LocalWorkspace {
         }
         Ok(resolved)
     }
+}
+
+fn truncate_at_char_boundary(bytes: &[u8], max_bytes: usize) -> &[u8] {
+    if bytes.len() <= max_bytes {
+        return bytes;
+    }
+    let mut end = max_bytes;
+    while end > 0 && (bytes[end] & 0b1100_0000) == 0b1000_0000 {
+        end -= 1;
+    }
+    &bytes[..end]
+}
+
+fn invalid_arguments(tool: &str, error: serde_json::Error) -> ToolError {
+    ToolError::new(format!("invalid {tool} arguments: {error}"))
 }
 
 const READ_FILE_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative file path"}},"required":["path"]}"#;
@@ -197,18 +213,22 @@ impl Tool for ReadFileTool {
 
     async fn call(&self, arguments: &str) -> Result<String, ToolError> {
         let args: ReadFileArgs = serde_json::from_str(arguments)
-            .map_err(|error| ToolError::new(format!("invalid read_file arguments: {error}")))?;
+            .map_err(|error| invalid_arguments("read_file", error))?;
         let path = self.workspace.resolve(&args.path)?;
         let metadata = std::fs::metadata(&path)
             .map_err(|error| ToolError::new(format!("cannot read `{}`: {error}", args.path)))?;
         if !metadata.is_file() {
             return Err(ToolError::new(format!("`{}` is not a file", args.path)));
         }
-        let bytes = std::fs::read(&path)
+        let file = std::fs::File::open(&path)
+            .map_err(|error| ToolError::new(format!("cannot read `{}`: {error}", args.path)))?;
+        let mut bytes = Vec::new();
+        file.take((self.max_bytes as u64).saturating_add(1))
+            .read_to_end(&mut bytes)
             .map_err(|error| ToolError::new(format!("cannot read `{}`: {error}", args.path)))?;
         let truncated = bytes.len() > self.max_bytes;
         let slice = if truncated {
-            &bytes[..self.max_bytes]
+            truncate_at_char_boundary(&bytes, self.max_bytes)
         } else {
             &bytes[..]
         };
