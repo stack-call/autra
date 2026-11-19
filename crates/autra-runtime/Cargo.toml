@@ -11,4 +11,5 @@ autra-harness = { path = "../autra-harness" }
 thiserror = "2"
 
 [dev-dependencies]
+async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt"] }

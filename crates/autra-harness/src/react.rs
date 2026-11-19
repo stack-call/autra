@@ -34,6 +34,47 @@ impl ReActStepper {
             disposition: Disposition::Failed,
         }
     }
+
+    fn expect_phase(
+        state: &AgentState,
+        expected: AgentPhase,
+        event: &str,
+    ) -> Result<(), StepError> {
+        if state.phase == expected {
+            Ok(())
+        } else {
+            Err(StepError::new(format!(
+                "unexpected {event} in phase {:?}",
+                state.phase
+            )))
+        }
+    }
+
+    fn on_model_result(
+        &self,
+        state: &AgentState,
+        output: &ModelOutput,
+    ) -> Result<Transition, StepError> {
+        Self::expect_phase(state, AgentPhase::AwaitingModel, "ModelResult")?;
+        let mut next = state.clone();
+        next.history.push(HistoryItem::Assistant {
+            text: output.text.clone(),
+            tool_calls: output.tool_calls.clone(),
+        });
+        if output.tool_calls.is_empty() {
+            next.phase = AgentPhase::Completed;
+            next.final_answer = output.text.clone();
+            return Ok(Transition {
+                next,
+                intents: Vec::new(),
+                disposition: Disposition::Finished,
+            });
+        }
+        Ok(Self::failed(
+            next,
+            "tool calls are not supported in this slice",
+        ))
+    }
 }
 
 impl AgentStepper for ReActStepper {
@@ -44,12 +85,7 @@ impl AgentStepper for ReActStepper {
     ) -> Result<Transition, StepError> {
         match &event.kind {
             EventKind::RunStarted { input } => {
-                if state.phase != AgentPhase::Ready {
-                    return Err(StepError::new(format!(
-                        "unexpected RunStarted in phase {:?}",
-                        state.phase
-                    )));
-                }
+                Self::expect_phase(state, AgentPhase::Ready, "RunStarted")?;
                 let mut next = state.clone();
                 next.history.push(HistoryItem::User(input.clone()));
                 if !next.budget.turn_available() {
@@ -87,38 +123,5 @@ impl AgentStepper for ReActStepper {
                 })
             }
         }
-    }
-}
-
-impl ReActStepper {
-    fn on_model_result(
-        &self,
-        state: &AgentState,
-        output: &ModelOutput,
-    ) -> Result<Transition, StepError> {
-        if state.phase != AgentPhase::AwaitingModel {
-            return Err(StepError::new(format!(
-                "unexpected ModelResult in phase {:?}",
-                state.phase
-            )));
-        }
-        let mut next = state.clone();
-        next.history.push(HistoryItem::Assistant {
-            text: output.text.clone(),
-            tool_calls: output.tool_calls.clone(),
-        });
-        if output.tool_calls.is_empty() {
-            next.phase = AgentPhase::Completed;
-            next.final_answer = output.text.clone();
-            return Ok(Transition {
-                next,
-                intents: Vec::new(),
-                disposition: Disposition::Finished,
-            });
-        }
-        Ok(Self::failed(
-            next,
-            "tool calls are not supported in this slice",
-        ))
     }
 }

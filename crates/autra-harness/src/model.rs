@@ -20,7 +20,7 @@ impl ModelError {
     }
 }
 
-/// Returns the last user input as the final answer.
+/// Returns the last user input prefixed with `echo:`.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EchoModel;
 

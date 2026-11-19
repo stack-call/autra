@@ -4,13 +4,13 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `Agent::builder` accepts instructions and a model; building without a model fails with a typed error.
-- [ ] `agent.run("hello").await` returns a Completed outcome with answer `echo: hello` and one turn used.
-- [ ] `run_with_options` emits RunStarted, ModelCallStarted, ModelResult and RunCompleted in that order.
-- [ ] RunOutcome exposes the authoritative AgentState plus answer, status, turns and tool-call accessors.
-- [ ] The ReAct Stepper moves RunStarted to CallModel, and a ModelResult with no tool calls to Completed.
-- [ ] `autractl run "hello"` prints the Run events and exits successfully.
-- [ ] AgentState serializes to a fixed JSON snapshot.
-- [ ] Format, clippy with warnings denied, and workspace tests pass.
+- [x] `Agent::builder` accepts instructions and a model; building without a model fails with a typed error.
+- [x] `agent.run("hello").await` returns a Completed outcome with answer `echo: hello` and one turn used.
+- [x] `run_with_options` emits RunStarted, ModelCallStarted, ModelResult and RunCompleted in that order.
+- [x] RunOutcome exposes the authoritative AgentState plus answer, status, turns and tool-call accessors.
+- [x] The ReAct Stepper moves RunStarted to CallModel, and a ModelResult with no tool calls to Completed.
+- [x] `autractl run "hello"` prints the Run events and exits successfully.
+- [x] AgentState serializes to a fixed JSON snapshot.
+- [x] Format, clippy with warnings denied, and workspace tests pass.

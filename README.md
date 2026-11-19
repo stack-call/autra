@@ -3,9 +3,10 @@
 A Rust-native agent framework: composable intelligence, structured execution,
 explicit effects, optional infrastructure.
 
-> **Status: design proposal.** The API, CLI, schema and milestones described in
-> the spec are proposed, not implemented. See
-> [`agent_native_framework_complete_spec_v1.0.md`](./agent_native_framework_complete_spec_v1.0.md).
+> **Status: early implementation.** MVP v1 is in progress. The design spec
+> remains a proposal beyond the implemented slice. See
+> [`agent_native_framework_complete_spec_v1.0.md`](./agent_native_framework_complete_spec_v1.0.md)
+> and [`.scratch/mvp-v1/spec.md`](./.scratch/mvp-v1/spec.md).
 
 ## Layout
 
@@ -13,7 +14,7 @@ explicit effects, optional infrastructure.
 |---|---|---|
 | `crates/autra-core` | Sans-I/O stepper: IDs, state, accepted events, effect intents, scopes | §6 |
 | `crates/autra-harness` | ReAct engine, model provider boundary, context, tools | §7–§9 |
-| `crates/autra-runtime` | Tokio local host: effect dispatch, sessions, concurrency, cancellation | §10–§12 |
+| `crates/autra-runtime` | Local host: effect dispatch, sessions, concurrency, cancellation | §10–§12 |
 | `crates/autra-cli` | `autractl`: local runs, streaming, approvals | §14.4 |
 
 Dependency direction is enforced by Cargo: `autra-core` must not depend on
@@ -25,7 +26,9 @@ Tokio, a database, a sandbox backend, or any harness/runtime crate.
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo run -p autra-cli -- run "hello"
 ```
 
-No dependencies are declared yet. Tokio arrives with the local host
-(`RUNTIME-001`), SQLite with the durable host (`DURABLE-002`).
+`autra-core` is dependency-light (serde, thiserror). `autra-harness` adds
+async-trait and thiserror; `autra-runtime` and `autra-cli` use Tokio. There is
+no database, network or sandbox dependency yet.

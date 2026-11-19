@@ -153,15 +153,25 @@ impl Agent {
 
         let mut cancel_queued = false;
         loop {
-            if options.cancel.is_cancelled() && !cancel_queued {
-                enqueue(&mut queue, &mut seq, EventKind::CancelRequested);
-                cancel_queued = true;
+            if options.cancel.is_cancelled() {
+                queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
             }
 
             let event = queue
                 .pop_front()
                 .ok_or_else(|| RunError::Protocol("no accepted event to process".to_owned()))?;
-            let transition = stepper.transition(&state, &event)?;
+            let transition = match stepper.transition(&state, &event) {
+                Ok(transition) => transition,
+                Err(error) => {
+                    let message = error.to_string();
+                    state.phase = AgentPhase::Failed;
+                    state.last_error = Some(message.clone());
+                    on_event(&RunEvent::RunFailed {
+                        message: message.clone(),
+                    });
+                    return Err(RunError::Step(error));
+                }
+            };
             state = transition.next;
 
             if let EventKind::ModelResult(output) = &event.kind {
@@ -196,10 +206,7 @@ impl Agent {
             }
 
             if options.cancel.is_cancelled() {
-                if !cancel_queued {
-                    enqueue(&mut queue, &mut seq, EventKind::CancelRequested);
-                    cancel_queued = true;
-                }
+                queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
                 continue;
             }
 
@@ -209,7 +216,18 @@ impl Agent {
                         on_event(&RunEvent::ModelCallStarted {
                             turn: state.budget.turns_used,
                         });
-                        let output = self.model.complete(&request).await?;
+                        let output = match self.model.complete(&request).await {
+                            Ok(output) => output,
+                            Err(error) => {
+                                let message = error.to_string();
+                                state.phase = AgentPhase::Failed;
+                                state.last_error = Some(message.clone());
+                                on_event(&RunEvent::RunFailed {
+                                    message: message.clone(),
+                                });
+                                return Err(RunError::Model(error));
+                            }
+                        };
                         enqueue(&mut queue, &mut seq, EventKind::ModelResult(output));
                     }
                     EffectIntent::CallTool(_) => {
@@ -279,4 +297,11 @@ impl AgentBuilder {
 fn enqueue(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, kind: EventKind) {
     *seq += 1;
     queue.push_back(AcceptedEvent { seq: *seq, kind });
+}
+
+fn queue_cancel(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, cancel_queued: &mut bool) {
+    if !*cancel_queued {
+        enqueue(queue, seq, EventKind::CancelRequested);
+        *cancel_queued = true;
+    }
 }

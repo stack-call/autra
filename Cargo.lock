@@ -44,6 +44,7 @@ dependencies = [
 name = "autra-runtime"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "autra-core",
  "autra-harness",
  "thiserror",

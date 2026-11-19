@@ -137,7 +137,7 @@ without a network, database, sandbox or approval flow.
   instructions, history, tool specs) and returning one ModelOutput.
 - `FakeModel` replays scripted responses in order and returns a typed error when
   the script is exhausted.
-- `EchoModel` returns the last user input as the answer.
+- `EchoModel` returns the last user input prefixed with `echo:`.
 - v1 has no token streaming: a ModelResult event is emitted when the whole
   response is accepted.
 
