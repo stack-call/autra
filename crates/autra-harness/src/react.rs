@@ -1,9 +1,12 @@
+use std::collections::HashSet;
+
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EffectIntent, EventKind,
-    HistoryItem, ModelCallSpec, ModelOutput, StepError, ToolSpec, Transition,
+    HistoryItem, ModelCallSpec, ModelOutput, StepError, ToolCallSpec, ToolOutcome, ToolSpec,
+    Transition,
 };
 
-/// The default ReAct engine: model call, then final answer.
+/// The default ReAct engine: model call, tool batch, then final answer.
 pub struct ReActStepper {
     instructions: Option<String>,
     tools: Vec<ToolSpec>,
@@ -70,10 +73,89 @@ impl ReActStepper {
                 disposition: Disposition::Finished,
             });
         }
-        Ok(Self::failed(
+
+        let mut seen = HashSet::new();
+        for call in &output.tool_calls {
+            if call.call_id.is_empty() {
+                return Ok(Self::failed(next, "tool call id must not be empty"));
+            }
+            if !seen.insert(call.call_id.as_str()) {
+                return Ok(Self::failed(
+                    next,
+                    format!("duplicate tool call id `{}`", call.call_id),
+                ));
+            }
+        }
+
+        let requested = output.tool_calls.len() as u32;
+        if !next.budget.tool_calls_available(requested) {
+            let remaining = next
+                .budget
+                .max_tool_calls
+                .saturating_sub(next.budget.tool_calls_used);
+            return Ok(Self::failed(
+                next,
+                format!("max tool calls exceeded: {requested} requested, {remaining} remaining"),
+            ));
+        }
+        next.budget.tool_calls_used += requested;
+        next.pending_tool_calls = output.tool_calls.clone();
+        next.phase = AgentPhase::AwaitingTool;
+
+        let intents = output
+            .tool_calls
+            .iter()
+            .cloned()
+            .map(|call| EffectIntent::CallTool(ToolCallSpec { call }))
+            .collect();
+        Ok(Transition {
             next,
-            "tool calls are not supported in this slice",
-        ))
+            intents,
+            disposition: Disposition::Continue,
+        })
+    }
+
+    fn on_tool_result(
+        &self,
+        state: &AgentState,
+        outcome: &ToolOutcome,
+    ) -> Result<Transition, StepError> {
+        Self::expect_phase(state, AgentPhase::AwaitingTool, "ToolResult")?;
+        if !state
+            .pending_tool_calls
+            .iter()
+            .any(|call| call.call_id == outcome.call_id)
+        {
+            return Err(StepError::new(format!(
+                "tool result for unknown call id `{}`",
+                outcome.call_id
+            )));
+        }
+
+        let mut next = state.clone();
+        next.history.push(HistoryItem::Tool(outcome.clone()));
+        next.pending_tool_calls
+            .retain(|call| call.call_id != outcome.call_id);
+
+        if !next.pending_tool_calls.is_empty() {
+            return Ok(Transition {
+                next,
+                intents: Vec::new(),
+                disposition: Disposition::Continue,
+            });
+        }
+
+        if !next.budget.turn_available() {
+            return Ok(Self::failed(next, "max turns exceeded"));
+        }
+        next.budget.turns_used += 1;
+        next.phase = AgentPhase::AwaitingModel;
+        let request = self.model_request(&next);
+        Ok(Transition {
+            next,
+            intents: vec![EffectIntent::CallModel(request)],
+            disposition: Disposition::Continue,
+        })
     }
 }
 
@@ -101,9 +183,7 @@ impl AgentStepper for ReActStepper {
                 })
             }
             EventKind::ModelResult(output) => self.on_model_result(state, output),
-            EventKind::ToolResult(_) => Err(StepError::new(
-                "tool results are not supported in this slice",
-            )),
+            EventKind::ToolResult(outcome) => self.on_tool_result(state, outcome),
             EventKind::CancelRequested => {
                 if matches!(
                     state.phase,

@@ -42,3 +42,35 @@ impl ModelProvider for EchoModel {
         })
     }
 }
+
+/// A deterministic provider that replays scripted responses in order.
+#[derive(Default)]
+pub struct FakeModel {
+    responses: std::sync::Mutex<std::collections::VecDeque<ModelOutput>>,
+}
+
+impl FakeModel {
+    pub fn new(responses: impl IntoIterator<Item = ModelOutput>) -> Self {
+        Self {
+            responses: std::sync::Mutex::new(responses.into_iter().collect()),
+        }
+    }
+
+    pub fn push(&self, response: ModelOutput) {
+        self.responses
+            .lock()
+            .expect("fake model lock poisoned")
+            .push_back(response);
+    }
+}
+
+#[async_trait]
+impl ModelProvider for FakeModel {
+    async fn complete(&self, _request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
+        self.responses
+            .lock()
+            .expect("fake model lock poisoned")
+            .pop_front()
+            .ok_or_else(|| ModelError::new("fake model script exhausted"))
+    }
+}

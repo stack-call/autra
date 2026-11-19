@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use autra_core::{ModelCallSpec, ModelOutput, ToolCallRequest};
-use autra_harness::{EchoModel, ModelError, ModelProvider};
+use autra_harness::{EchoModel, EchoTool, FakeModel, ModelError, ModelProvider};
 use autra_runtime::{Agent, RunEvent, RunOptions, RunStatus};
 
 #[tokio::test]
@@ -69,18 +69,19 @@ impl ModelProvider for FailingModel {
     }
 }
 
-struct ToolCallingModel;
+struct DuplicateCallModel;
 
 #[async_trait]
-impl ModelProvider for ToolCallingModel {
+impl ModelProvider for DuplicateCallModel {
     async fn complete(&self, _request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
+        let call = ToolCallRequest {
+            call_id: "call-1".to_owned(),
+            name: "echo".to_owned(),
+            arguments: "{}".to_owned(),
+        };
         Ok(ModelOutput {
             text: None,
-            tool_calls: vec![ToolCallRequest {
-                call_id: "call-1".to_owned(),
-                name: "echo".to_owned(),
-                arguments: "{}".to_owned(),
-            }],
+            tool_calls: vec![call.clone(), call],
         })
     }
 }
@@ -106,8 +107,8 @@ async fn model_failure_emits_run_failed() {
 
 #[tokio::test]
 async fn protocol_failure_emits_run_failed() {
-    let agent = Agent::builder("tool-calling")
-        .model(ToolCallingModel)
+    let agent = Agent::builder("duplicate-calls")
+        .model(DuplicateCallModel)
         .build()
         .unwrap();
     let mut events = Vec::new();
@@ -119,6 +120,161 @@ async fn protocol_failure_emits_run_failed() {
         .await
         .unwrap_err();
 
-    assert!(error.to_string().contains("tool calls are not supported"));
+    assert!(error.to_string().contains("duplicate tool call id"));
     assert_eq!(event_names(&events).last(), Some(&"RunFailed"));
+}
+
+fn call(id: &str, name: &str, arguments: &str) -> ToolCallRequest {
+    ToolCallRequest {
+        call_id: id.to_owned(),
+        name: name.to_owned(),
+        arguments: arguments.to_owned(),
+    }
+}
+
+fn tool_call_model(calls: Vec<ToolCallRequest>, answer: &str) -> FakeModel {
+    FakeModel::new(vec![
+        ModelOutput {
+            text: None,
+            tool_calls: calls,
+        },
+        ModelOutput {
+            text: Some(answer.to_owned()),
+            tool_calls: Vec::new(),
+        },
+    ])
+}
+
+fn tool_result(events: &[RunEvent]) -> (String, bool) {
+    events
+        .iter()
+        .find_map(|event| match event {
+            RunEvent::ToolResult {
+                content, is_error, ..
+            } => Some((content.clone(), *is_error)),
+            _ => None,
+        })
+        .expect("expected a tool result event")
+}
+
+#[tokio::test]
+async fn tool_calls_are_executed_and_fed_back() {
+    let model = tool_call_model(
+        vec![call("call-1", "echo", r#"{"text":"hello"}"#)],
+        "tool said hello",
+    );
+    let agent = Agent::builder("tools")
+        .model(model)
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+
+    let mut events = Vec::new();
+    let outcome = agent
+        .run_with_options("go", RunOptions::default(), |event| {
+            events.push(event.clone());
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.status(), RunStatus::Completed);
+    assert_eq!(outcome.answer(), Some("tool said hello"));
+    assert_eq!(outcome.tool_calls_used(), 1);
+    assert_eq!(
+        event_names(&events),
+        [
+            "RunStarted",
+            "ModelCallStarted",
+            "ModelResult",
+            "ToolCallStarted",
+            "ToolResult",
+            "ModelCallStarted",
+            "ModelResult",
+            "RunCompleted"
+        ]
+    );
+    assert_eq!(tool_result(&events), ("hello".to_owned(), false));
+}
+
+#[tokio::test]
+async fn multiple_tool_calls_execute_in_model_order() {
+    let model = tool_call_model(
+        vec![
+            call("call-1", "echo", r#"{"text":"one"}"#),
+            call("call-2", "echo", r#"{"text":"two"}"#),
+        ],
+        "both done",
+    );
+    let agent = Agent::builder("multi-tools")
+        .model(model)
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+
+    let mut events = Vec::new();
+    let outcome = agent
+        .run_with_options("go", RunOptions::default(), |event| {
+            events.push(event.clone());
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.answer(), Some("both done"));
+    assert_eq!(outcome.tool_calls_used(), 2);
+    let names = event_names(&events);
+    assert_eq!(
+        &names[3..7],
+        [
+            "ToolCallStarted",
+            "ToolResult",
+            "ToolCallStarted",
+            "ToolResult"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn unknown_tool_becomes_an_error_outcome() {
+    let model = tool_call_model(vec![call("call-1", "missing", "{}")], "recovered");
+    let agent = Agent::builder("unknown-tool")
+        .model(model)
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+
+    let mut events = Vec::new();
+    let outcome = agent
+        .run_with_options("go", RunOptions::default(), |event| {
+            events.push(event.clone());
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.answer(), Some("recovered"));
+    let (content, is_error) = tool_result(&events);
+    assert!(is_error);
+    assert!(content.contains("unknown tool"));
+}
+
+#[tokio::test]
+async fn malformed_tool_arguments_become_an_error_outcome() {
+    let model = tool_call_model(vec![call("call-1", "echo", "{}")], "recovered");
+    let agent = Agent::builder("bad-args")
+        .model(model)
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+
+    let mut events = Vec::new();
+    let outcome = agent
+        .run_with_options("go", RunOptions::default(), |event| {
+            events.push(event.clone());
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.answer(), Some("recovered"));
+    let (content, is_error) = tool_result(&events);
+    assert!(is_error);
+    assert!(content.contains("invalid echo arguments"));
 }

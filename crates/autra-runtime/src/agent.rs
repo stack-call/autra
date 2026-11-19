@@ -4,9 +4,9 @@ use std::sync::Arc;
 use autra_core::AgentStepper;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, BudgetSnapshot, CancelFlag, Disposition, EffectIntent,
-    EventKind, RunId, StepError, ToolCallRequest,
+    EventKind, RunId, StepError, ToolCallRequest, ToolOutcome,
 };
-use autra_harness::{ModelError, ModelProvider, ReActStepper};
+use autra_harness::{ModelError, ModelProvider, ReActStepper, Tool, ToolRegistry};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -104,6 +104,7 @@ pub struct Agent {
     name: String,
     instructions: Option<String>,
     model: Arc<dyn ModelProvider>,
+    tools: ToolRegistry,
     max_turns: u32,
     max_tool_calls: u32,
 }
@@ -136,7 +137,7 @@ impl Agent {
             run_id.clone(),
             BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
         );
-        let stepper = ReActStepper::new(self.instructions.clone(), Vec::new());
+        let stepper = ReActStepper::new(self.instructions.clone(), self.tools.specs());
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
         let mut seq = 0_u64;
 
@@ -230,10 +231,40 @@ impl Agent {
                         };
                         enqueue(&mut queue, &mut seq, EventKind::ModelResult(output));
                     }
-                    EffectIntent::CallTool(_) => {
-                        return Err(RunError::Protocol(
-                            "tool effects are not supported in this slice".to_owned(),
-                        ));
+                    EffectIntent::CallTool(spec) => {
+                        on_event(&RunEvent::ToolCallStarted {
+                            call_id: spec.call.call_id.clone(),
+                            name: spec.call.name.clone(),
+                        });
+                        let outcome = match self.tools.get(&spec.call.name) {
+                            Some(tool) => match tool.call(&spec.call.arguments).await {
+                                Ok(content) => ToolOutcome {
+                                    call_id: spec.call.call_id,
+                                    name: spec.call.name,
+                                    content,
+                                    is_error: false,
+                                },
+                                Err(error) => ToolOutcome {
+                                    call_id: spec.call.call_id,
+                                    name: spec.call.name,
+                                    content: error.to_string(),
+                                    is_error: true,
+                                },
+                            },
+                            None => ToolOutcome {
+                                call_id: spec.call.call_id.clone(),
+                                name: spec.call.name.clone(),
+                                content: format!("unknown tool `{}`", spec.call.name),
+                                is_error: true,
+                            },
+                        };
+                        on_event(&RunEvent::ToolResult {
+                            call_id: outcome.call_id.clone(),
+                            name: outcome.name.clone(),
+                            is_error: outcome.is_error,
+                            content: outcome.content.clone(),
+                        });
+                        enqueue(&mut queue, &mut seq, EventKind::ToolResult(outcome));
                     }
                 }
             }
@@ -245,6 +276,7 @@ pub struct AgentBuilder {
     name: String,
     instructions: Option<String>,
     model: Option<Arc<dyn ModelProvider>>,
+    tools: ToolRegistry,
     max_turns: u32,
     max_tool_calls: u32,
 }
@@ -255,6 +287,7 @@ impl AgentBuilder {
             name: name.into(),
             instructions: None,
             model: None,
+            tools: ToolRegistry::new(),
             max_turns: 8,
             max_tool_calls: 8,
         }
@@ -267,6 +300,11 @@ impl AgentBuilder {
 
     pub fn model(mut self, model: impl ModelProvider + 'static) -> Self {
         self.model = Some(Arc::new(model));
+        self
+    }
+
+    pub fn tool(mut self, tool: impl Tool + 'static) -> Self {
+        self.tools.register(tool);
         self
     }
 
@@ -288,6 +326,7 @@ impl AgentBuilder {
             name: self.name,
             instructions: self.instructions,
             model,
+            tools: self.tools,
             max_turns: self.max_turns,
             max_tool_calls: self.max_tool_calls,
         })
