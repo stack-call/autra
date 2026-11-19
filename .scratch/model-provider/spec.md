@@ -31,9 +31,10 @@ so no credential is baked into the binary or the repository.
   specs map to OpenAI function tools with `tool_choice = "auto"`.
 - Response mapping: assistant text becomes `ModelOutput.text`; each tool call
   becomes `ToolCallRequest` using the provider's call id. An empty response
-  yields an empty `ModelOutput` and is left for the Stepper to interpret.
+  yields an empty `ModelOutput` and is left for the Stepper to interpret. A
+  response without `choices[0].message` is a malformed-response error.
 - Non-2xx responses and malformed JSON return `ModelError` with a truncated
-  body. The runtime's `effect_timeout` still governs the whole Effect.
+  body. The provider imposes no HTTP timeout of its own; the runtime `effect_timeout` governs it. The CLI sets a 120-second Effect timeout for real-provider runs.
 - The CLI keeps `EchoModel` as the default. `--model <name>` selects the
   OpenAI-compatible provider and fails clearly when credentials are missing.
 - No retries, provider-specific extensions, token accounting or embeddings.
@@ -44,7 +45,8 @@ so no credential is baked into the binary or the repository.
 - Use a wiremock server to verify the POST path, bearer token and parsed
   response without contacting a real provider.
 - CLI test: `run --model` without `OPENAI_API_KEY` exits non-zero with a clear
-  message.
+  message; an empty model name is a usage error.
+- Cover null tool arguments and malformed response bodies.
 - No live provider call in the default test suite. A real endpoint can be
   exercised manually with credentials.
 

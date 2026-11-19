@@ -51,3 +51,21 @@ async fn non_success_response_is_an_error() {
     assert!(error.to_string().contains("401"));
     assert!(error.to_string().contains("bad key"));
 }
+
+#[tokio::test]
+async fn malformed_json_error_includes_the_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+        .mount(&server)
+        .await;
+    let model =
+        OpenAiCompatibleModel::new(OpenAiConfig::new(server.uri(), "test-key", "test-model"))
+            .unwrap();
+
+    let error = model.complete(&request()).await.unwrap_err();
+
+    assert!(error.to_string().contains("invalid model response JSON"));
+    assert!(error.to_string().contains("not json"));
+}

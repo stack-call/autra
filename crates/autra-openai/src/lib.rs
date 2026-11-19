@@ -5,8 +5,6 @@
 
 mod mapping;
 
-use std::time::Duration;
-
 use async_trait::async_trait;
 use autra_core::{ModelCallSpec, ModelOutput};
 use autra_harness::{ModelError, ModelProvider};
@@ -14,7 +12,7 @@ use thiserror::Error;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenAiConfig {
     pub base_url: String,
     pub api_key: String,
@@ -60,7 +58,6 @@ pub struct OpenAiCompatibleModel {
 impl OpenAiCompatibleModel {
     pub fn new(config: OpenAiConfig) -> Result<Self, ModelError> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(120))
             .build()
             .map_err(|error| ModelError::new(format!("cannot build HTTP client: {error}")))?;
         Ok(Self { client, config })
@@ -70,10 +67,6 @@ impl OpenAiCompatibleModel {
         let config =
             OpenAiConfig::from_env(model).map_err(|error| ModelError::new(error.to_string()))?;
         Self::new(config)
-    }
-
-    pub fn config(&self) -> &OpenAiConfig {
-        &self.config
     }
 }
 
@@ -104,8 +97,38 @@ impl ModelProvider for OpenAiCompatibleModel {
                 mapping::truncate(&text, 500)
             )));
         }
-        let value = serde_json::from_str(&text)
-            .map_err(|error| ModelError::new(format!("invalid model response JSON: {error}")))?;
+        let value = serde_json::from_str(&text).map_err(|error| {
+            ModelError::new(format!(
+                "invalid model response JSON: {error}: {}",
+                mapping::truncate(&text, 500)
+            ))
+        })?;
         mapping::parse_response(&value)
+    }
+}
+
+impl std::fmt::Debug for OpenAiConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OpenAiConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[redacted]")
+            .field("model", &self.model)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpenAiConfig;
+
+    #[test]
+    fn debug_redacts_api_key() {
+        let config = OpenAiConfig::new("http://localhost", "secret-key", "model");
+
+        let debug = format!("{config:?}");
+
+        assert!(!debug.contains("secret-key"));
+        assert!(debug.contains("[redacted]"));
     }
 }

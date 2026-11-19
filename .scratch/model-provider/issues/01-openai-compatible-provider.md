@@ -4,14 +4,15 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `autra-openai` implements `ModelProvider` for non-streaming chat completions.
-- [ ] `OpenAiConfig` supports explicit construction and `from_env`, reading `OPENAI_API_KEY` and optional `OPENAI_BASE_URL`.
-- [ ] Request mapping covers system, user, assistant tool-call history, tool results and function tool specs.
-- [ ] Response parsing covers assistant text, tool calls, object-shaped arguments and empty responses.
-- [ ] Non-2xx responses and malformed JSON return a clear `ModelError` with a truncated body.
-- [ ] A wiremock test verifies the POST path, bearer token and response parsing.
-- [ ] `autractl run --model <name> <prompt>` selects the provider; a missing key exits non-zero with a clear message.
-- [ ] README documents the environment variables and an example invocation.
-- [ ] Format, clippy with warnings denied, and workspace tests pass.
+- [x] `autra-openai` implements `ModelProvider` for non-streaming chat completions.
+- [x] `OpenAiConfig` supports explicit construction and `from_env`, reading `OPENAI_API_KEY` and optional `OPENAI_BASE_URL`.
+- [x] Request mapping covers system, user, assistant tool-call history, tool results and function tool specs.
+- [x] Response parsing covers assistant text, tool calls, object-shaped arguments,
+  null arguments and empty assistant messages; malformed responses are errors.
+- [x] Non-2xx responses and malformed JSON return a clear `ModelError` with a truncated body.
+- [x] A wiremock test verifies the POST path, bearer token and response parsing.
+- [x] `autractl run --model <name> <prompt>` selects the provider; a missing key exits non-zero with a clear message.
+- [x] README documents the environment variables and an example invocation.
+- [x] Format, clippy with warnings denied, and workspace tests pass.

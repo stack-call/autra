@@ -29,12 +29,17 @@ async fn main() -> ExitCode {
 async fn run_command(args: &[String]) -> ExitCode {
     let mut model_name = None;
     let mut prompt_parts = Vec::new();
+    let mut parsing_flags = true;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
-        if arg == "--model" {
+        if parsing_flags && arg == "--" {
+            parsing_flags = false;
+            continue;
+        }
+        if parsing_flags && arg == "--model" {
             match iter.next() {
-                Some(name) => model_name = Some(name.clone()),
-                None => {
+                Some(name) if !name.is_empty() => model_name = Some(name.clone()),
+                _ => {
                     eprintln!("usage: autractl run [--model <name>] <prompt>");
                     return ExitCode::FAILURE;
                 }
@@ -48,6 +53,8 @@ async fn run_command(args: &[String]) -> ExitCode {
         eprintln!("usage: autractl run [--model <name>] <prompt>");
         return ExitCode::FAILURE;
     }
+
+    let has_model = model_name.is_some();
 
     let builder = Agent::builder("cli-agent").instructions("Answer the user concisely.");
     let builder = match model_name {
@@ -68,7 +75,16 @@ async fn run_command(args: &[String]) -> ExitCode {
         }
     };
 
-    match execute(agent, &prompt).await {
+    let options = if has_model {
+        RunOptions {
+            effect_timeout: Some(std::time::Duration::from_secs(120)),
+            ..RunOptions::default()
+        }
+    } else {
+        RunOptions::default()
+    };
+
+    match execute(agent, &prompt, options).await {
         Ok(outcome) => {
             print_status(&outcome);
             ExitCode::SUCCESS
@@ -122,7 +138,7 @@ async fn demo_command() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let outcome = match execute(agent, "Inspect this project.").await {
+    let outcome = match execute(agent, "Inspect this project.", RunOptions::default()).await {
         Ok(outcome) => outcome,
         Err(error) => {
             eprintln!("demo failed: {error}");
@@ -172,10 +188,8 @@ fn builtin_registry(workspace: LocalWorkspace) -> ToolRegistry {
     registry
 }
 
-async fn execute(agent: Agent, prompt: &str) -> Result<RunOutcome, RunError> {
-    agent
-        .run_with_options(prompt, RunOptions::default(), print_event)
-        .await
+async fn execute(agent: Agent, prompt: &str, options: RunOptions) -> Result<RunOutcome, RunError> {
+    agent.run_with_options(prompt, options, print_event).await
 }
 
 fn print_status(outcome: &RunOutcome) {

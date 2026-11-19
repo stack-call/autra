@@ -84,3 +84,14 @@ fn run_with_model_without_api_key_fails() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("OPENAI_API_KEY"));
 }
+
+#[test]
+fn run_with_empty_model_name_fails() {
+    let output = autractl()
+        .args(["run", "--model", "", "hello"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("usage"));
+}

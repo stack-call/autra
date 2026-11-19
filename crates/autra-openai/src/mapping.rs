@@ -94,8 +94,8 @@ pub(crate) fn parse_response(value: &Value) -> Result<ModelOutput, ModelError> {
                 .ok_or_else(|| ModelError::new("tool call is missing function name"))?;
             let arguments = match function.get("arguments") {
                 Some(Value::String(arguments)) => arguments.clone(),
+                Some(Value::Null) | None => String::new(),
                 Some(other) => other.to_string(),
-                None => String::new(),
             };
             tool_calls.push(ToolCallRequest {
                 call_id: call_id.to_owned(),
@@ -242,5 +242,29 @@ mod tests {
         };
 
         assert!(build_request("test-model", &request).is_err());
+    }
+}
+
+#[cfg(test)]
+mod null_argument_tests {
+    use super::parse_response;
+    use serde_json::json;
+
+    #[test]
+    fn null_arguments_become_empty() {
+        let value = json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "function": { "name": "echo", "arguments": null }
+                    }]
+                }
+            }]
+        });
+
+        let output = parse_response(&value).unwrap();
+
+        assert_eq!(output.tool_calls[0].arguments, "");
     }
 }
