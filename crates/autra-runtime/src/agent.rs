@@ -39,6 +39,7 @@ pub enum RunStatus {
 pub struct RunOptions {
     pub cancel: CancelFlag,
     pub effect_timeout: Option<Duration>,
+    pub max_parallel_tool_calls: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -104,6 +105,34 @@ impl RunOutcome {
     }
 }
 
+struct BatchSink<'a, F> {
+    on_event: &'a mut F,
+    queue: &'a mut VecDeque<AcceptedEvent>,
+    seq: &'a mut u64,
+    cancel_queued: &'a mut bool,
+}
+
+impl<'a, F> BatchSink<'a, F>
+where
+    F: FnMut(&RunEvent),
+{
+    fn emit(&mut self, event: &RunEvent) {
+        (self.on_event)(event);
+    }
+
+    fn emit_tool_result(&mut self, outcome: &ToolOutcome) {
+        emit_tool_result(&mut *self.on_event, outcome);
+    }
+
+    fn push(&mut self, kind: EventKind) {
+        enqueue(&mut *self.queue, &mut *self.seq, kind);
+    }
+
+    fn cancel(&mut self) {
+        queue_cancel(&mut *self.queue, &mut *self.seq, &mut *self.cancel_queued);
+    }
+}
+
 pub struct Agent {
     name: String,
     instructions: Option<String>,
@@ -112,6 +141,7 @@ pub struct Agent {
     effect_timeout: Option<Duration>,
     max_turns: u32,
     max_tool_calls: u32,
+    max_parallel_tool_calls: u32,
 }
 
 impl Agent {
@@ -144,6 +174,10 @@ impl Agent {
         );
         let stepper = ReActStepper::new(self.instructions.clone(), self.tools.specs());
         let effect_timeout = options.effect_timeout.or(self.effect_timeout);
+        let parallel_limit = options
+            .max_parallel_tool_calls
+            .unwrap_or(self.max_parallel_tool_calls)
+            .max(1);
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
         let mut seq = 0_u64;
 
@@ -217,88 +251,127 @@ impl Agent {
                 continue;
             }
 
+            let mut tool_calls = Vec::new();
+            let mut model_requests = Vec::new();
             for intent in transition.intents {
+                match intent {
+                    EffectIntent::CallTool(spec) => tool_calls.push(spec.call),
+                    EffectIntent::CallModel(request) => model_requests.push(request),
+                }
+            }
+
+            if !tool_calls.is_empty() {
+                let mut sink = BatchSink {
+                    on_event: &mut on_event,
+                    queue: &mut queue,
+                    seq: &mut seq,
+                    cancel_queued: &mut cancel_queued,
+                };
+                self.execute_tool_batch(
+                    tool_calls,
+                    parallel_limit,
+                    effect_timeout,
+                    &options.cancel,
+                    &mut sink,
+                )
+                .await?;
+            }
+
+            for request in model_requests {
                 if options.cancel.is_cancelled() {
                     queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
                     break;
                 }
-                match intent {
-                    EffectIntent::CallModel(request) => {
-                        on_event(&RunEvent::ModelCallStarted {
-                            turn: state.budget.turns_used,
+                on_event(&RunEvent::ModelCallStarted {
+                    turn: state.budget.turns_used,
+                });
+                let output_result =
+                    match with_timeout(effect_timeout, self.model.complete(&request)).await {
+                        Ok(result) => result,
+                        Err(()) => Err(ModelError::new(
+                            "model call exceeded the configured timeout",
+                        )),
+                    };
+                let output = match output_result {
+                    Ok(output) => output,
+                    Err(error) => {
+                        let message = error.to_string();
+                        state.phase = AgentPhase::Failed;
+                        state.last_error = Some(message.clone());
+                        on_event(&RunEvent::RunFailed {
+                            message: message.clone(),
                         });
-                        let output_result =
-                            match with_timeout(effect_timeout, self.model.complete(&request)).await
-                            {
-                                Ok(result) => result,
-                                Err(()) => Err(ModelError::new(
-                                    "model call exceeded the configured timeout",
-                                )),
-                            };
-                        let output = match output_result {
-                            Ok(output) => output,
-                            Err(error) => {
-                                let message = error.to_string();
-                                state.phase = AgentPhase::Failed;
-                                state.last_error = Some(message.clone());
-                                on_event(&RunEvent::RunFailed {
-                                    message: message.clone(),
-                                });
-                                return Err(RunError::Model(error));
-                            }
-                        };
-                        enqueue(&mut queue, &mut seq, EventKind::ModelResult(output));
+                        return Err(RunError::Model(error));
                     }
-                    EffectIntent::CallTool(spec) => {
-                        let call = spec.call;
-                        on_event(&RunEvent::ToolCallStarted {
-                            call_id: call.call_id.clone(),
-                            name: call.name.clone(),
-                        });
-                        let result: Result<String, (String, bool)> = match self
-                            .tools
-                            .get(&call.name)
-                        {
-                            Some(tool) => {
-                                match with_timeout(effect_timeout, tool.call(&call.arguments)).await
-                                {
-                                    Ok(result) => {
-                                        result.map_err(|error| (error.to_string(), false))
-                                    }
-                                    Err(()) => Err((
-                                        format!(
-                                            "tool `{}` timed out; it may still have run and its outcome is unknown",
-                                            call.name
-                                        ),
-                                        true,
-                                    )),
-                                }
-                            }
-                            None => Err((format!("unknown tool `{}`", call.name), false)),
-                        };
-                        let (content, is_error, outcome_unknown) = match result {
-                            Ok(content) => (content, false, false),
-                            Err((message, unknown)) => (message, true, unknown),
-                        };
-                        let outcome = ToolOutcome {
-                            call_id: call.call_id,
-                            name: call.name,
-                            content,
-                            is_error,
-                            outcome_unknown,
-                        };
-                        on_event(&RunEvent::ToolResult {
-                            call_id: outcome.call_id.clone(),
-                            name: outcome.name.clone(),
-                            is_error: outcome.is_error,
-                            outcome_unknown: outcome.outcome_unknown,
-                            content: outcome.content.clone(),
-                        });
-                        enqueue(&mut queue, &mut seq, EventKind::ToolResult(outcome));
-                    }
-                }
+                };
+                enqueue(&mut queue, &mut seq, EventKind::ModelResult(output));
             }
         }
+    }
+    async fn execute_tool_batch<F>(
+        &self,
+        calls: Vec<ToolCallRequest>,
+        limit: u32,
+        effect_timeout: Option<Duration>,
+        cancel: &CancelFlag,
+        sink: &mut BatchSink<'_, F>,
+    ) -> Result<(), RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        let limit = limit.max(1) as usize;
+        if limit == 1 || calls.len() == 1 {
+            for call in calls {
+                if cancel.is_cancelled() {
+                    sink.cancel();
+                    break;
+                }
+                sink.emit(&RunEvent::ToolCallStarted {
+                    call_id: call.call_id.clone(),
+                    name: call.name.clone(),
+                });
+                let outcome = execute_tool(self.tools.clone(), call, effect_timeout).await;
+                sink.emit_tool_result(&outcome);
+                sink.push(EventKind::ToolResult(outcome));
+            }
+            return Ok(());
+        }
+
+        let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
+        for (chunk_index, chunk) in calls.chunks(limit).enumerate() {
+            let mut tasks = tokio::task::JoinSet::new();
+            for (offset, call) in chunk.iter().enumerate() {
+                if cancel.is_cancelled() {
+                    break;
+                }
+                sink.emit(&RunEvent::ToolCallStarted {
+                    call_id: call.call_id.clone(),
+                    name: call.name.clone(),
+                });
+                let index = chunk_index * limit + offset;
+                let tools = self.tools.clone();
+                let call = call.clone();
+                tasks
+                    .spawn(async move { (index, execute_tool(tools, call, effect_timeout).await) });
+            }
+            while let Some(result) = tasks.join_next().await {
+                let (index, outcome) = result
+                    .map_err(|error| RunError::Protocol(format!("tool task failed: {error}")))?;
+                outcomes[index] = Some(outcome);
+            }
+            if cancel.is_cancelled() {
+                break;
+            }
+        }
+
+        for outcome in outcomes.into_iter().flatten() {
+            sink.emit_tool_result(&outcome);
+            sink.push(EventKind::ToolResult(outcome));
+        }
+        if cancel.is_cancelled() {
+            sink.cancel();
+        }
+        Ok(())
     }
 }
 
@@ -310,6 +383,7 @@ pub struct AgentBuilder {
     effect_timeout: Option<Duration>,
     max_turns: u32,
     max_tool_calls: u32,
+    max_parallel_tool_calls: u32,
 }
 
 impl AgentBuilder {
@@ -322,6 +396,7 @@ impl AgentBuilder {
             effect_timeout: None,
             max_turns: 8,
             max_tool_calls: 8,
+            max_parallel_tool_calls: 1,
         }
     }
 
@@ -355,6 +430,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn max_parallel_tool_calls(mut self, max_parallel_tool_calls: u32) -> Self {
+        self.max_parallel_tool_calls = max_parallel_tool_calls.max(1);
+        self
+    }
+
     pub fn max_tool_calls(mut self, max_tool_calls: u32) -> Self {
         self.max_tool_calls = max_tool_calls;
         self
@@ -372,6 +452,7 @@ impl AgentBuilder {
             effect_timeout: self.effect_timeout,
             max_turns: self.max_turns,
             max_tool_calls: self.max_tool_calls,
+            max_parallel_tool_calls: self.max_parallel_tool_calls,
         })
     }
 }
@@ -396,4 +477,45 @@ where
         Some(duration) => tokio::time::timeout(duration, future).await.map_err(|_| ()),
         None => Ok(future.await),
     }
+}
+
+async fn execute_tool(
+    tools: ToolRegistry,
+    call: ToolCallRequest,
+    timeout: Option<Duration>,
+) -> ToolOutcome {
+    let result: Result<String, (String, bool)> = match tools.get(&call.name) {
+        Some(tool) => match with_timeout(timeout, tool.call(&call.arguments)).await {
+            Ok(result) => result.map_err(|error| (error.to_string(), false)),
+            Err(()) => Err((
+                format!(
+                    "tool `{}` timed out; it may still have run and its outcome is unknown",
+                    call.name
+                ),
+                true,
+            )),
+        },
+        None => Err((format!("unknown tool `{}`", call.name), false)),
+    };
+    let (content, is_error, outcome_unknown) = match result {
+        Ok(content) => (content, false, false),
+        Err((message, unknown)) => (message, true, unknown),
+    };
+    ToolOutcome {
+        call_id: call.call_id,
+        name: call.name,
+        content,
+        is_error,
+        outcome_unknown,
+    }
+}
+
+fn emit_tool_result<F: FnMut(&RunEvent)>(on_event: &mut F, outcome: &ToolOutcome) {
+    on_event(&RunEvent::ToolResult {
+        call_id: outcome.call_id.clone(),
+        name: outcome.name.clone(),
+        is_error: outcome.is_error,
+        outcome_unknown: outcome.outcome_unknown,
+        content: outcome.content.clone(),
+    });
 }

@@ -58,6 +58,8 @@ message with its tool calls, then one Tool history item per outcome.
   emits `RunFailed` and returns a typed `RunError`.
 - **Tool call**: an unknown tool, malformed arguments or tool error becomes an
   `is_error` ToolOutcome and is fed back to the model.
+- **Parallel tools**: with `max_parallel_tool_calls > 1`, a batch runs in
+  bounded chunks; outcomes are fed back in model order.
 - **Tool timeout**: the outcome is `is_error = true` **and**
   `outcome_unknown = true`. The future was dropped, but the external side
   effect may continue. See [`ADR-0014`](adr/0014-tool-timeout-is-outcome-unknown.md).
