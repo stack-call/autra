@@ -1,0 +1,45 @@
+# Context and Memory
+
+## Three layers, kept separate
+
+| Layer | Answers | Can be compacted? |
+|---|---|---|
+| Execution State / Journal | What happened and can the Run continue? | No; migrate by protocol |
+| Context View | What does the model see next? | Yes, with provenance |
+| Long-term Memory | What survives across tasks? | Yes, under retention policy |
+
+The Context View is not a journal. Compacting it never changes execution facts.
+
+## Current Context View
+
+`ReActStepper` builds a `ModelCallSpec` from:
+
+- the Agent's system instructions;
+- the accepted history: user, assistant (text and tool calls) and tool
+  outcomes;
+- the registered tool specs.
+
+There is no compaction, retrieval, skill loading or long-term memory yet. That
+is honest for MVP v1: the history is the context.
+
+## Planned layers
+
+- **ContextBuilder** with selection, compaction and provenance.
+- **Skills**: reusable instructions loaded on demand; loading a Skill does not
+  grant Tool permission.
+- **Memory**: cross-session facts and retrieval; it cannot replace a Run
+  checkpoint.
+- **MCP**: tool discovery and invocation; it does not bypass local policy or
+  Effect classification.
+
+## Rules
+
+- Never compact away an unresolved approval, a pending tool call id or an
+  accepted execution fact. See INV-07.
+- Every Context Record should carry `run_id`, `turn_id`, `model_effect_id`,
+  `builder_revision`, `agent_revision`, `source_refs[]`,
+  `visible_tools_hash`, `request_digest` and token budget.
+- Treat repository content, web content and model output as untrusted data.
+  Mark provenance in the prompt and enforce boundaries in the Tool Host.
+- A summary is model input, not an immutable fact. Keep a traceable source for
+  important conclusions.

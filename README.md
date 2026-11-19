@@ -3,8 +3,9 @@
 A Rust-native agent framework: composable intelligence, structured execution,
 explicit effects, optional infrastructure.
 
-> **Status: early implementation.** MVP v1 is in progress. The design spec
-> remains a proposal beyond the implemented slice. See
+> **Status: MVP v1 implemented.** Local ReAct agent, read-only workspace
+> tools, budgets, cancellation, timeouts, the CLI and an OpenAI-compatible
+> provider. The broader design spec remains a proposal beyond this slice. See
 > [`agent_native_framework_complete_spec_v1.0.md`](./agent_native_framework_complete_spec_v1.0.md)
 > and [`.scratch/mvp-v1/spec.md`](./.scratch/mvp-v1/spec.md).
 
@@ -16,6 +17,7 @@ explicit effects, optional infrastructure.
 | `crates/autra-harness` | ReAct engine, model provider boundary, context, tools | §7–§9 |
 | `crates/autra-runtime` | Local host: effect dispatch, sessions, concurrency, cancellation | §10–§12 |
 | `crates/autra-cli` | `autractl`: local runs, streaming, approvals | §14.4 |
+| `crates/autra-openai` | OpenAI-compatible model provider, non-streaming | — |
 
 Dependency direction is enforced by Cargo: `autra-core` must not depend on
 Tokio, a database, a sandbox backend, or any harness/runtime crate.
@@ -33,8 +35,9 @@ cargo run -p autra-cli -- tools
 
 `autra-core` is dependency-light (serde, thiserror). `autra-harness` adds
 async-trait, serde, serde_json and thiserror; its tests use Tokio but the
-library does not. `autra-runtime` and `autra-cli` use Tokio. There is no
-database, network or sandbox dependency yet.
+library does not. `autra-runtime` and `autra-cli` use Tokio. The default local
+path has no database or sandbox dependency; `autra-openai` adds an optional
+HTTP client for real providers.
 
 ## CLI
 
@@ -59,3 +62,12 @@ OPENAI_API_KEY=... cargo run -p autra-cli -- run --model gpt-4o-mini "Explain th
 
 Set `OPENAI_BASE_URL` to target a compatible provider such as DeepSeek,
 Moonshot, vLLM, Ollama or LM Studio.
+
+## Documentation
+
+- [Philosophy](docs/philosophy.md) · [Architecture](docs/architecture.md) · [Concepts](docs/concepts.md)
+- [Execution model](docs/execution-model.md) · [Structured concurrency](docs/structured-concurrency.md)
+- [Context and memory](docs/context-and-memory.md) · [Tool security](docs/tool-security.md)
+- [Durability](docs/durability.md) · [Model providers](docs/model-providers.md)
+- [Testing and evaluation](docs/testing-and-evaluation.md) · [Roadmap](docs/roadmap.md)
+- [Architecture decisions](docs/adr/) · [OpenShell](docs/integrations/openshell.md) · [Restate](docs/integrations/restate.md)
