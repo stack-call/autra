@@ -4,13 +4,13 @@
 
 **Blocked by:** 02: Tool-using ReAct loop
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] max_turns defaults to 8 and fails the Run with a clear message when exhausted.
-- [ ] A model response requesting more tool calls than the remaining budget executes none and fails the Run.
-- [ ] Cancelling before the first Effect prevents the model call and returns a Cancelled outcome.
-- [ ] Cancelling during a tool batch lets the in-flight call finish and be recorded, starts no further calls, and returns a Cancelled outcome.
-- [ ] Cancellation returns a RunOutcome, not a RunError.
-- [ ] Duplicate call IDs, empty call IDs and results for unknown call IDs fail the Run.
-- [ ] An optional effect timeout fails a slow model call and converts a slow tool call into an error outcome.
-- [ ] Format, clippy with warnings denied, and workspace tests pass.
+- [x] max_turns defaults to 8 and fails the Run with a clear message when exhausted.
+- [x] A model response requesting more tool calls than the remaining budget executes none and fails the Run.
+- [x] Cancelling before the first Effect prevents the model call and returns a Cancelled outcome.
+- [x] Cancelling during a tool batch lets the in-flight call finish and be recorded, starts no further calls, and returns a Cancelled outcome.
+- [x] Cancellation returns a RunOutcome, not a RunError.
+- [x] Duplicate call IDs, empty call IDs and results for unknown call IDs fail the Run.
+- [x] An optional effect timeout fails a slow model call and converts a slow tool call into an error outcome.
+- [x] Format, clippy with warnings denied, and workspace tests pass.

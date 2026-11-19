@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use autra_core::AgentStepper;
 use autra_core::{
@@ -36,6 +37,7 @@ pub enum RunStatus {
 #[derive(Clone, Debug, Default)]
 pub struct RunOptions {
     pub cancel: CancelFlag,
+    pub effect_timeout: Option<Duration>,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +107,7 @@ pub struct Agent {
     instructions: Option<String>,
     model: Arc<dyn ModelProvider>,
     tools: ToolRegistry,
+    effect_timeout: Option<Duration>,
     max_turns: u32,
     max_tool_calls: u32,
 }
@@ -138,6 +141,7 @@ impl Agent {
             BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
         );
         let stepper = ReActStepper::new(self.instructions.clone(), self.tools.specs());
+        let effect_timeout = options.effect_timeout.or(self.effect_timeout);
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
         let mut seq = 0_u64;
 
@@ -221,7 +225,20 @@ impl Agent {
                         on_event(&RunEvent::ModelCallStarted {
                             turn: state.budget.turns_used,
                         });
-                        let output = match self.model.complete(&request).await {
+                        let output_result = match effect_timeout {
+                            Some(timeout) => {
+                                match tokio::time::timeout(timeout, self.model.complete(&request))
+                                    .await
+                                {
+                                    Ok(result) => result,
+                                    Err(_) => Err(ModelError::new(format!(
+                                        "model call exceeded {timeout:?}"
+                                    ))),
+                                }
+                            }
+                            None => self.model.complete(&request).await,
+                        };
+                        let output = match output_result {
                             Ok(output) => output,
                             Err(error) => {
                                 let message = error.to_string();
@@ -242,10 +259,23 @@ impl Agent {
                             name: call.name.clone(),
                         });
                         let result = match self.tools.get(&call.name) {
-                            Some(tool) => tool
-                                .call(&call.arguments)
-                                .await
-                                .map_err(|error| error.to_string()),
+                            Some(tool) => match effect_timeout {
+                                Some(timeout) => {
+                                    match tokio::time::timeout(timeout, tool.call(&call.arguments))
+                                        .await
+                                    {
+                                        Ok(result) => result.map_err(|error| error.to_string()),
+                                        Err(_) => Err(format!(
+                                            "tool `{}` timed out after {timeout:?}",
+                                            call.name
+                                        )),
+                                    }
+                                }
+                                None => tool
+                                    .call(&call.arguments)
+                                    .await
+                                    .map_err(|error| error.to_string()),
+                            },
                             None => Err(format!("unknown tool `{}`", call.name)),
                         };
                         let (content, is_error) = match result {
@@ -277,6 +307,7 @@ pub struct AgentBuilder {
     instructions: Option<String>,
     model: Option<Arc<dyn ModelProvider>>,
     tools: ToolRegistry,
+    effect_timeout: Option<Duration>,
     max_turns: u32,
     max_tool_calls: u32,
 }
@@ -288,6 +319,7 @@ impl AgentBuilder {
             instructions: None,
             model: None,
             tools: ToolRegistry::new(),
+            effect_timeout: None,
             max_turns: 8,
             max_tool_calls: 8,
         }
@@ -300,6 +332,11 @@ impl AgentBuilder {
 
     pub fn model(mut self, model: impl ModelProvider + 'static) -> Self {
         self.model = Some(Arc::new(model));
+        self
+    }
+
+    pub fn effect_timeout(mut self, effect_timeout: Duration) -> Self {
+        self.effect_timeout = Some(effect_timeout);
         self
     }
 
@@ -327,6 +364,7 @@ impl AgentBuilder {
             instructions: self.instructions,
             model,
             tools: self.tools,
+            effect_timeout: self.effect_timeout,
             max_turns: self.max_turns,
             max_tool_calls: self.max_tool_calls,
         })

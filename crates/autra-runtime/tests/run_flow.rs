@@ -325,6 +325,7 @@ async fn cancellation_stops_remaining_tool_intents() {
         .unwrap();
     let options = RunOptions {
         cancel: cancel.clone(),
+        ..RunOptions::default()
     };
 
     let mut events = Vec::new();
