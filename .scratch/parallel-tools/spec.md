@@ -33,8 +33,9 @@ unchanged.
   awaited and recorded.
 - `ToolOutcome`s are fed back in the model call order, regardless of
   completion order. History and `ModelResult` feedback are therefore
-  deterministic.
-- A tool task panic is a protocol failure, not a tool error.
+  deterministic. `ToolResult` stream events follow actual completion order.
+- A tool task panic becomes an `is_error` outcome with `outcome_unknown = true`;
+  sibling calls continue and are recorded.
 - Parallelism does not imply safe shared writes. Built-in tools remain
   read-only; the default limit stays 1 until write tools have version checks.
 - No ChildRun, worktrees or distributed workers in this slice.
@@ -49,6 +50,10 @@ unchanged.
 - Assert a RunOptions limit overrides the builder limit.
 - Assert cancellation before a batch dispatches no tools, and cancellation
   during a batch records in-flight outcomes without starting later chunks.
+- Assert `ToolResult` stream events follow completion order while accepted
+  history follows model order.
+- Assert a panicking tool becomes an unknown error outcome in both sequential
+  and parallel modes.
 - Keep timeout behaviour covered by the existing bounded-run tests.
 
 ## Out of Scope

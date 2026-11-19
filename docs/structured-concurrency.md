@@ -18,9 +18,11 @@ Structured concurrency is a framework feature, not a distributed scheduler.
   model order.
 - With a larger limit, calls execute in chunks of at most that many concurrent
   tasks. Every outcome is recorded before the next model call.
-- `ToolCallStarted` is emitted when a call is dispatched; outcomes are fed back
-  and recorded in model order even when completion order differs.
-- A tool task panic fails the Run as a protocol error.
+- `ToolCallStarted` is emitted when a call is dispatched. `ToolResult` stream
+  events follow actual completion order; accepted history and model feedback
+  follow model call order.
+- A tool task panic becomes an `is_error` outcome with `outcome_unknown = true`;
+  sibling calls are not abandoned.
 - `max_turns` counts model calls; `max_tool_calls` counts accepted tool calls.
   Defaults are 8 and 8. `max_parallel_tool_calls` defaults to 1 and can be
   overridden per Run.
@@ -37,7 +39,9 @@ Structured concurrency is a framework feature, not a distributed scheduler.
 - Use a bounded fan-out; never one unbounded task per tool call.
 - Feed results back in the model's call order, even if completion order
   differs.
-- Record authoritative outcomes in actual commit order, not model order.
+- A durable host records authoritative outcomes in actual commit order. In
+  LocalEphemeral, accepted history is model-ordered and stream events carry
+  completion order.
 - Treat shared Workspace writes as serial or version-checked. Parallel
   read-only calls are the safe default. See
   [`ADR-0015`](adr/0015-parallel-tool-batches-are-bounded-and-ordered.md).

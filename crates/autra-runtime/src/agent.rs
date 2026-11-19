@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use autra_core::{
     EventKind, RunId, StepError, ToolCallRequest, ToolOutcome,
 };
 use autra_harness::{ModelError, ModelProvider, ReActStepper, Tool, ToolRegistry};
+use futures_util::FutureExt;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -116,16 +118,27 @@ impl<'a, F> BatchSink<'a, F>
 where
     F: FnMut(&RunEvent),
 {
-    fn emit(&mut self, event: &RunEvent) {
+    fn emit_stream(&mut self, event: &RunEvent) {
         (self.on_event)(event);
+    }
+
+    fn start_tool(&mut self, call: &ToolCallRequest) {
+        self.emit_stream(&RunEvent::ToolCallStarted {
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+        });
     }
 
     fn emit_tool_result(&mut self, outcome: &ToolOutcome) {
         emit_tool_result(&mut *self.on_event, outcome);
     }
 
-    fn push(&mut self, kind: EventKind) {
-        enqueue(&mut *self.queue, &mut *self.seq, kind);
+    fn accept_outcome(&mut self, outcome: ToolOutcome) {
+        enqueue(
+            &mut *self.queue,
+            &mut *self.seq,
+            EventKind::ToolResult(outcome),
+        );
     }
 
     fn cancel(&mut self) {
@@ -326,13 +339,10 @@ impl Agent {
                     sink.cancel();
                     break;
                 }
-                sink.emit(&RunEvent::ToolCallStarted {
-                    call_id: call.call_id.clone(),
-                    name: call.name.clone(),
-                });
+                sink.start_tool(&call);
                 let outcome = execute_tool(self.tools.clone(), call, effect_timeout).await;
                 sink.emit_tool_result(&outcome);
-                sink.push(EventKind::ToolResult(outcome));
+                sink.accept_outcome(outcome);
             }
             return Ok(());
         }
@@ -344,10 +354,7 @@ impl Agent {
                 if cancel.is_cancelled() {
                     break;
                 }
-                sink.emit(&RunEvent::ToolCallStarted {
-                    call_id: call.call_id.clone(),
-                    name: call.name.clone(),
-                });
+                sink.start_tool(call);
                 let index = chunk_index * limit + offset;
                 let tools = self.tools.clone();
                 let call = call.clone();
@@ -357,6 +364,7 @@ impl Agent {
             while let Some(result) = tasks.join_next().await {
                 let (index, outcome) = result
                     .map_err(|error| RunError::Protocol(format!("tool task failed: {error}")))?;
+                sink.emit_tool_result(&outcome);
                 outcomes[index] = Some(outcome);
             }
             if cancel.is_cancelled() {
@@ -365,8 +373,7 @@ impl Agent {
         }
 
         for outcome in outcomes.into_iter().flatten() {
-            sink.emit_tool_result(&outcome);
-            sink.push(EventKind::ToolResult(outcome));
+            sink.accept_outcome(outcome);
         }
         if cancel.is_cancelled() {
             sink.cancel();
@@ -485,16 +492,27 @@ async fn execute_tool(
     timeout: Option<Duration>,
 ) -> ToolOutcome {
     let result: Result<String, (String, bool)> = match tools.get(&call.name) {
-        Some(tool) => match with_timeout(timeout, tool.call(&call.arguments)).await {
-            Ok(result) => result.map_err(|error| (error.to_string(), false)),
-            Err(()) => Err((
-                format!(
-                    "tool `{}` timed out; it may still have run and its outcome is unknown",
-                    call.name
-                ),
-                true,
-            )),
-        },
+        Some(tool) => {
+            let future = AssertUnwindSafe(with_timeout(timeout, tool.call(&call.arguments)));
+            match future.catch_unwind().await {
+                Ok(Ok(Ok(content))) => Ok(content),
+                Ok(Ok(Err(error))) => Err((error.to_string(), false)),
+                Ok(Err(())) => Err((
+                    format!(
+                        "tool `{}` timed out; it may still have run and its outcome is unknown",
+                        call.name
+                    ),
+                    true,
+                )),
+                Err(_) => Err((
+                    format!(
+                        "tool `{}` panicked; it may have run and its outcome is unknown",
+                        call.name
+                    ),
+                    true,
+                )),
+            }
+        }
         None => Err((format!("unknown tool `{}`", call.name), false)),
     };
     let (content, is_error, outcome_unknown) = match result {

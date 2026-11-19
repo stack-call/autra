@@ -41,7 +41,7 @@ impl Tool for DelayTool {
     }
 }
 
-fn call(id: &str, arguments: &str) -> ToolCallRequest {
+fn delay_call(id: &str, arguments: &str) -> ToolCallRequest {
     ToolCallRequest {
         call_id: id.to_owned(),
         name: "delay".to_owned(),
@@ -101,8 +101,8 @@ async fn parallel_batch_runs_concurrently_and_keeps_model_order() {
     let active = Arc::new(AtomicUsize::new(0));
     let max_active = Arc::new(AtomicUsize::new(0));
     let model = tool_model(vec![
-        call("call-1", r#"{"text":"first","delay_ms":100}"#),
-        call("call-2", r#"{"text":"second","delay_ms":10}"#),
+        delay_call("call-1", r#"{"text":"first","delay_ms":100}"#),
+        delay_call("call-2", r#"{"text":"second","delay_ms":10}"#),
     ]);
     let agent = Agent::builder("parallel")
         .model(model)
@@ -111,10 +111,17 @@ async fn parallel_batch_runs_concurrently_and_keeps_model_order() {
         .build()
         .unwrap();
 
-    let outcome = agent.run("go").await.unwrap();
+    let mut events = Vec::new();
+    let outcome = agent
+        .run_with_options("go", RunOptions::default(), |event| {
+            events.push(event.clone())
+        })
+        .await
+        .unwrap();
 
     assert_eq!(max_active.load(Ordering::SeqCst), 2);
     assert_eq!(tool_contents(&outcome), ["first", "second"]);
+    assert_eq!(result_ids(&events), ["call-2", "call-1"]);
 }
 
 #[tokio::test]
@@ -122,8 +129,8 @@ async fn limit_one_stays_sequential() {
     let active = Arc::new(AtomicUsize::new(0));
     let max_active = Arc::new(AtomicUsize::new(0));
     let model = tool_model(vec![
-        call("call-1", r#"{"text":"first","delay_ms":20}"#),
-        call("call-2", r#"{"text":"second","delay_ms":10}"#),
+        delay_call("call-1", r#"{"text":"first","delay_ms":20}"#),
+        delay_call("call-2", r#"{"text":"second","delay_ms":10}"#),
     ]);
     let agent = Agent::builder("sequential")
         .model(model)
@@ -143,8 +150,8 @@ async fn run_options_override_the_builder_limit() {
     let active = Arc::new(AtomicUsize::new(0));
     let max_active = Arc::new(AtomicUsize::new(0));
     let model = tool_model(vec![
-        call("call-1", r#"{"text":"first","delay_ms":100}"#),
-        call("call-2", r#"{"text":"second","delay_ms":10}"#),
+        delay_call("call-1", r#"{"text":"first","delay_ms":100}"#),
+        delay_call("call-2", r#"{"text":"second","delay_ms":10}"#),
     ]);
     let agent = Agent::builder("override")
         .model(model)
@@ -187,8 +194,8 @@ async fn cancellation_before_a_batch_dispatches_no_tools() {
     let model = CancellingModel {
         cancel: cancel.clone(),
         calls: vec![
-            call("call-1", r#"{"text":"first","delay_ms":10}"#),
-            call("call-2", r#"{"text":"second","delay_ms":10}"#),
+            delay_call("call-1", r#"{"text":"first","delay_ms":10}"#),
+            delay_call("call-2", r#"{"text":"second","delay_ms":10}"#),
         ],
     };
     let agent = Agent::builder("cancel-before")
@@ -219,12 +226,12 @@ async fn cancellation_mid_batch_records_in_flight_calls_and_starts_no_later_chun
     let max_active = Arc::new(AtomicUsize::new(0));
     let cancel = CancelFlag::new();
     let model = tool_model(vec![
-        call(
+        delay_call(
             "call-1",
             r#"{"text":"first","delay_ms":50,"cancel_on_call":true}"#,
         ),
-        call("call-2", r#"{"text":"second","delay_ms":10}"#),
-        call("call-3", r#"{"text":"third","delay_ms":10}"#),
+        delay_call("call-2", r#"{"text":"second","delay_ms":10}"#),
+        delay_call("call-3", r#"{"text":"third","delay_ms":10}"#),
     ]);
     let agent = Agent::builder("cancel-during")
         .model(model)
@@ -247,6 +254,7 @@ async fn cancellation_mid_batch_records_in_flight_calls_and_starts_no_later_chun
 
     assert_eq!(outcome.status(), RunStatus::Cancelled);
     assert_eq!(started_ids(&events), ["call-1", "call-2"]);
+    assert_eq!(result_ids(&events), ["call-2", "call-1"]);
     assert_eq!(tool_contents(&outcome), ["first", "second"]);
     assert_eq!(max_active.load(Ordering::SeqCst), 2);
 }
@@ -269,7 +277,7 @@ impl Tool for PanicTool {
 }
 
 #[tokio::test]
-async fn a_tool_panic_fails_the_run() {
+async fn a_tool_panic_becomes_an_unknown_outcome() {
     let model = tool_model(vec![
         ToolCallRequest {
             call_id: "call-1".to_owned(),
@@ -289,7 +297,63 @@ async fn a_tool_panic_fails_the_run() {
         .build()
         .unwrap();
 
-    let error = agent.run("go").await.unwrap_err();
+    let outcome = agent.run("go").await.unwrap();
 
-    assert!(error.to_string().contains("tool task failed"));
+    assert_eq!(outcome.answer(), Some("done"));
+    let panicked: Vec<_> = outcome
+        .state()
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            HistoryItem::Tool(tool) => Some(tool),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(panicked.len(), 2);
+    assert!(
+        panicked
+            .iter()
+            .all(|tool| tool.is_error && tool.outcome_unknown)
+    );
+    assert!(panicked[0].content.contains("panicked"));
+}
+
+fn result_ids(events: &[RunEvent]) -> Vec<&str> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            RunEvent::ToolResult { call_id, .. } => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_tool_panic_is_caught_in_sequential_mode() {
+    let model = tool_model(vec![ToolCallRequest {
+        call_id: "call-1".to_owned(),
+        name: "panic".to_owned(),
+        arguments: "{}".to_owned(),
+    }]);
+    let agent = Agent::builder("panic-sequential")
+        .model(model)
+        .tool(PanicTool)
+        .max_parallel_tool_calls(1)
+        .build()
+        .unwrap();
+
+    let outcome = agent.run("go").await.unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    let tool = outcome
+        .state()
+        .history
+        .iter()
+        .find_map(|item| match item {
+            HistoryItem::Tool(tool) => Some(tool),
+            _ => None,
+        })
+        .unwrap();
+    assert!(tool.is_error);
+    assert!(tool.outcome_unknown);
 }

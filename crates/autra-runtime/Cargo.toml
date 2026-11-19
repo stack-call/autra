@@ -9,6 +9,7 @@ rust-version.workspace = true
 autra-core = { path = "../autra-core" }
 autra-harness = { path = "../autra-harness" }
 thiserror = "2"
+futures-util = "0.3"
 tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]

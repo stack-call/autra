@@ -59,7 +59,9 @@ message with its tool calls, then one Tool history item per outcome.
 - **Tool call**: an unknown tool, malformed arguments or tool error becomes an
   `is_error` ToolOutcome and is fed back to the model.
 - **Parallel tools**: with `max_parallel_tool_calls > 1`, a batch runs in
-  bounded chunks; outcomes are fed back in model order.
+  bounded chunks. `ToolResult` stream events follow completion order; accepted
+  history and model feedback follow model order. A panicking tool becomes an
+  unknown error outcome.
 - **Tool timeout**: the outcome is `is_error = true` **and**
   `outcome_unknown = true`. The future was dropped, but the external side
   effect may continue. See [`ADR-0014`](adr/0014-tool-timeout-is-outcome-unknown.md).

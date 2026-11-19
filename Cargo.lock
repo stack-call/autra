@@ -92,6 +92,7 @@ dependencies = [
  "async-trait",
  "autra-core",
  "autra-harness",
+ "futures-util",
  "serde_json",
  "tempfile",
  "thiserror",
