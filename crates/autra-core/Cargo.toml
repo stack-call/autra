@@ -1,0 +1,13 @@
+[package]
+name = "autra-core"
+description = "Sans-I/O agent core: state, accepted events, effect intents, scopes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"
