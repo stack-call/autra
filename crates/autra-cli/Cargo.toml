@@ -1,0 +1,15 @@
+[package]
+name = "autra-cli"
+description = "autractl: run agents locally, stream events, handle approvals"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "autractl"
+path = "src/main.rs"
+
+[dependencies]
+autra-harness = { path = "../autra-harness" }
+autra-runtime = { path = "../autra-runtime" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

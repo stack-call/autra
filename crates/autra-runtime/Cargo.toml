@@ -1,0 +1,14 @@
+[package]
+name = "autra-runtime"
+description = "Local execution host: effect dispatch, sessions, structured concurrency"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+autra-core = { path = "../autra-core" }
+autra-harness = { path = "../autra-harness" }
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }

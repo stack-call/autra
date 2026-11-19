@@ -1,0 +1,11 @@
+[package]
+name = "autra-harness"
+description = "ReAct engine, model provider boundary, context and tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+autra-core = { path = "../autra-core" }
+async-trait = "0.1"
+thiserror = "2"
