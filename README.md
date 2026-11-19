@@ -41,6 +41,21 @@ database, network or sandbox dependency yet.
 After building, the binary is `autractl` (or prefix with
 `cargo run -p autra-cli --`).
 
-- `autractl run <prompt>` — run one EchoModel agent and print its events.
+- `autractl run [--model <name>] <prompt>` — run one agent and print its events.
 - `autractl demo` — deterministic list-files, read-README demo.
 - `autractl tools` — list the built-in tools.
+
+## Real model provider
+
+`autractl run --model <name> <prompt>` uses an OpenAI-compatible chat
+completions endpoint.
+
+- `OPENAI_API_KEY` (required)
+- `OPENAI_BASE_URL` (optional, default `https://api.openai.com/v1`)
+
+```bash
+OPENAI_API_KEY=... cargo run -p autra-cli -- run --model gpt-4o-mini "Explain this crate"
+```
+
+Set `OPENAI_BASE_URL` to target a compatible provider such as DeepSeek,
+Moonshot, vLLM, Ollama or LM Studio.

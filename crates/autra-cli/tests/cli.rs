@@ -72,3 +72,15 @@ fn demo_fails_without_a_readme() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("demo failed"));
 }
+
+#[test]
+fn run_with_model_without_api_key_fails() {
+    let output = autractl()
+        .args(["run", "--model", "test-model", "hello"])
+        .env_remove("OPENAI_API_KEY")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("OPENAI_API_KEY"));
+}

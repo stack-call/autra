@@ -4,6 +4,7 @@ use autra_harness::{
     EchoModel, EchoTool, FakeModel, HistoryItem, ListFilesTool, LocalWorkspace, ModelOutput,
     ReadFileTool, ToolCallRequest, ToolRegistry,
 };
+use autra_openai::OpenAiCompatibleModel;
 use autra_runtime::{Agent, RunError, RunEvent, RunOptions, RunOutcome};
 
 #[tokio::main]
@@ -26,17 +27,40 @@ async fn main() -> ExitCode {
 }
 
 async fn run_command(args: &[String]) -> ExitCode {
-    let prompt = args.join(" ");
+    let mut model_name = None;
+    let mut prompt_parts = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--model" {
+            match iter.next() {
+                Some(name) => model_name = Some(name.clone()),
+                None => {
+                    eprintln!("usage: autractl run [--model <name>] <prompt>");
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else {
+            prompt_parts.push(arg.clone());
+        }
+    }
+    let prompt = prompt_parts.join(" ");
     if prompt.trim().is_empty() {
-        eprintln!("usage: autractl run <prompt>");
+        eprintln!("usage: autractl run [--model <name>] <prompt>");
         return ExitCode::FAILURE;
     }
 
-    let agent = match Agent::builder("cli-agent")
-        .instructions("Answer the user concisely.")
-        .model(EchoModel)
-        .build()
-    {
+    let builder = Agent::builder("cli-agent").instructions("Answer the user concisely.");
+    let builder = match model_name {
+        Some(name) => match OpenAiCompatibleModel::from_env(&name) {
+            Ok(model) => builder.model(model),
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => builder.model(EchoModel),
+    };
+    let agent = match builder.build() {
         Ok(agent) => agent,
         Err(error) => {
             eprintln!("{error}");
@@ -218,7 +242,7 @@ fn preview(text: &str) -> String {
 }
 
 fn usage() -> &'static str {
-    "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run <prompt>\n  autractl demo\n  autractl tools\n  autractl --help"
+    "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run [--model <name>] <prompt>\n  autractl demo\n  autractl tools\n  autractl --help"
 }
 
 #[cfg(test)]

@@ -1,0 +1,18 @@
+[package]
+name = "autra-openai"
+description = "OpenAI-compatible model provider for Autra"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+autra-core = { path = "../autra-core" }
+autra-harness = { path = "../autra-harness" }
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+wiremock = "0.6"

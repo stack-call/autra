@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 autra-harness = { path = "../autra-harness" }
+autra-openai = { path = "../autra-openai" }
 autra-runtime = { path = "../autra-runtime" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
