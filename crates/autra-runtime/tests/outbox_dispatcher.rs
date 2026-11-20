@@ -219,6 +219,8 @@ async fn cancellation_before_dispatch_removes_the_outbox_row() {
             timeout: None,
             cancel: Some(&cancel),
             lease: DEFAULT_CLAIM_LEASE,
+            budget: None,
+            child_execution: None,
         },
         &dispatcher,
         |_| {},

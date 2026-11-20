@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use autra_core::{CancelFlag, EffectClass, RunId, ToolSpec};
+use autra_core::{BudgetHandle, CancelFlag, EffectClass, RunId, ToolSpec};
 use thiserror::Error;
+
+use crate::approval::Approver;
+use crate::journal::DurableTransitionStore;
 
 pub const TOOL_PROTOCOL_VERSION: u32 = 1;
 
@@ -50,7 +53,13 @@ impl ToolOutput {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Default)]
+pub struct ChildExecutionContext {
+    pub journal: Option<Arc<dyn DurableTransitionStore>>,
+    pub approver: Option<Arc<dyn Approver>>,
+}
+
+#[derive(Clone)]
 pub struct ToolContext {
     /// The Run that invoked the tool.
     pub run_id: RunId,
@@ -59,6 +68,10 @@ pub struct ToolContext {
     pub parent_run_id: Option<RunId>,
     /// Cancellation of the invoking scope, for tools that spawn child work.
     pub cancel: Option<CancelFlag>,
+    /// Shared parent budget for tools that reserve child work.
+    pub budget: Option<BudgetHandle>,
+    /// Execution facilities a child Run may inherit from the parent.
+    pub child_execution: Option<ChildExecutionContext>,
 }
 
 /// A capability the model may request.

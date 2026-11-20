@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use autra_core::{AgentStepper, BudgetSnapshot, CancelFlag, HistoryItem, RunId};
-use autra_execution::{RunError, RunOutcome};
+use autra_execution::{Approver, DurableTransitionStore, RunError, RunEvent, RunOutcome};
+use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Everything needed to start a child Run on an existing engine.
 #[derive(Clone)]
@@ -16,6 +17,11 @@ pub struct ChildSpec {
     pub parent_run_id: RunId,
     /// The parent's cancellation flag. The child flag inherits it.
     pub cancel: CancelFlag,
+    /// Optional execution facilities inherited from the parent.
+    pub journal: Option<Arc<dyn DurableTransitionStore>>,
+    pub approver: Option<Arc<dyn Approver>>,
+    /// Forward child Run events through `ChildHandle::events`.
+    pub forward_events: bool,
 }
 
 /// A running child. Dropping the handle does not cancel the child.
@@ -23,6 +29,7 @@ pub struct ChildHandle {
     run_id: RunId,
     cancel: CancelFlag,
     join: tokio::task::JoinHandle<Result<RunOutcome, RunError>>,
+    events: Option<UnboundedReceiver<RunEvent>>,
 }
 
 impl ChildHandle {
@@ -30,12 +37,25 @@ impl ChildHandle {
         run_id: RunId,
         cancel: CancelFlag,
         join: tokio::task::JoinHandle<Result<RunOutcome, RunError>>,
+        events: Option<UnboundedReceiver<RunEvent>>,
     ) -> Self {
         Self {
             run_id,
             cancel,
             join,
+            events,
         }
+    }
+
+    /// Receive forwarded Run events when `ChildSpec::forward_events` was set.
+    pub fn events(&mut self) -> Option<&mut UnboundedReceiver<RunEvent>> {
+        self.events.as_mut()
+    }
+
+    /// Take the forwarded event stream, so it can be consumed concurrently
+    /// with `join`.
+    pub fn take_events(&mut self) -> Option<UnboundedReceiver<RunEvent>> {
+        self.events.take()
     }
 
     pub fn run_id(&self) -> &RunId {
@@ -92,6 +112,7 @@ impl ChildRunSet {
             if failed && self.policy == JoinPolicy::FailFast {
                 for remaining in children {
                     remaining.cancel();
+                    results.push(remaining.join().await);
                 }
                 break;
             }

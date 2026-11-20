@@ -130,3 +130,48 @@ fn schema_lists_registered_subagents() {
     assert!(spec.input_schema.contains("researcher"));
     assert!(spec.description.contains("Finds facts"));
 }
+
+#[tokio::test]
+async fn spawn_subagent_reserves_parent_budget() {
+    let parent = Agent::builder("parent")
+        .model(parent_model(vec![spawn_call(
+            "call-1",
+            "researcher",
+            "find facts",
+        )]))
+        .subagent("researcher", "Finds facts", child("researcher", "fact"))
+        .build()
+        .unwrap();
+
+    let outcome = parent.run("go").await.unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    assert_eq!(outcome.state().budget.tool_calls_used, 5);
+    assert_eq!(outcome.state().budget.turns_used, 3);
+}
+
+#[tokio::test]
+async fn spawn_subagent_rejects_when_parent_budget_is_exhausted() {
+    let parent = Agent::builder("parent")
+        .model(parent_model(vec![spawn_call(
+            "call-1", "broken", "do work",
+        )]))
+        .subagent(
+            "broken",
+            "Would panic if invoked",
+            Agent::builder("broken")
+                .model(FakeModel::new(Vec::new()))
+                .build()
+                .unwrap(),
+        )
+        .max_tool_calls(1)
+        .build()
+        .unwrap();
+
+    let outcome = parent.run("go").await.unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    let tools = tool_outcomes(&outcome);
+    assert!(tools[0].is_error);
+    assert!(tools[0].content.contains("exceeds the parent budget"));
+}

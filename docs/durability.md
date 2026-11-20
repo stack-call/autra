@@ -97,6 +97,11 @@ being retried blindly. Reconstructed outcomes are fed back into the stepper. An
 the call through a `ResumeRequested` event. Completed and cancelled runs return
 their stored outcome. The CLI exposes this as `--journal` and `resume`.
 
+Child Runs can share a durable journal through `ChildExecutionContext`; their
+effects and state are recorded under the child Run id with `parent_run_id`.
+The parent does not coordinate child recovery, and an interrupted
+`spawn_subagent` remains an unknown outcome rather than being retried.
+
 Outbox claims carry a 30-second lease. `Agent::drain_outbox` and
 `autractl outbox` reclaim due rows. A reclaimed row whose record is already
 terminal is only cleaned up, and a reclaimed row whose record is `Dispatched`

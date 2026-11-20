@@ -3,10 +3,10 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use autra_core::{AgentStepper, CancelFlag, HistoryItem, RunId};
+use autra_core::{AgentStepper, BudgetSnapshot, CancelFlag, HistoryItem, RunId};
 use autra_execution::{
-    Approver, DurableTransitionStore, ModelProvider, ObserverHook, PolicyChain, Tool, ToolPolicy,
-    ToolRegistry,
+    Approver, ChildExecutionContext, DurableTransitionStore, ModelProvider, ObserverHook,
+    PolicyChain, Tool, ToolPolicy, ToolRegistry,
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, MiddlewareStepper, ModelMiddleware, ModelRequestTransform,
@@ -116,13 +116,37 @@ impl Agent {
         cancel: CancelFlag,
         input: impl Into<String>,
     ) -> ChildHandle {
+        self.spawn_child_with(
+            parent_run_id,
+            cancel,
+            input,
+            self.engine.max_budget(),
+            ChildExecutionContext::default(),
+            false,
+        )
+    }
+
+    /// Spawn a child with an explicit budget and optional inherited execution
+    /// facilities. `forward_events` exposes events through `ChildHandle::events`.
+    pub fn spawn_child_with(
+        &self,
+        parent_run_id: RunId,
+        cancel: CancelFlag,
+        input: impl Into<String>,
+        budget: BudgetSnapshot,
+        execution: ChildExecutionContext,
+        forward_events: bool,
+    ) -> ChildHandle {
         self.engine.spawn_child(ChildSpec {
             stepper: self.stepper_for_run(),
             input: input.into(),
             history: Vec::new(),
-            budget: self.engine.max_budget(),
+            budget,
             parent_run_id,
             cancel,
+            journal: execution.journal,
+            approver: execution.approver,
+            forward_events,
         })
     }
 
@@ -134,6 +158,27 @@ impl Agent {
         input: impl Into<String>,
     ) -> Result<RunOutcome, RunError> {
         self.spawn_child(parent_run_id, cancel, input).join().await
+    }
+
+    pub async fn run_as_child_with(
+        &self,
+        parent_run_id: RunId,
+        cancel: CancelFlag,
+        input: impl Into<String>,
+        budget: BudgetSnapshot,
+        execution: ChildExecutionContext,
+        forward_events: bool,
+    ) -> Result<RunOutcome, RunError> {
+        self.spawn_child_with(
+            parent_run_id,
+            cancel,
+            input,
+            budget,
+            execution,
+            forward_events,
+        )
+        .join()
+        .await
     }
 
     /// Drain due outbox rows across all Runs, reclaiming expired leases.

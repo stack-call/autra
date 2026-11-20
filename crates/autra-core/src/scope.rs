@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -90,6 +90,39 @@ impl ExecutionScope {
             max_tool_calls,
             cancellation: CancelFlag::new(),
         }
+    }
+}
+
+/// A shared budget view for tool calls that spawn or reserve work.
+#[derive(Clone, Debug)]
+pub struct BudgetHandle {
+    inner: Arc<Mutex<BudgetSnapshot>>,
+}
+
+impl BudgetHandle {
+    pub fn new(snapshot: BudgetSnapshot) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(snapshot)),
+        }
+    }
+
+    pub fn snapshot(&self) -> BudgetSnapshot {
+        self.inner.lock().expect("budget lock poisoned").clone()
+    }
+
+    pub fn remaining_tool_calls(&self) -> u32 {
+        self.inner
+            .lock()
+            .expect("budget lock poisoned")
+            .remaining_tool_calls()
+    }
+
+    /// Reserve a child scope from the shared parent budget.
+    pub fn reserve_child(&self, max_turns: u32, max_tool_calls: u32) -> Option<BudgetSnapshot> {
+        self.inner
+            .lock()
+            .expect("budget lock poisoned")
+            .reserve_child(max_turns, max_tool_calls)
     }
 }
 

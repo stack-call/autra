@@ -10,7 +10,7 @@ The first complete harness (§0.4) is reached at a basic level; see
 |---|---|---|
 | M0 Architecture baseline | Spec, ADRs, workspace, fake model, minimal tool | Done |
 | M1 Agent Core v0.1 | Stepper, ReAct, tool calling, local host, CLI, streaming events | Done |
-| M2 Structured concurrency | Batches, budgets, cancellation, ChildRun, parallel tools | Tools, bounded parallelism and runtime ChildRun done; automatic parent budget settlement pending |
+| M2 Structured concurrency | Batches, budgets, cancellation, ChildRun, parallel tools | Tools, bounded parallelism and runtime ChildRun done, including parent budget reservation, shared journal/approver, event forwarding and FailFast drain |
 | M3 Full interaction | Turns, approval, commands, hooks, tool policy | Approval, guarded tools, policy registry, session/turn identity and SQLite `SessionStore` done; SessionManager pending |
 | M4 Native durability | SQLite journal, outbox, checkpoints, recovery, OutcomeUnknown | Partial: Run snapshot, event log, EffectRecord, outbox v0; journaled Agent runs claim and dispatch through the outbox loop, and `resume` continues AwaitingTool/AwaitingModel checkpoints. Lease-safe reclaim, safe-class retry and atomic transition commit with `state_version` CAS done; automatic reconciliation pending |
 | M5 Rich harness | Context policy, compaction, skills, planning, memory | Partial: ContextBuilder, budget, Skills and Planning done; memory pending |

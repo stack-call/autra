@@ -78,6 +78,142 @@ async fn fail_fast_stops_after_the_first_error() {
 
     let results = ChildRunSet::new(handles, JoinPolicy::FailFast).join().await;
 
-    assert_eq!(results.len(), 1);
+    assert_eq!(results.len(), 2);
     assert!(results[0].is_err());
+    assert!(results[1].is_ok());
+}
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use autra::{
+    ApprovalDecision, ApprovalRequest, Approver, ChildExecutionContext, DurableTransitionStore,
+    EffectJournal, MemoryJournal,
+};
+use autra_core::BudgetSnapshot;
+use autra_harness::{FakeModel, LocalWorkspace, ModelOutput, ToolCallRequest, WriteFileTool};
+
+struct AutoApprove;
+
+#[async_trait]
+impl Approver for AutoApprove {
+    async fn approve(&self, _request: &ApprovalRequest) -> ApprovalDecision {
+        ApprovalDecision::Approved
+    }
+}
+
+#[tokio::test]
+async fn a_child_can_inherit_a_journal_and_be_resumed() {
+    let journal = MemoryJournal::new();
+    let child = Agent::builder("child")
+        .model(EchoModel)
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+    let shared: Arc<dyn DurableTransitionStore> = Arc::new(journal.clone());
+    let execution = ChildExecutionContext {
+        journal: Some(shared),
+        approver: None,
+    };
+    let parent = RunId::new("parent-run");
+
+    let handle = child.spawn_child_with(
+        parent.clone(),
+        CancelFlag::new(),
+        "hi",
+        BudgetSnapshot::new(4, 4),
+        execution,
+        false,
+    );
+    let child_id = handle.run_id().clone();
+    let outcome = handle.join().await.unwrap();
+
+    assert_eq!(outcome.state().parent_run_id.as_ref(), Some(&parent));
+    let stored = journal.load_run(&child_id).unwrap().unwrap();
+    assert_eq!(stored.parent_run_id.as_ref(), Some(&parent));
+    assert!(!journal.load(&child_id).unwrap().is_empty());
+
+    let resumed = child.resume(&child_id).await.unwrap();
+    assert_eq!(resumed.answer(), Some("echo: hi"));
+}
+
+#[tokio::test]
+async fn forwarded_child_events_are_available() {
+    let agent = Agent::builder("child").model(EchoModel).build().unwrap();
+    let mut handle = agent.spawn_child_with(
+        RunId::new("parent-run"),
+        CancelFlag::new(),
+        "hi",
+        BudgetSnapshot::new(4, 4),
+        ChildExecutionContext::default(),
+        true,
+    );
+    let mut events = handle.take_events().expect("event stream");
+    let collector = tokio::spawn(async move {
+        let mut collected = Vec::new();
+        while let Some(event) = events.recv().await {
+            collected.push(event);
+        }
+        collected
+    });
+
+    handle.join().await.unwrap();
+    let events = collector.await.unwrap();
+
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, autra::RunEvent::RunStarted { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, autra::RunEvent::RunCompleted { .. }))
+    );
+}
+
+#[tokio::test]
+async fn a_child_can_inherit_an_approver() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+    let child = Agent::builder("child")
+        .model(FakeModel::new(vec![
+            ModelOutput {
+                text: None,
+                tool_calls: vec![ToolCallRequest {
+                    call_id: "call-1".to_owned(),
+                    name: "write_file".to_owned(),
+                    arguments: r#"{"path":"note.txt","content":"hello"}"#.to_owned(),
+                }],
+            },
+            ModelOutput {
+                text: Some("done".to_owned()),
+                tool_calls: Vec::new(),
+            },
+        ]))
+        .tool(WriteFileTool::new(workspace))
+        .build()
+        .unwrap();
+    let execution = ChildExecutionContext {
+        journal: None,
+        approver: Some(Arc::new(AutoApprove)),
+    };
+
+    let outcome = child
+        .run_as_child_with(
+            RunId::new("parent-run"),
+            CancelFlag::new(),
+            "go",
+            BudgetSnapshot::new(4, 4),
+            execution,
+            false,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+        "hello"
+    );
 }

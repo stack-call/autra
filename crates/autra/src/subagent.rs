@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use autra_core::{EffectClass, RunId, ToolSpec};
+use autra_core::{BudgetSnapshot, EffectClass, RunId, ToolSpec};
 use autra_harness::{Tool, ToolContext, ToolError, ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::json;
@@ -115,6 +115,8 @@ impl Tool for SubagentTool {
             call_id: "direct-subagent".to_owned(),
             parent_run_id: Some(run_id),
             cancel: None,
+            budget: None,
+            child_execution: None,
         };
         self.execute(
             ToolInput {
@@ -143,9 +145,26 @@ impl Tool for SubagentTool {
             .clone()
             .unwrap_or_else(|| context.run_id.clone());
         let cancel = context.cancel.clone().unwrap_or_default();
+        let child_budget = match context.budget.as_ref() {
+            Some(budget) => budget.reserve_child(4, 4).ok_or_else(|| {
+                ToolError::new(format!(
+                    "subagent `{}` exceeds the parent budget",
+                    args.agent
+                ))
+            })?,
+            None => BudgetSnapshot::new(4, 4),
+        };
+        let execution = context.child_execution.clone().unwrap_or_default();
         let outcome = subagent
             .agent
-            .run_as_child(parent_run_id, cancel, args.task)
+            .run_as_child_with(
+                parent_run_id,
+                cancel,
+                args.task,
+                child_budget,
+                execution,
+                false,
+            )
             .await
             .map_err(|error| {
                 ToolError::new(format!("subagent `{}` failed: {error}", args.agent))

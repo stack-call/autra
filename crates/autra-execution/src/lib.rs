@@ -33,6 +33,6 @@ pub use sandbox::{
 };
 pub use session::{SessionRecord, SessionStore, SessionStoreError, TurnRecord, TurnStatus};
 pub use tool::{
-    TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor, ToolError, ToolInput,
-    ToolOutput, ToolRegistry,
+    ChildExecutionContext, TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor,
+    ToolError, ToolInput, ToolOutput, ToolRegistry,
 };

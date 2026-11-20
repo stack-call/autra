@@ -8,15 +8,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use autra_core::{
-    AcceptedEvent, AgentPhase, AgentState, AgentStepper, AttemptStatus, BudgetSnapshot, CancelFlag,
-    Disposition, EffectClass, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus,
-    EventKind, HistoryItem, ModelCallSpec, RunId, ToolCallRequest, ToolCallSpec, ToolOutcome,
-    TransitionProposal,
+    AcceptedEvent, AgentPhase, AgentState, AgentStepper, AttemptStatus, BudgetHandle,
+    BudgetSnapshot, CancelFlag, Disposition, EffectClass, EffectId, EffectIntent, EffectKind,
+    EffectRecord, EffectStatus, EventKind, HistoryItem, ModelCallSpec, RunId, ToolCallRequest,
+    ToolCallSpec, ToolOutcome, TransitionProposal,
 };
 use autra_execution::{
-    Approver, DEFAULT_APPROVAL_TTL, DurableTransitionStore, EffectJournal, ObserverHook,
-    PolicyChain, PolicyDecision, PolicyRequest, RunError, RunEvent, RunOptions, RunOutcome,
-    ToolContext, ToolPolicy, ToolRegistry,
+    Approver, ChildExecutionContext, DEFAULT_APPROVAL_TTL, DurableTransitionStore, EffectJournal,
+    ObserverHook, PolicyChain, PolicyDecision, PolicyRequest, RunError, RunEvent, RunOptions,
+    RunOutcome, ToolContext, ToolPolicy, ToolRegistry,
 };
 use tracing::Instrument;
 
@@ -177,11 +177,28 @@ impl LocalEngine {
         let child_cancel = CancelFlag::child_of(&spec.cancel);
         let handle_cancel = child_cancel.clone();
         let handle_run_id = run_id.clone();
-        let engine = self.clone();
+        let mut engine = self.clone();
+        if let Some(journal) = spec.journal {
+            engine = engine.with_journal(journal);
+        }
+        if let Some(approver) = spec.approver {
+            engine = engine.with_approver(approver);
+        }
+        let (sender, receiver) = if spec.forward_events {
+            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
         let join = tokio::spawn(async move {
             let options = RunOptions {
                 cancel: child_cancel,
                 ..RunOptions::default()
+            };
+            let on_event = move |event: &RunEvent| {
+                if let Some(sender) = &sender {
+                    let _ = sender.send(event.clone());
+                }
             };
             engine
                 .run_with_identity(
@@ -192,11 +209,11 @@ impl LocalEngine {
                     spec.history,
                     spec.input,
                     options,
-                    |_| {},
+                    on_event,
                 )
                 .await
         });
-        ChildHandle::new(handle_run_id, handle_cancel, join)
+        ChildHandle::new(handle_run_id, handle_cancel, join, receiver)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -688,6 +705,7 @@ impl LocalEngine {
             }
 
             if !tool_calls.is_empty() {
+                let budget = BudgetHandle::new(state.budget.clone());
                 let mut sink = BatchSink {
                     on_event: &mut on_event,
                     queue: &mut queue,
@@ -696,6 +714,7 @@ impl LocalEngine {
                     run_id: &run_id,
                     approver: approver.as_ref(),
                     effects: &mut effects,
+                    budget: &budget,
                 };
                 self.execute_tool_batch(
                     tool_calls,
@@ -705,6 +724,7 @@ impl LocalEngine {
                     &mut sink,
                 )
                 .await?;
+                state.budget = budget.snapshot();
             }
 
             for (effect_id, request) in model_requests {
@@ -823,6 +843,10 @@ impl LocalEngine {
     {
         let limit = limit.max(1) as usize;
         let run_id = sink.run_id.clone();
+        let child_execution = ChildExecutionContext {
+            journal: self.journal.clone(),
+            approver: self.approver.clone(),
+        };
         let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
         let mut approved: Vec<Option<(EffectId, ToolCallRequest)>> = vec![None; calls.len()];
         let mut cancelled = false;
@@ -950,6 +974,8 @@ impl LocalEngine {
                     call_id: call.call_id.clone(),
                     parent_run_id: Some(sink.run_id.clone()),
                     cancel: Some(cancel.clone()),
+                    budget: Some(sink.budget.clone()),
+                    child_execution: Some(child_execution.clone()),
                 };
                 let outcome = self
                     .dispatcher
@@ -981,6 +1007,8 @@ impl LocalEngine {
                         call_id: call.call_id.clone(),
                         parent_run_id: Some(run_id.clone()),
                         cancel: Some(cancel.clone()),
+                        budget: Some(sink.budget.clone()),
+                        child_execution: Some(child_execution.clone()),
                     };
                     tasks.spawn(async move {
                         (
@@ -1033,6 +1061,7 @@ impl LocalEngine {
         F: FnMut(&RunEvent),
     {
         let run_id = sink.run_id.clone();
+        let budget = sink.budget.clone();
         let mut index_by_effect = std::collections::HashMap::new();
         for (index, effect_id, _) in &approved {
             let record = sink.effect_mut(effect_id).clone();
@@ -1066,6 +1095,11 @@ impl LocalEngine {
                 timeout: effect_timeout,
                 cancel: Some(cancel),
                 lease: DEFAULT_CLAIM_LEASE,
+                budget: Some(budget),
+                child_execution: Some(ChildExecutionContext {
+                    journal: self.journal.clone(),
+                    approver: self.approver.clone(),
+                }),
             };
             OutboxDispatcher::run_once_for_run_with(
                 journal,
@@ -1090,6 +1124,7 @@ struct BatchSink<'a, F> {
     run_id: &'a RunId,
     approver: Option<&'a Arc<dyn Approver>>,
     effects: &'a mut Vec<EffectRecord>,
+    budget: &'a BudgetHandle,
 }
 
 impl<'a, F> BatchSink<'a, F>

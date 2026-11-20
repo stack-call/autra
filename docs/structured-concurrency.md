@@ -104,15 +104,21 @@ A child Run is a real Run on the local engine, not a nested `Agent::run`:
   `JoinPolicy::FailFast`, which cancels remaining children after the first
   error.
 
-`spawn_subagent` now enters through `Agent::run_as_child`, so the child has
-parent identity and inherited cancellation. The child runs on its own Agent's
-engine: to share a journal or dispatcher, build the child Agent with the same
-journal. The child's approver comes from the child Agent; the parent's
-`RunOptions` are not inherited.
+`spawn_subagent` enters through `Agent::run_as_child`, so the child has parent
+identity and inherited cancellation. The child runs on its own Agent's engine;
+`ChildExecutionContext` can pass the parent's journal and approver into that
+engine. A shared journal records child effects under the child Run id and
+exposes `parent_run_id` in the stored state, so the child can be resumed.
 
-`BudgetSnapshot::reserve_child` reserves one parent turn and the child's whole
-tool-call allowance up front; unused reservations are not returned. Automatic
-reservation from `spawn_subagent` is not wired yet: the tool currently uses
-the child Agent's own budget. Child events are not forwarded to the parent's
-event callback; observers still see child start/finish. `FailFast` cancels
-remaining children but does not await them.
+The engine creates a `BudgetHandle` per tool batch and passes it through
+`ToolContext`. `spawn_subagent` reserves four turns and four tool calls from
+the parent up front; unused reservations are not returned. Reserving from an
+exhausted parent rejects the spawn without starting the child.
+
+`ChildSpec::forward_events` exposes child Run events through
+`ChildHandle::events`/`take_events`. `FailFast` cancels and awaits remaining
+children. Parent recovery still does not reconcile child runs; an interrupted
+spawn remains an unknown outcome because `spawn_subagent` is `NonIdempotent`.
+
+Limits: the reservation is fixed (4/4) rather than configurable per subagent;
+the parent's `RunOptions` are not inherited; event forwarding is opt-in.

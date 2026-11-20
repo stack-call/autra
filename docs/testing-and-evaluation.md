@@ -91,8 +91,9 @@ Tests observe public behaviour, not private helpers.
 28. **ChildRun** (`autra-core`, `autra-runtime`, `autra`): a child has its own
     run id and parent link; parent cancellation reaches the child while child
     cancellation does not reach the parent; `WaitAll` collects every child and
-    `FailFast` stops after the first error; `reserve_child` charges the parent
-    budget up front.
+    `FailFast` cancels and drains the rest; child Runs can share a journal and
+    approver, forward events, and be resumed; `spawn_subagent` reserves four
+    turns and four tool calls from the parent and rejects an exhausted budget.
 29. **SessionStore** (`autra`, `autra-durable-sqlite`, `autra-cli`): turns are
     recorded as completed, cancelled or failed; history restores across
     process exits; saved turns upsert by index; `chat --session` requires a

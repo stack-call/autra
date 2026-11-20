@@ -9,10 +9,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use autra_core::{
-    AttemptStatus, CancelFlag, EffectId, EffectIntent, EffectRecord, EffectStatus, ModelCallSpec,
-    ModelOutput, RunId, ToolCallRequest, ToolOutcome,
+    AttemptStatus, BudgetHandle, CancelFlag, EffectId, EffectIntent, EffectRecord, EffectStatus,
+    ModelCallSpec, ModelOutput, RunId, ToolCallRequest, ToolOutcome,
 };
-use autra_execution::{ModelError, ModelProvider, ToolContext, ToolInput, ToolRegistry};
+use autra_execution::{
+    ChildExecutionContext, ModelError, ModelProvider, ToolContext, ToolInput, ToolRegistry,
+};
 use futures_util::{FutureExt, StreamExt};
 
 use crate::journal::{EffectJournal, JournalError, OutboxEntry};
@@ -90,6 +92,8 @@ impl Dispatcher for LocalDispatcher {
             call_id: call.call_id.clone(),
             parent_run_id: Some(run_id.clone()),
             cancel: None,
+            budget: None,
+            child_execution: None,
         };
         execute_tool(self.tools.clone(), call.clone(), timeout, context).await
     }
@@ -184,13 +188,15 @@ pub struct DispatchResult {
 }
 
 /// Knobs for one outbox pass.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub struct DispatchOptions<'a> {
     pub limit: usize,
     pub max_parallel: usize,
     pub timeout: Option<Duration>,
     pub cancel: Option<&'a CancelFlag>,
     pub lease: Duration,
+    pub budget: Option<BudgetHandle>,
+    pub child_execution: Option<ChildExecutionContext>,
 }
 
 /// Claim-driven outbox loop. It executes only claimed effects, records the
@@ -215,6 +221,8 @@ impl OutboxDispatcher {
                 timeout,
                 cancel: None,
                 lease: DEFAULT_CLAIM_LEASE,
+                budget: None,
+                child_execution: None,
             },
             dispatcher,
             |_| {},
@@ -262,6 +270,8 @@ impl OutboxDispatcher {
                 timeout,
                 cancel: None,
                 lease: DEFAULT_CLAIM_LEASE,
+                budget: None,
+                child_execution: None,
             },
             dispatcher,
             |_| {},
@@ -301,8 +311,7 @@ where
             &entry.run_id,
             entry,
             dispatcher,
-            options.timeout,
-            options.cancel,
+            &options,
         ));
     }
     let mut stream =
@@ -321,8 +330,7 @@ async fn dispatch_entry(
     run_id: &RunId,
     entry: &OutboxEntry,
     dispatcher: &dyn Dispatcher,
-    timeout: Option<Duration>,
-    cancel: Option<&CancelFlag>,
+    options: &DispatchOptions<'_>,
 ) -> Result<DispatchResult, JournalError> {
     let mut effects = journal.load(run_id)?;
     let Some(record) = effects
@@ -364,7 +372,11 @@ async fn dispatch_entry(
         _ => {}
     }
 
-    if cancel.map(CancelFlag::is_cancelled).unwrap_or(false) {
+    if options
+        .cancel
+        .map(CancelFlag::is_cancelled)
+        .unwrap_or(false)
+    {
         return finish_entry(journal, run_id, entry, DispatchOutcome::Cancelled, true);
     }
     let intent: EffectIntent = match serde_json::from_str(&entry.intent_json) {
@@ -383,18 +395,20 @@ async fn dispatch_entry(
     mark_dispatched(journal, run_id, entry)?;
     let outcome = match &intent {
         EffectIntent::CallModel(spec) => {
-            DispatchOutcome::Model(dispatcher.call_model(spec, timeout).await)
+            DispatchOutcome::Model(dispatcher.call_model(spec, options.timeout).await)
         }
         EffectIntent::CallTool(spec) => {
             let context = ToolContext {
                 run_id: run_id.clone(),
                 call_id: spec.call.call_id.clone(),
                 parent_run_id: Some(run_id.clone()),
-                cancel: cancel.cloned(),
+                cancel: options.cancel.cloned(),
+                budget: options.budget.clone(),
+                child_execution: options.child_execution.clone(),
             };
             DispatchOutcome::Tool(
                 dispatcher
-                    .call_tool_with_context(&context, &spec.call, timeout)
+                    .call_tool_with_context(&context, &spec.call, options.timeout)
                     .await,
             )
         }

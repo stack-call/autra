@@ -12,7 +12,7 @@ autra-execution = { path = "../autra-execution" }
 futures-util = "0.3"
 serde_json = "1"
 tracing = "0.1"
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
 tempfile = "3"
