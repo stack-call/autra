@@ -7,7 +7,7 @@ use std::time::Duration;
 use autra_core::AgentStepper;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, BudgetSnapshot, CancelFlag, Disposition, EffectIntent,
-    EventKind, RunId, StepError, ToolCallRequest, ToolOutcome,
+    EventKind, HistoryItem, RunId, StepError, ToolCallRequest, ToolOutcome,
 };
 use autra_harness::{ModelError, ModelProvider, ReActStepper, Tool, ToolRegistry};
 use futures_util::FutureExt;
@@ -190,6 +190,19 @@ impl Agent {
         &self,
         input: &str,
         options: RunOptions,
+        on_event: F,
+    ) -> Result<RunOutcome, RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        self.run_with_history(&[], input, options, on_event).await
+    }
+
+    pub async fn run_with_history<F>(
+        &self,
+        history: &[HistoryItem],
+        input: &str,
+        options: RunOptions,
         mut on_event: F,
     ) -> Result<RunOutcome, RunError>
     where
@@ -200,6 +213,7 @@ impl Agent {
             run_id.clone(),
             BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
         );
+        state.history = history.to_vec();
         let stepper = ReActStepper::new(self.instructions.clone(), self.tools.specs());
         let effect_timeout = options.effect_timeout.or(self.effect_timeout);
         let parallel_limit = options

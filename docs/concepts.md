@@ -29,6 +29,10 @@ AgentDefinition
 `Session != Run != Task != Worker`. A Tokio task or remote worker is an
 execution detail, never a domain identity.
 
+In the current harness, `Session` keeps the accepted `HistoryItem` list in
+memory. `run_turn` takes `&mut self`, so turns are sequential; each turn is a
+fresh Run with a fresh budget and Run id, seeded with the Session history.
+
 ## Execution objects
 
 - **Stepper** turns accepted events into the next state plus Effect intents.

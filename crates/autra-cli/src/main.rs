@@ -5,7 +5,7 @@ use autra_harness::{
     ReadFileTool, ToolCallRequest, ToolRegistry,
 };
 use autra_openai::OpenAiCompatibleModel;
-use autra_runtime::{Agent, RunError, RunEvent, RunOptions, RunOutcome};
+use autra_runtime::{Agent, RunError, RunEvent, RunOptions, RunOutcome, Session};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -16,6 +16,7 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("run") => run_command(&args[1..]).await,
+        Some("chat") => chat_command(&args[1..]).await,
         Some("demo") => demo_command().await,
         Some("tools") => tools_command(),
         Some(other) => {
@@ -27,8 +28,91 @@ async fn main() -> ExitCode {
 }
 
 async fn run_command(args: &[String]) -> ExitCode {
+    let (model_name, prompt_parts) = match parse_flags(args) {
+        Ok(parsed) => parsed,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    let prompt = prompt_parts.join(" ");
+    if prompt.trim().is_empty() {
+        eprintln!("usage: autractl run [--model <name>] <prompt>");
+        return ExitCode::FAILURE;
+    }
+
+    let agent = match build_agent(model_name.as_deref()) {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = options_for_model(model_name.as_deref());
+
+    match execute(agent, &prompt, options).await {
+        Ok(outcome) => {
+            print_status(&outcome);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("run failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn chat_command(args: &[String]) -> ExitCode {
+    let (model_name, rest) = match parse_flags(args) {
+        Ok(parsed) => parsed,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if !rest.is_empty() {
+        eprintln!("usage: autractl chat [--model <name>]");
+        return ExitCode::FAILURE;
+    }
+
+    let agent = match build_agent(model_name.as_deref()) {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let mut session = Session::new(agent);
+    let options = options_for_model(model_name.as_deref());
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+
+    loop {
+        line.clear();
+        match stdin.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("cannot read input: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        match session
+            .run_turn_with_options(input, options.clone(), print_event)
+            .await
+        {
+            Ok(outcome) => print_status(&outcome),
+            Err(error) => {
+                eprintln!("run failed: {error}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn parse_flags(args: &[String]) -> Result<(Option<String>, Vec<String>), ()> {
     let mut model_name = None;
-    let mut prompt_parts = Vec::new();
+    let mut rest = Vec::new();
     let mut parsing_flags = true;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -41,58 +125,35 @@ async fn run_command(args: &[String]) -> ExitCode {
                 Some(name) if !name.is_empty() => model_name = Some(name.clone()),
                 _ => {
                     eprintln!("usage: autractl run [--model <name>] <prompt>");
-                    return ExitCode::FAILURE;
+                    return Err(());
                 }
             }
         } else {
-            prompt_parts.push(arg.clone());
+            rest.push(arg.clone());
         }
     }
-    let prompt = prompt_parts.join(" ");
-    if prompt.trim().is_empty() {
-        eprintln!("usage: autractl run [--model <name>] <prompt>");
-        return ExitCode::FAILURE;
-    }
+    Ok((model_name, rest))
+}
 
-    let has_model = model_name.is_some();
-
+fn build_agent(model_name: Option<&str>) -> Result<Agent, String> {
     let builder = Agent::builder("cli-agent").instructions("Answer the user concisely.");
     let builder = match model_name {
-        Some(name) => match OpenAiCompatibleModel::from_env(&name) {
-            Ok(model) => builder.model(model),
-            Err(error) => {
-                eprintln!("{error}");
-                return ExitCode::FAILURE;
-            }
-        },
+        Some(name) => {
+            builder.model(OpenAiCompatibleModel::from_env(name).map_err(|error| error.to_string())?)
+        }
         None => builder.model(EchoModel),
     };
-    let agent = match builder.build() {
-        Ok(agent) => agent,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    builder.build().map_err(|error| error.to_string())
+}
 
-    let options = if has_model {
+fn options_for_model(model_name: Option<&str>) -> RunOptions {
+    if model_name.is_some() {
         RunOptions {
             effect_timeout: Some(std::time::Duration::from_secs(120)),
             ..RunOptions::default()
         }
     } else {
         RunOptions::default()
-    };
-
-    match execute(agent, &prompt, options).await {
-        Ok(outcome) => {
-            print_status(&outcome);
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!("run failed: {error}");
-            ExitCode::FAILURE
-        }
     }
 }
 
@@ -269,7 +330,7 @@ fn preview(text: &str) -> String {
 }
 
 fn usage() -> &'static str {
-    "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run [--model <name>] <prompt>\n  autractl demo\n  autractl tools\n  autractl --help"
+    "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run [--model <name>] <prompt>\n  autractl chat [--model <name>]\n  autractl demo\n  autractl tools\n  autractl --help"
 }
 
 #[cfg(test)]

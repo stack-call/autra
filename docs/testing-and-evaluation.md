@@ -26,6 +26,8 @@ Tests observe public behaviour, not private helpers.
    wiremock HTTP contract test.
 6. **Approval** (`autra-runtime`): approved, rejected, missing-approver and
    mixed-batch cases, plus the argument-digest unit test.
+7. **Session** (`autra-runtime`): history seeding into turn two, distinct
+   session ids, cancelled-turn history and failed-turn isolation.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

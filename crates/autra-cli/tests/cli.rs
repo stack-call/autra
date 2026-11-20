@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 fn autractl() -> Command {
     Command::new(env!("CARGO_BIN_EXE_autractl"))
@@ -20,6 +21,7 @@ fn help_lists_commands() {
     assert!(output.status.success());
     let output_text = stdout(&output);
     assert!(output_text.contains("autractl run"));
+    assert!(output_text.contains("autractl chat"));
     assert!(output_text.contains("autractl demo"));
     assert!(output_text.contains("autractl tools"));
 }
@@ -94,4 +96,26 @@ fn run_with_empty_model_name_fails() {
 
     assert!(!output.status.success());
     assert!(stderr(&output).contains("usage"));
+}
+
+#[test]
+fn chat_runs_one_turn_per_line() {
+    let mut child = autractl()
+        .arg("chat")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"hello\nagain\n").unwrap();
+    }
+
+    let output = child.wait_with_output().unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert_eq!(text.matches("[model] echo: hello").count(), 1);
+    assert_eq!(text.matches("[model] echo: again").count(), 1);
 }

@@ -29,6 +29,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p autra-cli -- run "hello"
+cargo run -p autra-cli -- chat
 cargo run -p autra-cli -- demo
 cargo run -p autra-cli -- tools
 ```
@@ -45,6 +46,7 @@ After building, the binary is `autractl` (or prefix with
 `cargo run -p autra-cli --`).
 
 - `autractl run [--model <name>] <prompt>` — run one agent and print its events.
+- `autractl chat [--model <name>]` — one turn per stdin line, keeping session history.
 - `autractl demo` — deterministic list-files, read-README demo.
 - `autractl tools` — list the built-in tools.
 

@@ -6,8 +6,10 @@
 
 pub mod agent;
 pub mod approval;
+pub mod session;
 
 pub use agent::{
     Agent, AgentBuilder, BuildError, RunError, RunEvent, RunOptions, RunOutcome, RunStatus,
 };
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
+pub use session::Session;
