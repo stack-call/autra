@@ -5,8 +5,8 @@ use std::time::Duration;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, AttemptStatus, BudgetSnapshot, CancelFlag,
     Disposition, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, EventKind,
-    HistoryItem, ModelCallSpec, RunId, SessionId, StepError, ToolCallRequest, ToolOutcome,
-    TransitionProposal, TurnId,
+    HistoryItem, ModelCallSpec, RunId, SessionId, StepError, ToolCallRequest, ToolCallSpec,
+    ToolOutcome, TransitionProposal, TurnId,
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
@@ -62,6 +62,9 @@ pub struct RunOptions {
 #[derive(Clone, Debug)]
 pub enum RunEvent {
     RunStarted {
+        run_id: RunId,
+    },
+    RunResumed {
         run_id: RunId,
     },
     ModelCallStarted {
@@ -226,6 +229,14 @@ where
     }
 }
 
+struct RunSetup {
+    stepper: Arc<dyn AgentStepper>,
+    effect_timeout: Option<Duration>,
+    parallel_limit: u32,
+    approver: Option<Arc<dyn Approver>>,
+    cancel: CancelFlag,
+}
+
 pub struct Agent {
     name: String,
     instructions: Option<String>,
@@ -277,6 +288,280 @@ impl Agent {
         self.run_with_history(&[], input, options, on_event).await
     }
 
+    fn stepper_for_run(&self) -> Arc<dyn AgentStepper> {
+        match &self.stepper {
+            Some(stepper) => stepper.clone(),
+            None => {
+                let context_builder: Arc<dyn ContextBuilder> = match &self.context_builder {
+                    Some(builder) => builder.clone(),
+                    None => {
+                        let mut builder = SimpleContextBuilder::new(self.skills.index());
+                        if let Some(max_chars) = self.context_budget_chars {
+                            builder = builder.with_max_chars(max_chars);
+                        }
+                        Arc::new(builder)
+                    }
+                };
+                Arc::new(
+                    ReActStepper::new(self.instructions.clone(), self.tools.specs())
+                        .with_shared_context_builder(context_builder),
+                )
+            }
+        }
+    }
+
+    /// Continue a Run from its last committed checkpoint. Requires a journal.
+    pub async fn resume(&self, run_id: &RunId) -> Result<RunOutcome, RunError> {
+        self.resume_with_options(run_id, RunOptions::default(), |_| {})
+            .await
+    }
+
+    #[tracing::instrument(skip_all, fields(agent = %self.name, run_id = %run_id))]
+    pub async fn resume_with_options<F>(
+        &self,
+        run_id: &RunId,
+        options: RunOptions,
+        mut on_event: F,
+    ) -> Result<RunOutcome, RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| RunError::Protocol("resume requires a journal".to_owned()))?;
+        let state = journal
+            .load_run(run_id)
+            .map_err(|error| RunError::Journal(error.to_string()))?
+            .ok_or_else(|| {
+                RunError::Protocol(format!("run `{run_id}` was not found in the journal"))
+            })?;
+        let mut effects = journal
+            .load(run_id)
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        let events = journal
+            .load_events(run_id)
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        let mut seq = events.iter().map(|event| event.seq).max().unwrap_or(0);
+
+        tracing::info!(%run_id, phase = ?state.phase, "agent run resumed");
+        on_event(&RunEvent::RunResumed {
+            run_id: run_id.clone(),
+        });
+
+        match state.phase {
+            AgentPhase::Completed => {
+                on_event(&RunEvent::RunCompleted {
+                    answer: state.final_answer.clone(),
+                });
+                return Ok(RunOutcome { state, effects });
+            }
+            AgentPhase::Cancelled => {
+                on_event(&RunEvent::RunCancelled);
+                return Ok(RunOutcome { state, effects });
+            }
+            AgentPhase::Failed => {
+                return Err(RunError::Failed(
+                    state
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "run failed".to_owned()),
+                ));
+            }
+            AgentPhase::Ready => {
+                return Err(RunError::Protocol(
+                    "run has no committed progress to resume".to_owned(),
+                ));
+            }
+            AgentPhase::AwaitingTool | AgentPhase::AwaitingModel => {}
+        }
+
+        let setup = RunSetup {
+            stepper: self.stepper_for_run(),
+            effect_timeout: options.effect_timeout.or(self.effect_timeout),
+            parallel_limit: options
+                .max_parallel_tool_calls
+                .unwrap_or(self.max_parallel_tool_calls)
+                .max(1),
+            approver: options.approver.clone().or_else(|| self.approver.clone()),
+            cancel: options.cancel.clone(),
+        };
+
+        let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
+        match state.phase {
+            AgentPhase::AwaitingTool => {
+                let outcomes = self
+                    .reconcile_tool_effects(
+                        journal.as_ref(),
+                        &state,
+                        &mut effects,
+                        setup.effect_timeout,
+                    )
+                    .await?;
+                for outcome in outcomes {
+                    enqueue(&mut queue, &mut seq, EventKind::ToolResult(outcome));
+                }
+            }
+            AgentPhase::AwaitingModel => {
+                self.retire_interrupted_models(journal.as_ref(), &state, &mut effects)?;
+                enqueue(&mut queue, &mut seq, EventKind::ResumeRequested);
+            }
+            _ => unreachable!(),
+        }
+
+        self.drive(setup, state, queue, effects, on_event).await
+    }
+
+    fn retire_interrupted_models(
+        &self,
+        journal: &dyn EffectJournal,
+        state: &AgentState,
+        effects: &mut [EffectRecord],
+    ) -> Result<(), RunError> {
+        for record in effects.iter_mut().filter(|record| {
+            record.kind == EffectKind::ModelCall
+                && matches!(
+                    record.status,
+                    EffectStatus::Recorded
+                        | EffectStatus::AwaitingApproval
+                        | EffectStatus::Authorized
+                        | EffectStatus::Dispatched
+                )
+        }) {
+            record.set_status(EffectStatus::OutcomeUnknown);
+            record.record_attempt(
+                AttemptStatus::OutcomeUnknown,
+                None,
+                Some("interrupted before the model result was accepted".to_owned()),
+            );
+            journal
+                .record(&state.run_id, record)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+            journal
+                .complete_outbox(&record.id)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn reconcile_tool_effects(
+        &self,
+        journal: &dyn EffectJournal,
+        state: &AgentState,
+        effects: &mut Vec<EffectRecord>,
+        effect_timeout: Option<Duration>,
+    ) -> Result<Vec<ToolOutcome>, RunError> {
+        let run_id = &state.run_id;
+        let pending = state.pending_tool_calls.clone();
+        if pending.is_empty() {
+            return Err(RunError::Protocol(
+                "run is awaiting tools but has no pending calls".to_owned(),
+            ));
+        }
+
+        for call in &pending {
+            let has_record = effects.iter().any(|record| {
+                record.kind == EffectKind::ToolCall
+                    && record.call_id.as_deref() == Some(call.call_id.as_str())
+            });
+            if has_record {
+                continue;
+            }
+            let intent = EffectIntent::CallTool(ToolCallSpec { call: call.clone() });
+            let mut record = EffectRecord::new(
+                EffectId::fresh(),
+                EffectKind::ToolCall,
+                Some(call.name.clone()),
+                Some(call.call_id.clone()),
+                digest_intent(&intent),
+            )
+            .with_intent_json(serde_json::to_string(&intent).unwrap_or_default());
+            record.set_status(EffectStatus::Failed);
+            record.record_attempt(
+                AttemptStatus::Failed,
+                None,
+                Some("effect was not recorded before the interruption".to_owned()),
+            );
+            journal
+                .record(run_id, &record)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+            effects.push(record);
+        }
+
+        let mut needs_dispatch = 0_usize;
+        for call in &pending {
+            let Some(record) = effects.iter_mut().find(|record| {
+                record.kind == EffectKind::ToolCall
+                    && record.call_id.as_deref() == Some(call.call_id.as_str())
+            }) else {
+                continue;
+            };
+            match record.status {
+                EffectStatus::Authorized => {
+                    journal
+                        .enqueue_effect(run_id, record)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    needs_dispatch += 1;
+                }
+                EffectStatus::Recorded | EffectStatus::AwaitingApproval => {
+                    record.set_status(EffectStatus::Rejected);
+                    record.error = Some(
+                        "approval was not completed before the interruption; the call was not executed"
+                            .to_owned(),
+                    );
+                    journal
+                        .record(run_id, record)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                }
+                EffectStatus::Dispatched => {
+                    record.set_status(EffectStatus::OutcomeUnknown);
+                    record.record_attempt(
+                        AttemptStatus::OutcomeUnknown,
+                        None,
+                        Some(
+                            "the call was in flight when the process stopped; the outcome is unknown"
+                                .to_owned(),
+                        ),
+                    );
+                    journal
+                        .record(run_id, record)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    journal
+                        .complete_outbox(&record.id)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                }
+                _ => {}
+            }
+        }
+
+        if needs_dispatch > 0 {
+            OutboxDispatcher::run_once_for_run(
+                journal,
+                run_id,
+                needs_dispatch,
+                self.dispatcher.as_ref(),
+                effect_timeout,
+            )
+            .await
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        }
+
+        *effects = journal
+            .load(run_id)
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+
+        Ok(pending
+            .iter()
+            .map(|call| {
+                let record = effects.iter().find(|record| {
+                    record.kind == EffectKind::ToolCall
+                        && record.call_id.as_deref() == Some(call.call_id.as_str())
+                });
+                tool_outcome_after_resume(call, record)
+            })
+            .collect())
+    }
+
     #[tracing::instrument(skip_all, fields(agent = %self.name))]
     pub async fn run_with_history<F>(
         &self,
@@ -300,26 +585,8 @@ impl Agent {
         state.history = history.to_vec();
         state.session_id = options.session_id.clone();
         state.turn_id = options.turn_id.clone();
-        let mut effects: Vec<EffectRecord> = Vec::new();
-        let stepper: Arc<dyn AgentStepper> = match &self.stepper {
-            Some(stepper) => stepper.clone(),
-            None => {
-                let context_builder: Arc<dyn ContextBuilder> = match &self.context_builder {
-                    Some(builder) => builder.clone(),
-                    None => {
-                        let mut builder = SimpleContextBuilder::new(self.skills.index());
-                        if let Some(max_chars) = self.context_budget_chars {
-                            builder = builder.with_max_chars(max_chars);
-                        }
-                        Arc::new(builder)
-                    }
-                };
-                Arc::new(
-                    ReActStepper::new(self.instructions.clone(), self.tools.specs())
-                        .with_shared_context_builder(context_builder),
-                )
-            }
-        };
+        let effects: Vec<EffectRecord> = Vec::new();
+        let stepper = self.stepper_for_run();
         let effect_timeout = options.effect_timeout.or(self.effect_timeout);
         let parallel_limit = options
             .max_parallel_tool_calls
@@ -340,16 +607,39 @@ impl Agent {
             run_id: run_id.clone(),
         });
 
+        let setup = RunSetup {
+            stepper,
+            effect_timeout,
+            parallel_limit,
+            approver,
+            cancel: options.cancel.clone(),
+        };
+        self.drive(setup, state, queue, effects, on_event).await
+    }
+
+    async fn drive<F>(
+        &self,
+        setup: RunSetup,
+        mut state: AgentState,
+        mut queue: VecDeque<AcceptedEvent>,
+        mut effects: Vec<EffectRecord>,
+        mut on_event: F,
+    ) -> Result<RunOutcome, RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        let run_id = state.run_id.clone();
+        let mut seq = queue.iter().map(|event| event.seq).max().unwrap_or(0);
         let mut cancel_queued = false;
         loop {
-            if options.cancel.is_cancelled() {
+            if setup.cancel.is_cancelled() {
                 queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
             }
 
             let event = queue
                 .pop_front()
                 .ok_or_else(|| RunError::Protocol("no accepted event to process".to_owned()))?;
-            let transition = match stepper.transition(&state, &event) {
+            let transition = match setup.stepper.transition(&state, &event) {
                 Ok(transition) => transition,
                 Err(error) => {
                     let message = error.to_string();
@@ -417,7 +707,7 @@ impl Agent {
                 Disposition::Continue => {}
             }
 
-            if options.cancel.is_cancelled() {
+            if setup.cancel.is_cancelled() {
                 queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
                 continue;
             }
@@ -464,21 +754,21 @@ impl Agent {
                     seq: &mut seq,
                     cancel_queued: &mut cancel_queued,
                     run_id: &run_id,
-                    approver: approver.as_ref(),
+                    approver: setup.approver.as_ref(),
                     effects: &mut effects,
                 };
                 self.execute_tool_batch(
                     tool_calls,
-                    parallel_limit,
-                    effect_timeout,
-                    &options.cancel,
+                    setup.parallel_limit,
+                    setup.effect_timeout,
+                    &setup.cancel,
                     &mut sink,
                 )
                 .await?;
             }
 
             for (effect_id, request) in model_requests {
-                if options.cancel.is_cancelled() {
+                if setup.cancel.is_cancelled() {
                     effect_mut(&mut effects, &effect_id)
                         .set_status(EffectStatus::CancelledBeforeDispatch);
                     queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
@@ -508,7 +798,7 @@ impl Agent {
                                 &run_id,
                                 1,
                                 self.dispatcher.as_ref(),
-                                effect_timeout,
+                                setup.effect_timeout,
                             )
                             .await
                             .map_err(|error| RunError::Journal(error.to_string()))?;
@@ -532,7 +822,7 @@ impl Agent {
                             effect_mut(&mut effects, &effect_id)
                                 .set_status(EffectStatus::Dispatched);
                             self.dispatcher
-                                .call_model(&request, effect_timeout)
+                                .call_model(&request, setup.effect_timeout)
                                 .await
                                 .map_err(RunError::Model)
                         }
@@ -1073,4 +1363,58 @@ fn accept_local(
     // state and effect intents atomically at this boundary instead.
     *state = proposal.next;
     (proposal.intents, proposal.disposition)
+}
+
+fn tool_outcome_after_resume(call: &ToolCallRequest, record: Option<&EffectRecord>) -> ToolOutcome {
+    let (content, is_error, outcome_unknown) = match record {
+        None => (
+            "effect was not recorded before the interruption".to_owned(),
+            true,
+            false,
+        ),
+        Some(record) => match record.status {
+            EffectStatus::Committed => (
+                record.result.clone().unwrap_or_default(),
+                record.error.is_some(),
+                false,
+            ),
+            EffectStatus::Failed => (
+                record
+                    .error
+                    .clone()
+                    .or_else(|| record.result.clone())
+                    .unwrap_or_else(|| "tool failed".to_owned()),
+                true,
+                false,
+            ),
+            EffectStatus::Rejected => (
+                record
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "approval rejected".to_owned()),
+                true,
+                false,
+            ),
+            EffectStatus::OutcomeUnknown | EffectStatus::Dispatched => (
+                "outcome unknown after resume; the tool may have run".to_owned(),
+                true,
+                true,
+            ),
+            EffectStatus::CancelledBeforeDispatch => {
+                ("cancelled before dispatch".to_owned(), true, false)
+            }
+            _ => (
+                "effect could not be dispatched on resume".to_owned(),
+                true,
+                false,
+            ),
+        },
+    };
+    ToolOutcome {
+        call_id: call.call_id.clone(),
+        name: call.name.clone(),
+        content,
+        is_error,
+        outcome_unknown,
+    }
 }

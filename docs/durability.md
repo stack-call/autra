@@ -75,9 +75,21 @@ intent through the Dispatcher, records the outcome and completes the row. When
 a journal is configured, the Agent records and enqueues every Authorized effect
 and executes it through that loop; tool batches are claimed together and
 dispatched with bounded parallelism. Without a journal the Agent keeps the
-`LocalEphemeral` direct path. There is no lease-expiry retry, resume, approval
-persistence or reconciliation yet. A timed-out tool is marked `outcome_unknown`, but there is
-no reconciliation pass. Do not infer full durable recovery from the journal.
+`LocalEphemeral` direct path.
+
+`Agent::resume` continues a committed checkpoint. An `AwaitingTool` checkpoint
+re-dispatches `Authorized` effects, rejects calls whose approval was never
+completed, turns an in-flight `Dispatched` call into `OutcomeUnknown` instead
+of retrying it, and feeds the reconstructed outcomes back into the stepper. An
+`AwaitingModel` checkpoint retires the interrupted model effect and re-issues
+the call through a `ResumeRequested` event. Completed and cancelled runs return
+their stored outcome. The CLI exposes this as `--journal` and `resume`.
+
+There is no lease-expiry retry loop, approval persistence or `OutcomeUnknown`
+reconciliation yet, and resume assumes the same Agent configuration, tools and
+workspace as the original run. A timed-out tool is marked `outcome_unknown`,
+but there is no reconciliation pass. Do not infer full durable recovery from
+the journal.
 
 See [`ADR-0003`](adr/0003-default-local-host.md) and
 [`ADR-0008`](adr/0008-native-durable-and-restate-independent.md).

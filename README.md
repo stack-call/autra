@@ -60,6 +60,7 @@ After building, the binary is `autractl` (or prefix with
 
 - `autractl run [options] <prompt>` — run one turn as a workspace agent and print its events.
 - `autractl chat [options]` — one turn per stdin line, keeping session history.
+- `autractl resume --journal <path> --model <name> <run-id>` — continue a checkpointed run.
 - `autractl demo` — deterministic list-files, read-README demo.
 - `autractl tools` — list the built-in tools.
 
@@ -84,12 +85,21 @@ edit.
 |---|---|
 | `--workspace <dir>`, `-C <dir>` | workspace root (default `.`); file tools stay inside it |
 | `--model <name>`, `-m <name>` | OpenAI-compatible model; omit for the local echo model |
-| `--yes`, `-y` | approve `write_file` and `run_command` without prompting |
+| `--journal <path>`, `-j <path>` | persist run state, events and effects to a SQLite journal |
+| `--yes`, `-y` | approve `write_file`, `edit_file` and `run_command` without prompting |
 | `--read-only` | expose only `list_files`, `read_file` and `search_text` |
 
 ```powershell
 cargo run -p autra-cli -- run --workspace ..\my-project --yes --model gpt-4o-mini "Fix the failing test and run it again"
+cargo run -p autra-cli -- run --journal .autra.db --model gpt-4o-mini "Inspect the failing test"
+cargo run -p autra-cli -- resume --journal .autra.db --model gpt-4o-mini <run-id>
 ```
+
+`resume` requires `--journal` and an explicit `--model`: the journal stores Run
+state and effects, not provider configuration. A run interrupted while a tool
+or model call was in flight never retries that call blindly; an in-flight tool
+becomes `OutcomeUnknown`, while an interrupted model call is retired and
+re-issued.
 
 > `run_command` is a local unsandboxed shell, not an OS sandbox. Prefer
 > `--read-only` for inspection, and avoid `--yes` on repositories you do not

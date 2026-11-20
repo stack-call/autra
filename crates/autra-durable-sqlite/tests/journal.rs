@@ -101,3 +101,67 @@ async fn a_durable_tool_run_drains_its_outbox() {
         outcome.effects()
     );
 }
+
+#[tokio::test]
+async fn a_sqlite_checkpoint_can_be_resumed_after_reopen() {
+    use autra_core::{
+        AgentPhase, AgentState, BudgetSnapshot, EffectIntent, EffectStatus, HistoryItem,
+        ModelOutput, ToolCallRequest, ToolCallSpec,
+    };
+    use autra_harness::{EchoTool, FakeModel};
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("resume.db");
+    let run_id = RunId::new("run-resume");
+    let call = ToolCallRequest {
+        call_id: "call-1".to_owned(),
+        name: "echo".to_owned(),
+        arguments: r#"{"text":"hi"}"#.to_owned(),
+    };
+    {
+        let journal = SqliteEffectJournal::open(&path).unwrap();
+        let mut state = AgentState::new(run_id.clone(), BudgetSnapshot::new(8, 8));
+        state.phase = AgentPhase::AwaitingTool;
+        state.history = vec![
+            HistoryItem::User("go".to_owned()),
+            HistoryItem::Assistant {
+                text: None,
+                tool_calls: vec![call.clone()],
+            },
+        ];
+        state.pending_tool_calls = vec![call.clone()];
+        state.budget.turns_used = 1;
+        state.budget.tool_calls_used = 1;
+        journal.save_run(&state).unwrap();
+
+        let intent = EffectIntent::CallTool(ToolCallSpec { call: call.clone() });
+        let mut effect = EffectRecord::new(
+            EffectId::fresh(),
+            EffectKind::ToolCall,
+            Some(call.name.clone()),
+            Some(call.call_id.clone()),
+            "digest".to_owned(),
+        )
+        .with_intent_json(serde_json::to_string(&intent).unwrap());
+        effect.set_status(EffectStatus::Authorized);
+        journal.record(&run_id, &effect).unwrap();
+        journal.enqueue_effect(&run_id, &effect).unwrap();
+    }
+
+    let reopened = SqliteEffectJournal::open(&path).unwrap();
+    let agent = Agent::builder("durable-resume")
+        .model(FakeModel::new(vec![ModelOutput {
+            text: Some("done".to_owned()),
+            tool_calls: Vec::new(),
+        }]))
+        .tool(EchoTool)
+        .journal(SqliteEffectJournal::open(&path).unwrap())
+        .build()
+        .unwrap();
+
+    let outcome = agent.resume(&run_id).await.unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    assert_eq!(reopened.load(&run_id).unwrap(), outcome.effects());
+    assert!(reopened.claim_due_effects(10, "check").unwrap().is_empty());
+}

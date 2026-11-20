@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait = "0.1"
+autra-core = { path = "../autra-core" }
+autra-durable-sqlite = { path = "../autra-durable-sqlite" }
 autra-harness = { path = "../autra-harness" }
 autra-openai = { path = "../autra-openai" }
 autra-runtime = { path = "../autra-runtime" }

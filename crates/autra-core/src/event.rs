@@ -11,8 +11,12 @@ pub struct AcceptedEvent {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
-    RunStarted { input: String },
+    RunStarted {
+        input: String,
+    },
     ModelResult(ModelOutput),
     ToolResult(ToolOutcome),
     CancelRequested,
+    /// Continue a checkpointed Run from its current state.
+    ResumeRequested,
 }

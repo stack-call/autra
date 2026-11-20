@@ -198,6 +198,15 @@ impl AgentStepper for ReActStepper {
             }
             EventKind::ModelResult(output) => self.on_model_result(state, output),
             EventKind::ToolResult(outcome) => self.on_tool_result(state, outcome),
+            EventKind::ResumeRequested => {
+                Self::expect_phase(state, AgentPhase::AwaitingModel, "ResumeRequested")?;
+                let request = self.model_request(state)?;
+                Ok(Transition {
+                    next: state.clone(),
+                    intents: vec![EffectIntent::CallModel(request)],
+                    disposition: Disposition::Continue,
+                })
+            }
             EventKind::CancelRequested => {
                 if matches!(
                     state.phase,

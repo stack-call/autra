@@ -176,3 +176,39 @@ fn unknown_options_fail_with_usage() {
     assert!(error_text.contains("unknown option `--readonly`"));
     assert!(error_text.contains("usage: autractl run"));
 }
+
+#[test]
+fn run_can_persist_to_a_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("run.db");
+    let output = autractl()
+        .args([
+            "run",
+            "--journal",
+            journal.to_str().unwrap(),
+            "--read-only",
+            "hello",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(journal.exists());
+}
+
+#[test]
+fn resume_requires_a_journal_and_a_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("run.db");
+
+    let missing_journal = autractl().args(["resume", "run-1"]).output().unwrap();
+    assert!(!missing_journal.status.success());
+    assert!(stderr(&missing_journal).contains("--journal"));
+
+    let missing_model = autractl()
+        .args(["resume", "--journal", journal.to_str().unwrap(), "run-1"])
+        .output()
+        .unwrap();
+    assert!(!missing_model.status.success());
+    assert!(stderr(&missing_model).contains("--model"));
+}

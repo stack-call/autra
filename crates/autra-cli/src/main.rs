@@ -1,6 +1,9 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+use autra_core::RunId;
+use autra_durable_sqlite::SqliteEffectJournal;
+
 use autra_harness::{
     EchoModel, EchoTool, EditFileTool, FakeModel, HistoryItem, ListFilesTool, LocalWorkspace,
     ModelOutput, ReadFileTool, SearchTextTool, ToolCallRequest, ToolRegistry, WriteFileTool,
@@ -22,6 +25,7 @@ async fn main() -> ExitCode {
         }
         Some("run") => run_command(&args[1..]).await,
         Some("chat") => chat_command(&args[1..]).await,
+        Some("resume") => resume_command(&args[1..]).await,
         Some("demo") => demo_command().await,
         Some("tools") => tools_command(),
         Some(other) => {
@@ -37,6 +41,7 @@ struct Flags {
     workspace: Option<String>,
     auto_approve: bool,
     read_only: bool,
+    journal: Option<String>,
     rest: Vec<String>,
 }
 
@@ -135,10 +140,60 @@ async fn chat_command(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+async fn resume_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "resume") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    let Some(run_id) = flags.rest.first() else {
+        eprintln!(
+            "usage: autractl resume --journal <path> --model <name> [--workspace <dir>] <run-id>"
+        );
+        return ExitCode::FAILURE;
+    };
+    if flags.rest.len() > 1 {
+        eprintln!(
+            "usage: autractl resume --journal <path> --model <name> [--workspace <dir>] <run-id>"
+        );
+        return ExitCode::FAILURE;
+    }
+    if flags.journal.is_none() {
+        eprintln!("resume requires --journal <path>");
+        return ExitCode::FAILURE;
+    }
+    if flags.model.is_none() {
+        eprintln!("resume requires --model <name>: the journal does not store the provider");
+        return ExitCode::FAILURE;
+    }
+
+    let agent = match build_agent(&flags) {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = options_for_model(flags.model.as_deref());
+
+    match agent
+        .resume_with_options(&RunId::new(run_id.clone()), options, print_event)
+        .await
+    {
+        Ok(outcome) => {
+            print_status(&outcome);
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("resume failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
     let usage = || {
         eprintln!(
-            "usage: autractl {command} [--workspace <dir>] [--model <name>] [--yes] [--read-only]"
+            "usage: autractl {command} [--workspace <dir>] [--model <name>] [--journal <path>] [--yes] [--read-only]"
         );
     };
     let mut flags = Flags {
@@ -146,6 +201,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         workspace: None,
         auto_approve: false,
         read_only: false,
+        journal: None,
         rest: Vec::new(),
     };
     let mut parsing_flags = true;
@@ -169,6 +225,13 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
             },
             "--workspace" | "-C" => match iter.next() {
                 Some(path) if !path.is_empty() => flags.workspace = Some(path.clone()),
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--journal" | "-j" => match iter.next() {
+                Some(path) if !path.is_empty() => flags.journal = Some(path.clone()),
                 _ => {
                     usage();
                     return Err(());
@@ -219,6 +282,12 @@ fn build_agent(flags: &Flags) -> Result<Agent, String> {
         builder.approver(AutoApprove)
     } else {
         builder.approver(InteractiveApprover)
+    };
+    let builder = match &flags.journal {
+        Some(path) => {
+            builder.journal(SqliteEffectJournal::open(path).map_err(|error| error.to_string())?)
+        }
+        None => builder,
     };
     builder.build().map_err(|error| error.to_string())
 }
@@ -385,6 +454,7 @@ fn print_status(outcome: &RunOutcome) {
 fn print_event(event: &RunEvent) {
     match event {
         RunEvent::RunStarted { run_id } => println!("[run] {run_id} started"),
+        RunEvent::RunResumed { run_id } => println!("[run] {run_id} resumed"),
         RunEvent::ModelCallStarted { turn } => println!("[model] turn {turn}"),
         RunEvent::ModelResult { text, tool_calls } => {
             if let Some(text) = text {
