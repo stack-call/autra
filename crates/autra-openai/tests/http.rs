@@ -1,5 +1,5 @@
 use autra_core::{HistoryItem, ModelCallSpec};
-use autra_harness::ModelProvider;
+use autra_harness::{MODEL_PROTOCOL_VERSION, ModelProvider};
 use autra_openai::{OpenAiCompatibleModel, OpenAiConfig};
 use serde_json::json;
 use wiremock::matchers::{header, method, path};
@@ -32,6 +32,8 @@ async fn sends_bearer_token_and_parses_text() {
 
     assert_eq!(output.text.as_deref(), Some("hello from model"));
     assert!(output.tool_calls.is_empty());
+    assert!(model.capabilities().tool_calling);
+    assert_eq!(model.protocol_version(), MODEL_PROTOCOL_VERSION);
 }
 
 #[tokio::test]

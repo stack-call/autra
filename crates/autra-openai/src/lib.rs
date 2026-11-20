@@ -7,7 +7,7 @@ mod mapping;
 
 use async_trait::async_trait;
 use autra_core::{ModelCallSpec, ModelOutput};
-use autra_harness::{ModelError, ModelProvider};
+use autra_harness::{ModelCapabilities, ModelError, ModelProvider};
 use thiserror::Error;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -72,6 +72,13 @@ impl OpenAiCompatibleModel {
 
 #[async_trait]
 impl ModelProvider for OpenAiCompatibleModel {
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            tool_calling: true,
+            ..ModelCapabilities::default()
+        }
+    }
+
     async fn complete(&self, request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
         let body = mapping::build_request(&self.config.model, request)?;
         let url = format!(

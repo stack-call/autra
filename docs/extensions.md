@@ -25,7 +25,7 @@ adapters. It is not a dynamic plugin platform.
 | Extension | Registration | Contract today |
 |---|---|---|
 | Tool | `AgentBuilder::tool` | `descriptor`, `contract`, `execute(input, context)`; `spec`/`call` remain as default adapters. The coordinator owns approval and dispatch |
-| Model provider | `AgentBuilder::model` | `ModelProvider::complete`; provider-specific fields stay in the adapter |
+| Model provider | `AgentBuilder::model` | `ModelProvider::complete`, `capabilities()` and `protocol_version()`; provider-specific fields stay in the adapter |
 | Context strategy | `AgentBuilder::context_builder` | `ContextBuilder::build`; a custom builder owns skills and budget composition |
 | Engine | `AgentBuilder::stepper` | `AgentStepper::transition` returns a proposed transition; the coordinator commits and dispatches |
 | Skill | `AgentBuilder::skill` | Named instructions plus read-only `load_skill`; loading grants no permission |

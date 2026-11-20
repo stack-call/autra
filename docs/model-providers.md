@@ -51,10 +51,11 @@ An empty assistant message is allowed and completes the Run with no answer.
 
 ## Capability declaration
 
-Provider differences affect the Harness: tool calling, streaming, structured output
-and multimodal input are not uniform. A future `ModelCapabilities` declaration should
-express limits and parameters, not only booleans, and provider-specific fields must stay
-inside the adapter. The current provider implements non-streaming text and tool calls.
+`ModelCapabilities` declares `tool_calling`, `streaming`, `structured_output`,
+`multimodal_input` and `max_context_tokens`. The OpenAI-compatible adapter declares
+tool calling; Echo and Fake use defaults (Fake declares tool calling for scripted tests).
+Harness consumers must not assume a capability; unsupported features should return
+typed errors. Provider-specific fields stay inside the adapter.
 
 ## What is not implemented
 

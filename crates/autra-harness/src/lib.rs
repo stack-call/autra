@@ -14,7 +14,9 @@ pub use autra_core::{HistoryItem, ModelCallSpec, ModelOutput, ToolCallRequest, T
 pub use context::{
     ContextBuilder, ContextError, ContextRequest, SimpleContextBuilder, SkillSummary,
 };
-pub use model::{EchoModel, FakeModel, ModelError, ModelProvider};
+pub use model::{
+    EchoModel, FakeModel, MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider,
+};
 pub use planning::{PlanItem, PlanStatus, SharedPlan, UpdatePlanTool};
 pub use react::ReActStepper;
 pub use skills::{LoadSkillTool, Skill, SkillRegistry};

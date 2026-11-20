@@ -2,10 +2,29 @@ use async_trait::async_trait;
 use autra_core::{HistoryItem, ModelCallSpec, ModelOutput};
 use thiserror::Error;
 
+pub const MODEL_PROTOCOL_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelCapabilities {
+    pub tool_calling: bool,
+    pub streaming: bool,
+    pub structured_output: bool,
+    pub multimodal_input: bool,
+    pub max_context_tokens: Option<u32>,
+}
+
 /// The boundary between the harness and a model provider.
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
     async fn complete(&self, request: &ModelCallSpec) -> Result<ModelOutput, ModelError>;
+
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities::default()
+    }
+
+    fn protocol_version(&self) -> u32 {
+        MODEL_PROTOCOL_VERSION
+    }
 }
 
 #[derive(Debug, Error)]
@@ -66,6 +85,13 @@ impl FakeModel {
 
 #[async_trait]
 impl ModelProvider for FakeModel {
+    fn capabilities(&self) -> ModelCapabilities {
+        ModelCapabilities {
+            tool_calling: true,
+            ..ModelCapabilities::default()
+        }
+    }
+
     async fn complete(&self, _request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
         self.responses
             .lock()
