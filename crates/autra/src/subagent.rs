@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use autra_core::{EffectClass, ToolSpec};
-use autra_harness::{Tool, ToolError};
+use autra_core::{EffectClass, RunId, ToolSpec};
+use autra_harness::{Tool, ToolContext, ToolError, ToolInput, ToolOutput};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::Agent;
+use crate::{Agent, RunStatus};
 
 #[derive(Clone)]
 pub struct Subagent {
@@ -109,19 +109,58 @@ impl Tool for SubagentTool {
     }
 
     async fn call(&self, arguments: &str) -> Result<String, ToolError> {
-        let args: SpawnArgs = serde_json::from_str(arguments).map_err(|error| {
+        let run_id = RunId::fresh();
+        let context = ToolContext {
+            run_id: run_id.clone(),
+            call_id: "direct-subagent".to_owned(),
+            parent_run_id: Some(run_id),
+            cancel: None,
+        };
+        self.execute(
+            ToolInput {
+                arguments: arguments.to_owned(),
+            },
+            context,
+        )
+        .await
+        .map(|output| output.content)
+    }
+
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let args: SpawnArgs = serde_json::from_str(&input.arguments).map_err(|error| {
             ToolError::new(format!("invalid spawn_subagent arguments: {error}"))
         })?;
         let subagent = self
             .registry
             .get(&args.agent)
             .ok_or_else(|| ToolError::new(format!("unknown subagent `{}`", args.agent)))?;
-        let outcome = subagent.agent.run(&args.task).await.map_err(|error| {
-            ToolError::new(format!("subagent `{}` failed: {error}", args.agent))
-        })?;
-        Ok(outcome
-            .answer()
-            .map(str::to_owned)
-            .unwrap_or_else(|| "(no answer)".to_owned()))
+        let parent_run_id = context
+            .parent_run_id
+            .clone()
+            .unwrap_or_else(|| context.run_id.clone());
+        let cancel = context.cancel.clone().unwrap_or_default();
+        let outcome = subagent
+            .agent
+            .run_as_child(parent_run_id, cancel, args.task)
+            .await
+            .map_err(|error| {
+                ToolError::new(format!("subagent `{}` failed: {error}", args.agent))
+            })?;
+        if outcome.status() == RunStatus::Cancelled {
+            return Err(ToolError::new(format!(
+                "subagent `{}` was cancelled",
+                args.agent
+            )));
+        }
+        Ok(ToolOutput::text(
+            outcome
+                .answer()
+                .map(str::to_owned)
+                .unwrap_or_else(|| "(no answer)".to_owned()),
+        ))
     }
 }

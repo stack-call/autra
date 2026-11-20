@@ -5,6 +5,7 @@
 //! optional crates.
 
 pub mod approval;
+pub mod child;
 pub mod dispatcher;
 pub mod engine;
 pub mod hooks;
@@ -14,6 +15,7 @@ pub mod sandbox;
 
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
 pub use autra_execution::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
+pub use child::{ChildHandle, ChildRunSet, ChildSpec, JoinPolicy};
 pub use dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
     LocalDispatcher, OutboxDispatcher,

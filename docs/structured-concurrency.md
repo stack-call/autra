@@ -89,3 +89,30 @@ and these policies are not implemented yet.
 This is not a replacement for Tokio scheduling, Kubernetes, or a distributed
 actor placement system. Remote workers need their own ownership, lease and
 fencing design before they can be added.
+
+## ChildRun
+
+A child Run is a real Run on the local engine, not a nested `Agent::run`:
+
+- it has its own `RunId` and `AgentState.parent_run_id`;
+- it starts from a `ChildSpec` with its own stepper, input, history and
+  `BudgetSnapshot`;
+- its cancellation flag is a child of the parent flag: cancelling the parent
+  cancels the child, but cancelling a child leaves the parent running;
+- `ChildHandle` exposes `run_id`, `cancel` and `join`;
+- `ChildRunSet` joins children with `JoinPolicy::WaitAll` (default) or
+  `JoinPolicy::FailFast`, which cancels remaining children after the first
+  error.
+
+`spawn_subagent` now enters through `Agent::run_as_child`, so the child has
+parent identity and inherited cancellation. The child runs on its own Agent's
+engine: to share a journal or dispatcher, build the child Agent with the same
+journal. The child's approver comes from the child Agent; the parent's
+`RunOptions` are not inherited.
+
+`BudgetSnapshot::reserve_child` reserves one parent turn and the child's whole
+tool-call allowance up front; unused reservations are not returned. Automatic
+reservation from `spawn_subagent` is not wired yet: the tool currently uses
+the child Agent's own budget. Child events are not forwarded to the parent's
+event callback; observers still see child start/finish. `FailFast` cancels
+remaining children but does not await them.

@@ -29,7 +29,7 @@ adapters. It is not a dynamic plugin platform.
 | Context strategy | `AgentBuilder::context_builder` | `ContextBuilder::build`; a custom builder owns skills and budget composition |
 | Engine | `AgentBuilder::stepper` | `AgentStepper::transition` returns a proposed transition; the coordinator commits and dispatches |
 | Skill | `AgentBuilder::skill` | Named instructions plus read-only `load_skill`; loading grants no permission |
-| Subagent | `AgentBuilder::subagent` | Named child Agent behind `spawn_subagent`; tool-backed, not runtime ChildRun |
+| Subagent | `AgentBuilder::subagent` | Named child Agent behind `spawn_subagent`; runs as a runtime ChildRun with parent identity and inherited cancellation |
 | Approver | `AgentBuilder::approver` | `Approver::approve`; the coordinator binds the decision to the call |
 | Dispatcher | `AgentBuilder::dispatcher` | `call_model` and `call_tool`; custom model/tool executor |
 | Observation | `AgentBuilder::observer`, `tracing` subscriber, `autra-eval` | `ObserverHook` sees run/model/effect/finish stages; traces and evaluation are not execution state |

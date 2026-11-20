@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use autra_core::{AgentStepper, HistoryItem, RunId};
+use autra_core::{AgentStepper, CancelFlag, HistoryItem, RunId};
 use autra_execution::{
     Approver, DurableTransitionStore, ModelProvider, ObserverHook, Tool, ToolRegistry,
 };
@@ -14,7 +14,9 @@ use autra_harness::{
 use thiserror::Error;
 
 use crate::subagent::{SubagentRegistry, SubagentTool};
-use autra_runtime::{DispatchResult, Dispatcher, LocalDispatcher, LocalEngine};
+use autra_runtime::{
+    ChildHandle, ChildSpec, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine,
+};
 
 pub use autra_execution::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
 
@@ -102,6 +104,34 @@ impl Agent {
     {
         let stepper = self.stepper_for_run();
         self.engine.resume(stepper, run_id, options, on_event).await
+    }
+
+    /// Spawn a real child Run with its own Run id, parent link, budget and
+    /// inherited cancellation.
+    pub fn spawn_child(
+        &self,
+        parent_run_id: RunId,
+        cancel: CancelFlag,
+        input: impl Into<String>,
+    ) -> ChildHandle {
+        self.engine.spawn_child(ChildSpec {
+            stepper: self.stepper_for_run(),
+            input: input.into(),
+            history: Vec::new(),
+            budget: self.engine.max_budget(),
+            parent_run_id,
+            cancel,
+        })
+    }
+
+    /// Spawn and await a child Run.
+    pub async fn run_as_child(
+        &self,
+        parent_run_id: RunId,
+        cancel: CancelFlag,
+        input: impl Into<String>,
+    ) -> Result<RunOutcome, RunError> {
+        self.spawn_child(parent_run_id, cancel, input).join().await
     }
 
     /// Drain due outbox rows across all Runs, reclaiming expired leases.

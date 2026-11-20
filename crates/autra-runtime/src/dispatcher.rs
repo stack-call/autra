@@ -34,6 +34,17 @@ pub trait Dispatcher: Send + Sync {
         timeout: Option<Duration>,
     ) -> ToolOutcome;
 
+    /// Execute a tool with the invoking scope. Custom dispatchers that only
+    /// know `call_tool` keep working through this default.
+    async fn call_tool_with_context(
+        &self,
+        context: &ToolContext,
+        call: &ToolCallRequest,
+        timeout: Option<Duration>,
+    ) -> ToolOutcome {
+        self.call_tool(&context.run_id, call, timeout).await
+    }
+
     /// Whether the named tool can be executed here. A dispatcher that cannot
     /// answer keeps the default; the outbox loop uses this to tell an unknown
     /// tool apart from a tool that returned an error.
@@ -74,7 +85,22 @@ impl Dispatcher for LocalDispatcher {
         call: &ToolCallRequest,
         timeout: Option<Duration>,
     ) -> ToolOutcome {
-        execute_tool(self.tools.clone(), call.clone(), timeout, run_id.clone()).await
+        let context = ToolContext {
+            run_id: run_id.clone(),
+            call_id: call.call_id.clone(),
+            parent_run_id: Some(run_id.clone()),
+            cancel: None,
+        };
+        execute_tool(self.tools.clone(), call.clone(), timeout, context).await
+    }
+
+    async fn call_tool_with_context(
+        &self,
+        context: &ToolContext,
+        call: &ToolCallRequest,
+        timeout: Option<Duration>,
+    ) -> ToolOutcome {
+        execute_tool(self.tools.clone(), call.clone(), timeout, context.clone()).await
     }
 
     fn knows_tool(&self, name: &str) -> bool {
@@ -96,16 +122,12 @@ async fn execute_tool(
     tools: ToolRegistry,
     call: ToolCallRequest,
     timeout: Option<Duration>,
-    run_id: RunId,
+    context: ToolContext,
 ) -> ToolOutcome {
     let result: Result<String, (String, bool)> = match tools.get(&call.name) {
         Some(tool) => {
             let input = ToolInput {
                 arguments: call.arguments.clone(),
-            };
-            let context = ToolContext {
-                run_id,
-                call_id: call.call_id.clone(),
             };
             let future = AssertUnwindSafe(with_timeout(timeout, tool.execute(input, context)));
             match future.catch_unwind().await {
@@ -364,7 +386,17 @@ async fn dispatch_entry(
             DispatchOutcome::Model(dispatcher.call_model(spec, timeout).await)
         }
         EffectIntent::CallTool(spec) => {
-            DispatchOutcome::Tool(dispatcher.call_tool(run_id, &spec.call, timeout).await)
+            let context = ToolContext {
+                run_id: run_id.clone(),
+                call_id: spec.call.call_id.clone(),
+                parent_run_id: Some(run_id.clone()),
+                cancel: cancel.cloned(),
+            };
+            DispatchOutcome::Tool(
+                dispatcher
+                    .call_tool_with_context(&context, &spec.call, timeout)
+                    .await,
+            )
         }
     };
     finish_entry(journal, run_id, entry, outcome, known_tool)

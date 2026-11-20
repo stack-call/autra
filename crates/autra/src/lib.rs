@@ -21,8 +21,8 @@ pub use autra_execution::{
 };
 pub use autra_harness::{react_engine_state, react_history, react_pending_tool_calls};
 pub use autra_runtime::{
-    DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine,
-    MemoryJournal, OutboxDispatcher,
+    ChildHandle, ChildRunSet, ChildSpec, DispatchOptions, DispatchOutcome, DispatchResult,
+    Dispatcher, JoinPolicy, LocalDispatcher, LocalEngine, MemoryJournal, OutboxDispatcher,
 };
 pub use session::Session;
 pub use subagent::{Subagent, SubagentRegistry, SubagentTool};

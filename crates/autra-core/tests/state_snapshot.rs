@@ -11,6 +11,7 @@ fn state_serializes_to_a_stable_snapshot() {
         serde_json::json!({
             "run_id": "run-snapshot",
             "state_version": 0,
+            "parent_run_id": null,
             "session_id": null,
             "turn_id": null,
             "phase": "Ready",

@@ -15,11 +15,12 @@ use autra_core::{
 };
 use autra_execution::{
     Approver, DurableTransitionStore, EffectJournal, ObserverHook, RunError, RunEvent, RunOptions,
-    RunOutcome, ToolRegistry,
+    RunOutcome, ToolContext, ToolRegistry,
 };
 use tracing::Instrument;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, digest_intent};
+use crate::child::{ChildHandle, ChildSpec};
 use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
     OutboxDispatcher,
@@ -27,6 +28,7 @@ use crate::dispatcher::{
 
 /// Drives one Run: accepts events, commits transitions, executes effects and
 /// resumes committed checkpoints.
+#[derive(Clone)]
 pub struct LocalEngine {
     dispatcher: Arc<dyn Dispatcher>,
     tools: ToolRegistry,
@@ -97,32 +99,85 @@ impl LocalEngine {
         history: &[HistoryItem],
         input: &str,
         options: RunOptions,
+        on_event: F,
+    ) -> Result<RunOutcome, RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        self.run_with_identity(
+            RunId::fresh(),
+            None,
+            self.max_budget(),
+            stepper,
+            history.to_vec(),
+            input.to_owned(),
+            options,
+            on_event,
+        )
+        .await
+    }
+
+    /// The budget a new root Run receives from this engine.
+    pub fn max_budget(&self) -> BudgetSnapshot {
+        BudgetSnapshot::new(self.max_turns, self.max_tool_calls)
+    }
+
+    /// Spawn a child Run on this engine. The child gets a fresh Run id, a
+    /// parent link and a cancellation flag that inherits the parent's.
+    pub fn spawn_child(&self, spec: ChildSpec) -> ChildHandle {
+        let run_id = RunId::fresh();
+        let child_cancel = CancelFlag::child_of(&spec.cancel);
+        let handle_cancel = child_cancel.clone();
+        let handle_run_id = run_id.clone();
+        let engine = self.clone();
+        let join = tokio::spawn(async move {
+            let options = RunOptions {
+                cancel: child_cancel,
+                ..RunOptions::default()
+            };
+            engine
+                .run_with_identity(
+                    run_id,
+                    Some(spec.parent_run_id),
+                    spec.budget,
+                    spec.stepper,
+                    spec.history,
+                    spec.input,
+                    options,
+                    |_| {},
+                )
+                .await
+        });
+        ChildHandle::new(handle_run_id, handle_cancel, join)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_with_identity<F>(
+        &self,
+        run_id: RunId,
+        parent_run_id: Option<RunId>,
+        budget: BudgetSnapshot,
+        stepper: Arc<dyn AgentStepper>,
+        history: Vec<HistoryItem>,
+        input: String,
+        options: RunOptions,
         mut on_event: F,
     ) -> Result<RunOutcome, RunError>
     where
         F: FnMut(&RunEvent),
     {
-        let run_id = RunId::fresh();
         tracing::info!(run_id = %run_id, "agent run started");
         if let Some(observer) = &self.observer {
             observer.on_run_started(&run_id);
         }
-        let mut state = AgentState::new(
-            run_id.clone(),
-            BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
-        );
-        stepper.initialize(&mut state, history);
+        let mut state = AgentState::new(run_id.clone(), budget);
+        state.parent_run_id = parent_run_id;
+        stepper.initialize(&mut state, &history);
         state.session_id = options.session_id.clone();
         state.turn_id = options.turn_id.clone();
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
         let mut seq = 0_u64;
-        enqueue(
-            &mut queue,
-            &mut seq,
-            EventKind::RunStarted {
-                input: input.to_owned(),
-            },
-        );
+        enqueue(&mut queue, &mut seq, EventKind::RunStarted { input });
         on_event(&RunEvent::RunStarted {
             run_id: run_id.clone(),
         });
@@ -821,9 +876,15 @@ impl LocalEngine {
                 sink.effect_mut(&effect_id)
                     .set_status(EffectStatus::Dispatched);
                 sink.start_tool(&call);
+                let context = ToolContext {
+                    run_id: sink.run_id.clone(),
+                    call_id: call.call_id.clone(),
+                    parent_run_id: Some(sink.run_id.clone()),
+                    cancel: Some(cancel.clone()),
+                };
                 let outcome = self
                     .dispatcher
-                    .call_tool(sink.run_id, &call, effect_timeout)
+                    .call_tool_with_context(&context, &call, effect_timeout)
                     .await;
                 sink.record_tool_outcome(&effect_id, known_tool, &outcome);
                 sink.emit_tool_result(&outcome);
@@ -846,12 +907,20 @@ impl LocalEngine {
                     let dispatcher = self.dispatcher.clone();
                     let call = call.clone();
                     let run_id = sink.run_id.clone();
+                    let context = ToolContext {
+                        run_id: run_id.clone(),
+                        call_id: call.call_id.clone(),
+                        parent_run_id: Some(run_id.clone()),
+                        cancel: Some(cancel.clone()),
+                    };
                     tasks.spawn(async move {
                         (
                             index,
                             effect_id,
                             known_tool,
-                            dispatcher.call_tool(&run_id, &call, effect_timeout).await,
+                            dispatcher
+                                .call_tool_with_context(&context, &call, effect_timeout)
+                                .await,
                         )
                     });
                 }

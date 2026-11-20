@@ -88,6 +88,11 @@ Tests observe public behaviour, not private helpers.
     Autra dependencies, execution depends on core, harness and runtime depend
     only on core + execution, durable adapters do the same, and CLI/eval use
     the facade rather than runtime.
+28. **ChildRun** (`autra-core`, `autra-runtime`, `autra`): a child has its own
+    run id and parent link; parent cancellation reaches the child while child
+    cancellation does not reach the parent; `WaitAll` collects every child and
+    `FailFast` stops after the first error; `reserve_child` charges the parent
+    budget up front.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

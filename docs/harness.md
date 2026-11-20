@@ -11,7 +11,7 @@ implemented.
 | Context management | `ContextBuilder`, `SimpleContextBuilder`, character budget | Character proxy; no tokenizer or summarization |
 | Skills | `SkillRegistry`, `load_skill` | Loading does not grant permissions |
 | Planning | `update_plan`, `Agent::plan()` | In-memory per Agent; no planner engine |
-| Restricted Subagents | `spawn_subagent`, named child Agents | Tool-backed; no runtime ChildRun cancellation/budget slice |
+| Restricted Subagents | `spawn_subagent`, named child Agents | Runtime ChildRun identity and cancellation; automatic parent budget settlement pending |
 | Workspace Tools | `read_file`, `list_files`, `search_text`, `git_status`, `git_diff`, `edit_file`, `write_file`, `run_command` | Writes and commands require approval; `run_command` is not a sandbox |
 | Tracing | `agent.session.turn`, `agent.run`, `gen_ai.model.call`, `agent.tool.execute` | No OTel exporter |
 | Basic Evaluation | `autra-eval` task report | Outcome-based; not runtime fault evidence |

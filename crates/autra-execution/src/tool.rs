@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use autra_core::{EffectClass, RunId, ToolSpec};
+use autra_core::{CancelFlag, EffectClass, RunId, ToolSpec};
 use thiserror::Error;
 
 pub const TOOL_PROTOCOL_VERSION: u32 = 1;
@@ -52,8 +52,13 @@ impl ToolOutput {
 
 #[derive(Clone, Debug)]
 pub struct ToolContext {
+    /// The Run that invoked the tool.
     pub run_id: RunId,
     pub call_id: String,
+    /// The current Run, for tools that spawn child work.
+    pub parent_run_id: Option<RunId>,
+    /// Cancellation of the invoking scope, for tools that spawn child work.
+    pub cancel: Option<CancelFlag>,
 }
 
 /// A capability the model may request.

@@ -49,6 +49,8 @@ pub struct AgentState {
     /// optimistic concurrency checks.
     #[serde(default)]
     pub state_version: u64,
+    #[serde(default)]
+    pub parent_run_id: Option<RunId>,
     pub session_id: Option<SessionId>,
     pub turn_id: Option<TurnId>,
     pub phase: AgentPhase,
@@ -63,6 +65,7 @@ impl AgentState {
         Self {
             run_id,
             state_version: 0,
+            parent_run_id: None,
             session_id: None,
             turn_id: None,
             phase: AgentPhase::Ready,
