@@ -107,14 +107,16 @@ Tests observe public behaviour, not private helpers.
     model result; a non-streaming provider emits one delta; the OpenAI adapter
     parses SSE content and tool-call fragments.
 32. **Snapshots** (`autra-runtime`, `autra-cli`): a hub records a final
-    snapshot; subscriptions receive events and end at finish; subscribing after
-    finish returns the snapshot; `autractl snapshot` reads a journaled Run.
+    snapshot for new, resumed and failed Runs; subscriptions receive events and
+    end at finish; an early model/tool error still closes the channel;
+    subscribing after finish returns the snapshot; `autractl snapshot` reads a
+    journaled Run.
 33. **Approval persistence** (`autra-execution`, `autra-runtime`,
     `autra-durable-sqlite`, `autra-cli`): decisions are stored and reused on
     resume when the digest and policy revision match and the record is not
     expired; expired, mismatched or rejected records re-ask or reject; resume
-    re-evaluates policy (Deny rejects, Allow authorizes); CLI `approve`/`reject`
-    write decisions.
+    re-evaluates policy (Deny rejects, Allow authorizes); a decision from another
+    policy revision is not reused; CLI `approve`/`reject` write decisions.
 34. **Reconciliation** (`autra-runtime`, `autra-cli`): a `ReadOnly` unknown is
     retried; a non-idempotent unknown, a `Reconcileable` unknown, or an
     idempotent write without a valid approval stays unresolved; model retries

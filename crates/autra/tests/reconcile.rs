@@ -308,3 +308,39 @@ async fn a_reconcileable_tool_needs_an_explicit_check() {
     let stored = journal.load(&run_id).unwrap();
     assert_eq!(stored[0].status, EffectStatus::OutcomeUnknown);
 }
+
+#[tokio::test]
+async fn an_approval_from_another_policy_revision_is_not_reused() {
+    let journal = MemoryJournal::new();
+    let dir = tempdir().unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+    let run_id = RunId::new("run-stale-approval");
+    let call = call("write_file", r#"{"path":"note.txt","content":"hello"}"#);
+    let effect = tool_effect(&run_id, &call, EffectKind::ToolCall);
+    journal.record(&run_id, &effect).unwrap();
+    let request = ApprovalRequest::new(&run_id, &effect.id, &call).with_policy(
+        "old-policy",
+        None,
+        Some(Duration::from_secs(300)),
+    );
+    journal
+        .save_approval(&ApprovalRecord::from_request(
+            &request,
+            ApprovalDecision::Approved,
+            autra::now_unix_ms(),
+        ))
+        .unwrap();
+    let agent = Agent::builder("reconcile")
+        .model(EchoModel)
+        .tool(WriteFileTool::new(workspace))
+        .journal(journal.clone())
+        .policy(autra::RulePolicy::new("test-v1"))
+        .build()
+        .unwrap();
+
+    let report = agent.reconcile(&run_id).await.unwrap();
+
+    assert!(report.retried.is_empty());
+    assert!(report.unresolved[0].reason.contains("approval"));
+    assert!(!dir.path().join("note.txt").exists());
+}

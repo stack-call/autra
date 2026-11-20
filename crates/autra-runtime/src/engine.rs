@@ -435,6 +435,9 @@ impl LocalEngine {
             .load_events(run_id)
             .map_err(|error| RunError::Journal(error.to_string()))?;
         let mut seq = events.iter().map(|event| event.seq).max().unwrap_or(0);
+        if let Some(hub) = &self.hub {
+            hub.start(RunSnapshot::from_state(&state, seq, effects.len()));
+        }
 
         tracing::info!(%run_id, phase = ?state.phase, "agent run resumed");
         on_event(&RunEvent::RunResumed {
@@ -446,13 +449,22 @@ impl LocalEngine {
                 on_event(&RunEvent::RunCompleted {
                     answer: state.final_answer.clone(),
                 });
+                if let Some(hub) = &self.hub {
+                    hub.finish(RunSnapshot::from_state(&state, seq, effects.len()));
+                }
                 return Ok(RunOutcome::new(state, effects));
             }
             AgentPhase::Cancelled => {
                 on_event(&RunEvent::RunCancelled);
+                if let Some(hub) = &self.hub {
+                    hub.finish(RunSnapshot::from_state(&state, seq, effects.len()));
+                }
                 return Ok(RunOutcome::new(state, effects));
             }
             AgentPhase::Failed => {
+                if let Some(hub) = &self.hub {
+                    hub.finish(RunSnapshot::from_state(&state, seq, effects.len()));
+                }
                 return Err(RunError::Failed(
                     state
                         .last_error
@@ -461,6 +473,9 @@ impl LocalEngine {
                 ));
             }
             AgentPhase::Ready => {
+                if let Some(hub) = &self.hub {
+                    hub.finish(RunSnapshot::from_state(&state, seq, effects.len()));
+                }
                 return Err(RunError::Protocol(
                     "run has no committed progress to resume".to_owned(),
                 ));
@@ -553,15 +568,15 @@ impl LocalEngine {
                         false
                     }
                     Some(tool) => {
-                        let denied = serde_json::from_str::<EffectIntent>(&record.intent_json)
+                        let intent_call = serde_json::from_str::<EffectIntent>(&record.intent_json)
                             .ok()
                             .and_then(|intent| match intent {
                                 EffectIntent::CallTool(spec) => Some(spec.call),
                                 EffectIntent::CallModel(_) => None,
-                            })
-                            .is_some_and(|call| {
-                                self.policy_decision(run_id, &call) == Some(PolicyDecision::Deny)
                             });
+                        let denied = intent_call.as_ref().is_some_and(|call| {
+                            self.policy_decision(run_id, call) == Some(PolicyDecision::Deny)
+                        });
                         if denied {
                             reason = Some("denied by current policy".to_owned());
                             false
@@ -578,16 +593,15 @@ impl LocalEngine {
                                     _ => "tool is not safe to retry automatically".to_owned(),
                                 });
                             }
-                            if class_safe
-                                && tool.contract().requires_approval
-                                && !self.has_valid_approval(&record.id)
-                            {
+                            let approval_ok = !tool.contract().requires_approval
+                                || intent_call.as_ref().is_some_and(|call| {
+                                    self.has_valid_approval(run_id, &record.id, call)
+                                });
+                            if !approval_ok {
                                 reason =
                                     Some("approval is no longer valid for this effect".to_owned());
-                                false
-                            } else {
-                                class_safe
                             }
+                            class_safe && approval_ok
                         }
                     }
                 },
@@ -638,19 +652,25 @@ impl LocalEngine {
         })
     }
 
-    fn has_valid_approval(&self, effect_id: &EffectId) -> bool {
+    fn has_valid_approval(
+        &self,
+        run_id: &RunId,
+        effect_id: &EffectId,
+        call: &ToolCallRequest,
+    ) -> bool {
         let Some(journal) = &self.journal else {
             return false;
         };
-        match journal.approval_store().load_approval(effect_id) {
-            Ok(Some(record)) => {
-                record.decision == ApprovalDecision::Approved
-                    && record
-                        .expires_at_unix_ms
-                        .is_none_or(|expires| now_unix_ms() < expires)
-            }
-            _ => false,
-        }
+        let Ok(Some(record)) = journal.approval_store().load_approval(effect_id) else {
+            return false;
+        };
+        let request = ApprovalRequest::new(run_id, effect_id, call).with_policy(
+            self.policy.revision(),
+            self.actor.clone(),
+            Some(self.approval_ttl.unwrap_or(DEFAULT_APPROVAL_TTL)),
+        );
+        record.decision == ApprovalDecision::Approved
+            && record.is_usable_for(&request, now_unix_ms())
     }
 
     /// Drain due outbox rows across all Runs, reclaiming expired leases.
@@ -879,6 +899,10 @@ impl LocalEngine {
             forward(event);
         };
         let mut seq = queue.iter().map(|event| event.seq).max().unwrap_or(0);
+        let mut hub_guard = HubGuard::new(
+            self.hub.clone(),
+            RunSnapshot::from_state(&state, seq, effects.len()),
+        );
         let mut cancel_queued = false;
         loop {
             if options.cancel.is_cancelled() {
@@ -898,9 +922,8 @@ impl LocalEngine {
                     on_event(&RunEvent::RunFailed {
                         message: message.clone(),
                     });
-                    if let Some(hub) = &self.hub {
-                        hub.finish(RunSnapshot::from_state(&state, event.seq, effects.len()));
-                    }
+                    hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
+                    hub_guard.finish();
                     return Err(RunError::Step(error));
                 }
             };
@@ -959,9 +982,7 @@ impl LocalEngine {
                     )
                     .map_err(|error| RunError::Journal(error.to_string()))?;
             }
-            if let Some(hub) = &self.hub {
-                hub.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
-            }
+            hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
 
             if let EventKind::ModelResult(output) = &event.kind {
                 on_event(&RunEvent::ModelResult {
@@ -993,9 +1014,7 @@ impl LocalEngine {
                                 .map_err(|error| RunError::Journal(error.to_string()))?;
                         }
                     }
-                    if let Some(hub) = &self.hub {
-                        hub.finish(RunSnapshot::from_state(&state, event.seq, effects.len()));
-                    }
+                    hub_guard.finish();
                     return Ok(RunOutcome::new(state, effects));
                 }
                 Disposition::Failed => {
@@ -1010,9 +1029,7 @@ impl LocalEngine {
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
                     }
-                    if let Some(hub) = &self.hub {
-                        hub.finish(RunSnapshot::from_state(&state, event.seq, effects.len()));
-                    }
+                    hub_guard.finish();
                     return Err(RunError::Failed(message));
                 }
                 Disposition::Continue => {}
@@ -1162,6 +1179,7 @@ impl LocalEngine {
                         if let Some(observer) = &self.observer {
                             observer.on_run_finished(&run_id, &state.phase);
                         }
+                        hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
                         return Err(error);
                     }
                 };
@@ -1451,6 +1469,45 @@ impl LocalEngine {
         }
         sync_effects(journal.journal(), &run_id, sink.effects)?;
         Ok((cancelled || cancel.is_cancelled(), dispatched))
+    }
+}
+
+struct HubGuard {
+    hub: Option<Arc<RunHub>>,
+    snapshot: RunSnapshot,
+    finished: bool,
+}
+
+impl HubGuard {
+    fn new(hub: Option<Arc<RunHub>>, snapshot: RunSnapshot) -> Self {
+        Self {
+            hub,
+            snapshot,
+            finished: false,
+        }
+    }
+
+    fn update(&mut self, snapshot: RunSnapshot) {
+        self.snapshot = snapshot.clone();
+        if let Some(hub) = &self.hub {
+            hub.update(snapshot);
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        if let Some(hub) = &self.hub {
+            hub.finish(self.snapshot.clone());
+        }
+        self.finished = true;
+    }
+}
+
+impl Drop for HubGuard {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
