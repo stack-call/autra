@@ -58,6 +58,9 @@ message with its tool calls, then one Tool history item per outcome.
   emits `RunFailed` and returns a typed `RunError`.
 - **Tool call**: an unknown tool, malformed arguments or tool error becomes an
   `is_error` ToolOutcome and is fed back to the model.
+- **Approval**: a tool may declare `requires_approval`; the coordinator resolves
+  approvals before dispatch and binds the decision to the call and argument
+  digest. Rejection becomes an error outcome.
 - **Parallel tools**: with `max_parallel_tool_calls > 1`, a batch runs in
   bounded chunks. `ToolResult` stream events follow completion order; accepted
   history and model feedback follow model order. A panicking tool becomes an

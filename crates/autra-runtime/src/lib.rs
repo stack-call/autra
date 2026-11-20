@@ -5,7 +5,9 @@
 //! optional crates.
 
 pub mod agent;
+pub mod approval;
 
 pub use agent::{
     Agent, AgentBuilder, BuildError, RunError, RunEvent, RunOptions, RunOutcome, RunStatus,
 };
+pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};

@@ -8,8 +8,8 @@ where it runs, its resource limits, whether it can write external state and how
 an unknown result is handled.
 
 The current MVP implements the description plus a minimal contract
-(`effect_class`, arguments, result). Approval, credential injection and
-per-tool policy are not implemented yet.
+(`effect_class`, arguments, result). Approval is implemented for
+`write_file`; credential injection and a per-tool policy registry are not.
 
 ## Effect classes
 
@@ -33,7 +33,12 @@ per-tool policy are not implemented yet.
 - `read_file` caps output, truncates on a UTF-8 boundary, and never buffers the
   whole file.
 - `list_files` caps entries and marks directories.
-- Built-in tools are `ReadOnly`.
+- Built-in read-only tools are `ReadOnly`. `write_file` declares `Idempotent`,
+  requires approval, stays inside the workspace and caps content at 1 MiB.
+- Before dispatching an approval-required call, the runtime asks an `Approver`.
+  The request binds the Run id, call id, tool name, arguments and a SHA-256
+  argument digest. A rejected call or a missing approver produces an error
+  outcome and does not execute.
 
 `LocalWorkspace` is **user-space path validation, not a sandbox**. It does not
 isolate processes, mounts, environment variables or the network.
@@ -54,9 +59,9 @@ isolate processes, mounts, environment variables or the network.
 
 - A Rust trait, capability field or hook is not an OS security boundary.
 - A local shell mode is not equivalent to OpenShell isolation.
-- The MVP has no approval flow, so tools are limited to read-only actions.
-  Write tools must not be added until approval and a workspace write policy
-  exist.
+- Approval is local and ephemeral: there is no expiry, actor identity or
+  policy registry yet. Shared workspace writes still need a version-check or
+  worktree policy before parallel writes are safe.
 
 See [`ADR-0007`](adr/0007-tool-effect-and-authority-separated.md),
 [`ADR-0009`](adr/0009-openshell-is-a-sandbox-backend.md) and

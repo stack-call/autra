@@ -10,7 +10,8 @@ Independent Agents that need to edit concurrently should use separate
 worktrees/workspaces and merge explicitly. Read-only parallel calls are the
 safe default.
 
-Consequences: some parallelism is lost. The MVP only ships read-only tools, so
-the rule is documented before write tools arrive.
+Consequences: some parallelism is lost. `write_file` now exists behind
+approval, but approval does not serialize concurrent writes; the default
+parallel limit stays 1 and shared writes still need a version/worktree policy.
 
 Revisit when a conditional-write or workspace-version protocol is implemented.

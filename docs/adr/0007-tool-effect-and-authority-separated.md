@@ -7,10 +7,11 @@ request as permission lets prompt injection reach the host.
 
 We decided Tool descriptions, Effect classification and execution authority are
 separate. A trusted host checks scope, budget and policy before an Effect is
-dispatched. Approval, when added, binds to the concrete effect and parameters.
+dispatched. Approval binds to the concrete effect and parameters.
 
 Consequences: some apparent simplicity is lost; every externally visible tool
-needs a contract. The MVP only ships read-only built-in tools, so the approval
-path is not implemented yet.
+needs a contract. Approval is implemented for `write_file`; durable waits,
+expiry, actor identity and a policy registry remain future work.
 
-Revisit when adding write tools, approvals or credential-bearing tools.
+Revisit when adding more write tools, a policy registry or credential-bearing
+tools.

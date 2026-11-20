@@ -18,6 +18,8 @@ Structured concurrency is a framework feature, not a distributed scheduler.
   model order.
 - With a larger limit, calls execute in chunks of at most that many concurrent
   tasks. Every outcome is recorded before the next model call.
+- Approvals are resolved sequentially before a batch executes; a rejected call
+  does not run and becomes an error outcome.
 - `ToolCallStarted` is emitted when a call is dispatched. `ToolResult` stream
   events follow actual completion order; accepted history and model feedback
   follow model call order.

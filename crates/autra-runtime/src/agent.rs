@@ -11,6 +11,8 @@ use autra_core::{
 };
 use autra_harness::{ModelError, ModelProvider, ReActStepper, Tool, ToolRegistry};
 use futures_util::FutureExt;
+
+use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -37,11 +39,12 @@ pub enum RunStatus {
     Cancelled,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct RunOptions {
     pub cancel: CancelFlag,
     pub effect_timeout: Option<Duration>,
     pub max_parallel_tool_calls: Option<u32>,
+    pub approver: Option<Arc<dyn Approver>>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +58,15 @@ pub enum RunEvent {
     ModelResult {
         text: Option<String>,
         tool_calls: Vec<ToolCallRequest>,
+    },
+    ApprovalRequested {
+        call_id: String,
+        tool_name: String,
+        argument_digest: String,
+    },
+    ApprovalDecided {
+        call_id: String,
+        approved: bool,
     },
     ToolCallStarted {
         call_id: String,
@@ -112,6 +124,8 @@ struct BatchSink<'a, F> {
     queue: &'a mut VecDeque<AcceptedEvent>,
     seq: &'a mut u64,
     cancel_queued: &'a mut bool,
+    run_id: &'a RunId,
+    approver: Option<&'a Arc<dyn Approver>>,
 }
 
 impl<'a, F> BatchSink<'a, F>
@@ -155,6 +169,7 @@ pub struct Agent {
     max_turns: u32,
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
+    approver: Option<Arc<dyn Approver>>,
 }
 
 impl Agent {
@@ -191,6 +206,7 @@ impl Agent {
             .max_parallel_tool_calls
             .unwrap_or(self.max_parallel_tool_calls)
             .max(1);
+        let approver = options.approver.clone().or_else(|| self.approver.clone());
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
         let mut seq = 0_u64;
 
@@ -279,6 +295,8 @@ impl Agent {
                     queue: &mut queue,
                     seq: &mut seq,
                     cancel_queued: &mut cancel_queued,
+                    run_id: &run_id,
+                    approver: approver.as_ref(),
                 };
                 self.execute_tool_batch(
                     tool_calls,
@@ -333,49 +351,105 @@ impl Agent {
         F: FnMut(&RunEvent),
     {
         let limit = limit.max(1) as usize;
-        if limit == 1 || calls.len() == 1 {
-            for call in calls {
+        let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
+        let mut approved: Vec<Option<ToolCallRequest>> = vec![None; calls.len()];
+        let mut cancelled = false;
+
+        for (index, call) in calls.iter().enumerate() {
+            if cancel.is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            let requires_approval = self
+                .tools
+                .get(&call.name)
+                .map(|tool| tool.requires_approval())
+                .unwrap_or(false);
+            if requires_approval {
+                let request = ApprovalRequest::new(sink.run_id, call);
+                sink.emit_stream(&RunEvent::ApprovalRequested {
+                    call_id: request.call_id.clone(),
+                    tool_name: request.tool_name.clone(),
+                    argument_digest: request.argument_digest.clone(),
+                });
+                let decision = match sink.approver {
+                    Some(approver) => approver.approve(&request).await,
+                    None => ApprovalDecision::Rejected,
+                };
+                let is_approved = decision == ApprovalDecision::Approved;
+                sink.emit_stream(&RunEvent::ApprovalDecided {
+                    call_id: request.call_id.clone(),
+                    approved: is_approved,
+                });
+                if !is_approved {
+                    let outcome = rejected_outcome(call);
+                    sink.emit_tool_result(&outcome);
+                    outcomes[index] = Some(outcome);
+                    continue;
+                }
+            }
+            approved[index] = Some(call.clone());
+        }
+
+        let approved_calls: Vec<(usize, ToolCallRequest)> = approved
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, call)| call.map(|call| (index, call)))
+            .collect();
+
+        if cancelled {
+            for outcome in outcomes.into_iter().flatten() {
+                sink.accept_outcome(outcome);
+            }
+            sink.cancel();
+            return Ok(());
+        }
+
+        if limit == 1 || approved_calls.len() == 1 {
+            for (index, call) in approved_calls {
                 if cancel.is_cancelled() {
-                    sink.cancel();
+                    cancelled = true;
                     break;
                 }
                 sink.start_tool(&call);
                 let outcome = execute_tool(self.tools.clone(), call, effect_timeout).await;
                 sink.emit_tool_result(&outcome);
-                sink.accept_outcome(outcome);
-            }
-            return Ok(());
-        }
-
-        let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
-        for (chunk_index, chunk) in calls.chunks(limit).enumerate() {
-            let mut tasks = tokio::task::JoinSet::new();
-            for (offset, call) in chunk.iter().enumerate() {
-                if cancel.is_cancelled() {
-                    break;
-                }
-                sink.start_tool(call);
-                let index = chunk_index * limit + offset;
-                let tools = self.tools.clone();
-                let call = call.clone();
-                tasks
-                    .spawn(async move { (index, execute_tool(tools, call, effect_timeout).await) });
-            }
-            while let Some(result) = tasks.join_next().await {
-                let (index, outcome) = result
-                    .map_err(|error| RunError::Protocol(format!("tool task failed: {error}")))?;
-                sink.emit_tool_result(&outcome);
                 outcomes[index] = Some(outcome);
             }
-            if cancel.is_cancelled() {
-                break;
+        } else {
+            for chunk in approved_calls.chunks(limit) {
+                let mut tasks = tokio::task::JoinSet::new();
+                for (index, call) in chunk {
+                    if cancel.is_cancelled() {
+                        cancelled = true;
+                        break;
+                    }
+                    sink.start_tool(call);
+                    let index = *index;
+                    let tools = self.tools.clone();
+                    let call = call.clone();
+                    tasks.spawn(
+                        async move { (index, execute_tool(tools, call, effect_timeout).await) },
+                    );
+                }
+                while let Some(result) = tasks.join_next().await {
+                    let (index, outcome) = result.map_err(|error| {
+                        RunError::Protocol(format!("tool task failed: {error}"))
+                    })?;
+                    sink.emit_tool_result(&outcome);
+                    outcomes[index] = Some(outcome);
+                }
+                if cancelled || cancel.is_cancelled() {
+                    cancelled = true;
+                    break;
+                }
             }
         }
 
         for outcome in outcomes.into_iter().flatten() {
             sink.accept_outcome(outcome);
         }
-        if cancel.is_cancelled() {
+        if cancelled || cancel.is_cancelled() {
             sink.cancel();
         }
         Ok(())
@@ -391,6 +465,7 @@ pub struct AgentBuilder {
     max_turns: u32,
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
+    approver: Option<Arc<dyn Approver>>,
 }
 
 impl AgentBuilder {
@@ -404,6 +479,7 @@ impl AgentBuilder {
             max_turns: 8,
             max_tool_calls: 8,
             max_parallel_tool_calls: 1,
+            approver: None,
         }
     }
 
@@ -437,6 +513,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn approver(mut self, approver: impl Approver + 'static) -> Self {
+        self.approver = Some(Arc::new(approver));
+        self
+    }
+
     pub fn max_parallel_tool_calls(mut self, max_parallel_tool_calls: u32) -> Self {
         self.max_parallel_tool_calls = max_parallel_tool_calls.max(1);
         self
@@ -460,6 +541,7 @@ impl AgentBuilder {
             max_turns: self.max_turns,
             max_tool_calls: self.max_tool_calls,
             max_parallel_tool_calls: self.max_parallel_tool_calls,
+            approver: self.approver,
         })
     }
 }
@@ -536,4 +618,14 @@ fn emit_tool_result<F: FnMut(&RunEvent)>(on_event: &mut F, outcome: &ToolOutcome
         outcome_unknown: outcome.outcome_unknown,
         content: outcome.content.clone(),
     });
+}
+
+fn rejected_outcome(call: &ToolCallRequest) -> ToolOutcome {
+    ToolOutcome {
+        call_id: call.call_id.clone(),
+        name: call.name.clone(),
+        content: "approval rejected; the tool was not executed".to_owned(),
+        is_error: true,
+        outcome_unknown: false,
+    }
 }

@@ -12,4 +12,5 @@ pub use model::{EchoModel, FakeModel, ModelError, ModelProvider};
 pub use react::ReActStepper;
 pub use tools::{
     EchoTool, ListFilesTool, LocalWorkspace, ReadFileTool, Tool, ToolError, ToolRegistry,
+    WriteFileTool,
 };

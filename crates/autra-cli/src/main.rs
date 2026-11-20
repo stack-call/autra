@@ -214,6 +214,19 @@ fn print_event(event: &RunEvent) {
                 println!("[model] tool call: {} ({})", call.name, call.call_id);
             }
         }
+        RunEvent::ApprovalRequested {
+            call_id,
+            tool_name,
+            argument_digest,
+        } => {
+            println!("[approval] {tool_name} ({call_id}) digest {argument_digest}");
+        }
+        RunEvent::ApprovalDecided { call_id, approved } => {
+            println!(
+                "[approval] {call_id} {}",
+                if *approved { "approved" } else { "rejected" }
+            );
+        }
         RunEvent::ToolCallStarted { call_id, name } => {
             println!("[tool] {name} ({call_id}) started");
         }

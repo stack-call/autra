@@ -24,6 +24,8 @@ Tests observe public behaviour, not private helpers.
    literal JSON value.
 5. **Provider mapping** (`autra-openai`): pure request/response mapping plus a
    wiremock HTTP contract test.
+6. **Approval** (`autra-runtime`): approved, rejected, missing-approver and
+   mixed-batch cases, plus the argument-digest unit test.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not
@@ -43,7 +45,7 @@ No API key is required for the default suite.
 ## What is not covered yet
 
 - Restart and crash recovery (no durable host).
-- Approval replay and parameter-tamper tests (no approval flow).
+- Durable approval waits, expiry and identity checks (the local flow has none).
 - Parallel tool commit-order tests (parallel execution is not implemented).
 - Real-provider quality and cost benchmarks.
 - Long-running memory or context-compaction quality.

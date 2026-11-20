@@ -16,6 +16,10 @@ pub trait Tool: Send + Sync {
         EffectClass::Unknown
     }
 
+    fn requires_approval(&self) -> bool {
+        false
+    }
+
     async fn call(&self, arguments: &str) -> Result<String, ToolError>;
 }
 
@@ -152,6 +156,53 @@ impl LocalWorkspace {
             )));
         }
         Ok(resolved)
+    }
+
+    fn resolve_for_write(&self, relative: &str) -> Result<std::path::PathBuf, ToolError> {
+        use std::path::Component;
+
+        let relative_path = std::path::Path::new(relative);
+        if relative_path.is_absolute() {
+            return Err(ToolError::new(format!(
+                "absolute paths are not allowed: `{relative}`"
+            )));
+        }
+        for component in relative_path.components() {
+            if matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            ) {
+                return Err(ToolError::new(format!(
+                    "path must stay inside the workspace: `{relative}`"
+                )));
+            }
+        }
+
+        let candidate = self.root.join(relative_path);
+        if let Ok(existing) = std::fs::canonicalize(&candidate) {
+            if !existing.starts_with(&self.root) {
+                return Err(ToolError::new(format!(
+                    "path escapes the workspace: `{relative}`"
+                )));
+            }
+            return Ok(existing);
+        }
+
+        let parent = candidate
+            .parent()
+            .ok_or_else(|| ToolError::new(format!("path has no parent directory: `{relative}`")))?;
+        let file_name = candidate
+            .file_name()
+            .ok_or_else(|| ToolError::new(format!("path has no file name: `{relative}`")))?;
+        let parent = std::fs::canonicalize(parent).map_err(|error| {
+            ToolError::new(format!("cannot resolve parent of `{relative}`: {error}"))
+        })?;
+        if !parent.starts_with(&self.root) {
+            return Err(ToolError::new(format!(
+                "path escapes the workspace: `{relative}`"
+            )));
+        }
+        Ok(parent.join(file_name))
     }
 }
 
@@ -326,5 +377,62 @@ impl Tool for ListFilesTool {
             ));
         }
         Ok(output)
+    }
+}
+
+const WRITE_FILE_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative file path"},"content":{"type":"string","description":"UTF-8 content to write"}},"required":["path","content"]}"#;
+const WRITE_FILE_MAX_BYTES: usize = 1024 * 1024;
+
+/// Writes a UTF-8 file inside the workspace. Requires approval.
+pub struct WriteFileTool {
+    workspace: LocalWorkspace,
+}
+
+impl WriteFileTool {
+    pub fn new(workspace: LocalWorkspace) -> Self {
+        Self { workspace }
+    }
+}
+
+#[derive(Deserialize)]
+struct WriteFileArgs {
+    path: String,
+    content: String,
+}
+
+#[async_trait]
+impl Tool for WriteFileTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "write_file".to_owned(),
+            description: "Write UTF-8 content to a workspace file. Requires approval.".to_owned(),
+            input_schema: WRITE_FILE_SCHEMA.to_owned(),
+        }
+    }
+
+    fn effect_class(&self) -> EffectClass {
+        EffectClass::Idempotent
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
+    async fn call(&self, arguments: &str) -> Result<String, ToolError> {
+        let args: WriteFileArgs = serde_json::from_str(arguments)
+            .map_err(|error| invalid_arguments("write_file", error))?;
+        if args.content.len() > WRITE_FILE_MAX_BYTES {
+            return Err(ToolError::new(format!(
+                "content exceeds {WRITE_FILE_MAX_BYTES} bytes"
+            )));
+        }
+        let path = self.workspace.resolve_for_write(&args.path)?;
+        std::fs::write(&path, args.content.as_bytes())
+            .map_err(|error| ToolError::new(format!("cannot write `{}`: {error}", args.path)))?;
+        Ok(format!(
+            "wrote {} bytes to {}",
+            args.content.len(),
+            args.path
+        ))
     }
 }

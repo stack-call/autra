@@ -34,6 +34,8 @@ fn event_names(events: &[RunEvent]) -> Vec<&'static str> {
             RunEvent::RunStarted { .. } => "RunStarted",
             RunEvent::ModelCallStarted { .. } => "ModelCallStarted",
             RunEvent::ModelResult { .. } => "ModelResult",
+            RunEvent::ApprovalRequested { .. } => "ApprovalRequested",
+            RunEvent::ApprovalDecided { .. } => "ApprovalDecided",
             RunEvent::ToolCallStarted { .. } => "ToolCallStarted",
             RunEvent::ToolResult { .. } => "ToolResult",
             RunEvent::RunCompleted { .. } => "RunCompleted",
