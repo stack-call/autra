@@ -1,0 +1,26 @@
+//! Product facade for Autra.
+//!
+//! Assembles harness behaviour (ReAct, context, tools, skills) with the local
+//! execution engine. The facade owns the developer-facing API; it does not own
+//! execution semantics or persistence.
+
+pub mod agent;
+pub mod session;
+pub mod subagent;
+
+pub use agent::{Agent, AgentBuilder, BuildError};
+pub use autra_execution::{
+    ApprovalDecision, ApprovalRequest, Approver, DEFAULT_CLAIM_LEASE, EffectJournal, ExecutionHost,
+    HOST_PROTOCOL_VERSION, HostCapabilities, JournalError, LOCAL_POLICY_REVISION,
+    MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider, ObserverHook,
+    OutboxEntry, RunError, RunEvent, RunOptions, RunOutcome, RunStatus, SANDBOX_PROTOCOL_VERSION,
+    SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError, SandboxHandle,
+    SandboxOutput, SandboxSpec, SandboxStatus, TOOL_PROTOCOL_VERSION, Tool, ToolContext,
+    ToolContract, ToolDescriptor, ToolError, ToolInput, ToolOutput, ToolRegistry, digest_arguments,
+};
+pub use autra_runtime::{
+    DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine,
+    MemoryJournal, OutboxDispatcher,
+};
+pub use session::Session;
+pub use subagent::{Subagent, SubagentRegistry, SubagentTool};

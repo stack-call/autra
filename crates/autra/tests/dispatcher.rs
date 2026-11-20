@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use autra::{Agent, Dispatcher};
 use autra_core::{ModelCallSpec, ModelOutput, RunId, ToolCallRequest, ToolOutcome};
 use autra_harness::ModelError;
-use autra_runtime::{Agent, Dispatcher};
 
 struct ConstantDispatcher;
 

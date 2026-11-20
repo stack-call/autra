@@ -1,7 +1,7 @@
+use autra::{Agent, EffectJournal};
 use autra_core::{EffectId, EffectKind, EffectRecord, EventKind, RunId};
 use autra_durable_sqlite::SqliteEffectJournal;
 use autra_harness::EchoModel;
-use autra_runtime::{Agent, EffectJournal};
 use tempfile::tempdir;
 
 #[test]

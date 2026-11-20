@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/autra-core",
+    "crates/autra",
     "crates/autra-execution",
     "crates/autra-harness",
     "crates/autra-runtime",

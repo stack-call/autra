@@ -3,7 +3,7 @@
 //! Evaluation measures Agent outcomes. Runtime correctness (duplicate effects,
 //! orphan tasks, recovery) is covered by the runtime fault tests instead.
 
-use autra_runtime::Agent;
+use autra::Agent;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvalTask {

@@ -1,6 +1,6 @@
+use autra::{Agent, EffectJournal, MemoryJournal};
 use autra_core::EventKind;
 use autra_harness::EchoModel;
-use autra_runtime::{Agent, EffectJournal, MemoryJournal};
 
 #[tokio::test]
 async fn a_run_persists_its_effect_records() {

@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use autra::{Agent, RunOptions, RunStatus, Session};
 use autra_core::{HistoryItem, ModelCallSpec, ModelOutput};
 use autra_harness::{EchoModel, FakeModel, ModelError, ModelProvider};
-use autra_runtime::{Agent, RunOptions, RunStatus, Session};
 
 struct RecordingModel {
     responses: Mutex<VecDeque<ModelOutput>>,

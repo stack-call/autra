@@ -25,19 +25,20 @@ explicit effects, optional infrastructure.
 |---|---|---|
 | `crates/autra-core` | Sans-I/O stepper: IDs, state, accepted events, effect intents, scopes | §6 |
 | `crates/autra-execution` | Execution contracts: tool/model/journal/approval/host/sandbox, shared by harness and hosts | §31 |
-| `crates/autra-harness` | ReAct engine, context, skills, planning and concrete tools implementing execution contracts | §7–§9 |
-| `crates/autra-runtime` | Local host: coordinator, effect dispatch, outbox, resume, sessions | §10–§12 |
+| `crates/autra` | Product facade: `Agent`, `AgentBuilder`, `Session`, `Subagent` assembly | §14 |
+| `crates/autra-harness` | ReAct engine, context, skills, planning, concrete tools; optional `process` tools | §7–§9 |
+| `crates/autra-runtime` | Local engine: coordinator, effect dispatch, outbox, resume | §10–§12 |
 | `crates/autra-cli` | `autractl`: local runs, streaming, approvals | §14.4 |
 | `crates/autra-openai` | OpenAI-compatible model provider, non-streaming | — |
 | `crates/autra-eval` | Task-level outcome evaluation | §17.4 |
 | `crates/autra-testkit` | Shared protocol contract checks | §31.4 |
 | `crates/autra-durable-sqlite` | SQLite Run / Event / Effect journal v0 | §15 |
 
-Dependency direction is enforced by Cargo: `autra-core` must not depend on
-Tokio, a database, a sandbox backend, or any harness/runtime crate.
-`autra-execution` depends on `autra-core` only; harness and hosts share those
-contracts. `autra-runtime` still depends on `autra-harness` for the default
-ReAct assembly until the facade split; see [architecture](docs/architecture.md).
+Dependency direction is enforced by Cargo and by
+`crates/autra-testkit/tests/architecture.rs`: `autra-core` depends on nothing
+Autra-specific; `autra-execution` depends on core only; harness and runtime
+depend on core + execution and not on each other; `autra` assembles harness and
+runtime; the CLI and eval use the facade, not runtime directly.
 
 ## Development
 
@@ -51,11 +52,12 @@ cargo run -p autra-cli -- demo
 cargo run -p autra-cli -- tools
 ```
 
-`autra-core` is dependency-light (serde, thiserror). `autra-harness` adds
-async-trait, serde, serde_json and thiserror; its tests use Tokio but the
-library does not. `autra-runtime` and `autra-cli` use Tokio. The default local
-path has no database or sandbox dependency; `autra-openai` adds an optional
-HTTP client for real providers.
+`autra-core` is dependency-light (serde, thiserror). `autra-execution` adds
+async-trait, serde_json, sha2 and thiserror. `autra-harness` adds async-trait,
+serde and similar; its `process` feature is the only Tokio dependency and is
+opt-in for `run_command`/git tools. `autra-runtime`, `autra` and `autra-cli`
+use Tokio. The default local path has no database or sandbox dependency;
+`autra-openai` adds an optional HTTP client for real providers.
 
 ## CLI
 

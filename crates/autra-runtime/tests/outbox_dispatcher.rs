@@ -7,7 +7,7 @@ use autra_core::{
     CancelFlag, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, ModelCallSpec,
     ModelOutput, RunId, ToolCallRequest, ToolCallSpec, ToolOutcome,
 };
-use autra_harness::ModelError;
+use autra_execution::ModelError;
 use autra_runtime::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, Dispatcher, EffectJournal,
     MemoryJournal, OutboxDispatcher,

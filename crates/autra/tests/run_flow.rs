@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use autra::{Agent, RunEvent, RunOptions, RunStatus};
 use autra_core::{CancelFlag, ModelCallSpec, ModelOutput, ToolCallRequest, ToolSpec};
 use autra_harness::{EchoModel, EchoTool, FakeModel, ModelError, ModelProvider, Tool, ToolError};
-use autra_runtime::{Agent, RunEvent, RunOptions, RunStatus};
 
 #[tokio::test]
 async fn echo_agent_returns_the_echoed_answer() {

@@ -2,11 +2,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use autra::{Agent, ApprovalDecision, ApprovalRequest, Approver, RunOptions};
 use autra_core::{AttemptStatus, EffectKind, EffectStatus, ModelOutput, ToolCallRequest, ToolSpec};
 use autra_harness::{
     EchoModel, EchoTool, FakeModel, LocalWorkspace, Tool, ToolError, WriteFileTool,
 };
-use autra_runtime::{Agent, ApprovalDecision, ApprovalRequest, Approver, RunOptions};
 use tempfile::tempdir;
 
 struct RejectingApprover {

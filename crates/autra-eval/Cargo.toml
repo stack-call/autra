@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-autra-runtime = { path = "../autra-runtime" }
+autra = { path = "../autra" }
 
 [dev-dependencies]
 autra-core = { path = "../autra-core" }

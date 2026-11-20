@@ -1,6 +1,6 @@
 use autra_core::{EffectId, EffectKind, EffectRecord, EffectStatus, RunId};
 use autra_durable_sqlite::SqliteEffectJournal;
-use autra_runtime::EffectJournal;
+use autra_execution::EffectJournal;
 use tempfile::tempdir;
 
 fn authorized_effect() -> EffectRecord {

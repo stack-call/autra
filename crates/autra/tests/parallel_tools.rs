@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use autra::{Agent, RunEvent, RunOptions, RunOutcome, RunStatus};
 use autra_core::{CancelFlag, ModelCallSpec, ModelOutput, ToolCallRequest, ToolSpec};
 use autra_harness::{FakeModel, HistoryItem, ModelError, ModelProvider, Tool, ToolError};
-use autra_runtime::{Agent, RunEvent, RunOptions, RunOutcome, RunStatus};
 
 struct DelayTool {
     active: Arc<AtomicUsize>,

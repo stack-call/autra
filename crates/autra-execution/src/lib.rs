@@ -9,6 +9,7 @@ pub mod hooks;
 pub mod host;
 pub mod journal;
 pub mod model;
+pub mod run;
 pub mod sandbox;
 pub mod tool;
 
@@ -20,6 +21,7 @@ pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities};
 pub use journal::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
 pub use model::{MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider};
+pub use run::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
 pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
     SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus,

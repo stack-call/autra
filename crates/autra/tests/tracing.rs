@@ -1,5 +1,5 @@
+use autra::Agent;
 use autra_harness::EchoModel;
-use autra_runtime::Agent;
 use tracing_test::traced_test;
 
 #[tokio::test]

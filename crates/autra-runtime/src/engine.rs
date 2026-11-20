@@ -1,325 +1,153 @@
+//! Local execution engine: coordinator, effect runner and recovery.
+//!
+//! It depends on core and execution contracts only; harness assembly belongs
+//! to the product facade.
+
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, AttemptStatus, BudgetSnapshot, CancelFlag,
     Disposition, EffectClass, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus,
-    EventKind, HistoryItem, ModelCallSpec, RunId, SessionId, StepError, ToolCallRequest,
-    ToolCallSpec, ToolOutcome, TransitionProposal, TurnId,
+    EventKind, HistoryItem, ModelCallSpec, RunId, ToolCallRequest, ToolCallSpec, ToolOutcome,
+    TransitionProposal,
 };
-use autra_harness::{
-    ContextBuilder, LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
-    SimpleContextBuilder, Skill, SkillRegistry, Tool, ToolRegistry, UpdatePlanTool,
+use autra_execution::{
+    Approver, EffectJournal, ObserverHook, RunError, RunEvent, RunOptions, RunOutcome, ToolRegistry,
 };
 use tracing::Instrument;
 
-use crate::approval::{ApprovalDecision, ApprovalRequest, Approver, digest_intent};
+use crate::approval::{ApprovalDecision, ApprovalRequest, digest_intent};
 use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
-    LocalDispatcher, OutboxDispatcher,
+    OutboxDispatcher,
 };
-use crate::hooks::ObserverHook;
-use crate::journal::EffectJournal;
-use crate::subagent::{SubagentRegistry, SubagentTool};
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum BuildError {
-    #[error("agent `{name}` requires a model")]
-    MissingModel { name: String },
-}
-
-#[derive(Debug, Error)]
-pub enum RunError {
-    #[error("step error: {0}")]
-    Step(#[from] StepError),
-    #[error("model error: {0}")]
-    Model(#[from] ModelError),
-    #[error("run failed: {0}")]
-    Failed(String),
-    #[error("protocol error: {0}")]
-    Protocol(String),
-    #[error("journal error: {0}")]
-    Journal(String),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RunStatus {
-    Completed,
-    Cancelled,
-}
-
-#[derive(Clone, Default)]
-pub struct RunOptions {
-    pub cancel: CancelFlag,
-    pub effect_timeout: Option<Duration>,
-    pub max_parallel_tool_calls: Option<u32>,
-    pub approver: Option<Arc<dyn Approver>>,
-    pub session_id: Option<SessionId>,
-    pub turn_id: Option<TurnId>,
-}
-
-#[derive(Clone, Debug)]
-pub enum RunEvent {
-    RunStarted {
-        run_id: RunId,
-    },
-    RunResumed {
-        run_id: RunId,
-    },
-    ModelCallStarted {
-        turn: u32,
-    },
-    ModelResult {
-        text: Option<String>,
-        tool_calls: Vec<ToolCallRequest>,
-    },
-    ApprovalRequested {
-        call_id: String,
-        tool_name: String,
-        argument_digest: String,
-    },
-    ApprovalDecided {
-        call_id: String,
-        approved: bool,
-    },
-    ToolCallStarted {
-        call_id: String,
-        name: String,
-    },
-    ToolResult {
-        call_id: String,
-        name: String,
-        is_error: bool,
-        outcome_unknown: bool,
-        content: String,
-    },
-    RunCompleted {
-        answer: Option<String>,
-    },
-    RunCancelled,
-    RunFailed {
-        message: String,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub struct RunOutcome {
-    state: AgentState,
-    effects: Vec<EffectRecord>,
-}
-
-impl RunOutcome {
-    pub fn state(&self) -> &AgentState {
-        &self.state
-    }
-
-    pub fn effects(&self) -> &[EffectRecord] {
-        &self.effects
-    }
-
-    pub fn answer(&self) -> Option<&str> {
-        self.state.final_answer.as_deref()
-    }
-
-    pub fn status(&self) -> RunStatus {
-        match self.state.phase {
-            AgentPhase::Completed => RunStatus::Completed,
-            AgentPhase::Cancelled => RunStatus::Cancelled,
-            ref phase => panic!("RunOutcome only exists for Completed or Cancelled, got {phase:?}"),
-        }
-    }
-
-    pub fn turns_used(&self) -> u32 {
-        self.state.budget.turns_used
-    }
-
-    pub fn tool_calls_used(&self) -> u32 {
-        self.state.budget.tool_calls_used
-    }
-}
-
-struct BatchSink<'a, F> {
-    on_event: &'a mut F,
-    queue: &'a mut VecDeque<AcceptedEvent>,
-    seq: &'a mut u64,
-    cancel_queued: &'a mut bool,
-    run_id: &'a RunId,
-    approver: Option<&'a Arc<dyn Approver>>,
-    effects: &'a mut Vec<EffectRecord>,
-}
-
-impl<'a, F> BatchSink<'a, F>
-where
-    F: FnMut(&RunEvent),
-{
-    fn emit_stream(&mut self, event: &RunEvent) {
-        (self.on_event)(event);
-    }
-
-    fn start_tool(&mut self, call: &ToolCallRequest) {
-        self.emit_stream(&RunEvent::ToolCallStarted {
-            call_id: call.call_id.clone(),
-            name: call.name.clone(),
-        });
-    }
-
-    fn emit_tool_result(&mut self, outcome: &ToolOutcome) {
-        emit_tool_result(&mut *self.on_event, outcome);
-    }
-
-    fn start_tool_outcome(&mut self, outcome: &ToolOutcome) {
-        self.emit_stream(&RunEvent::ToolCallStarted {
-            call_id: outcome.call_id.clone(),
-            name: outcome.name.clone(),
-        });
-    }
-
-    fn accept_outcome(&mut self, outcome: ToolOutcome) {
-        enqueue(
-            &mut *self.queue,
-            &mut *self.seq,
-            EventKind::ToolResult(outcome),
-        );
-    }
-
-    fn cancel(&mut self) {
-        queue_cancel(&mut *self.queue, &mut *self.seq, &mut *self.cancel_queued);
-    }
-
-    fn effect_mut(&mut self, effect_id: &EffectId) -> &mut EffectRecord {
-        self.effects
-            .iter_mut()
-            .find(|record| &record.id == effect_id)
-            .expect("effect record must exist")
-    }
-
-    fn record_tool_outcome(
-        &mut self,
-        effect_id: &EffectId,
-        known_tool: bool,
-        outcome: &ToolOutcome,
-    ) {
-        if outcome.outcome_unknown {
-            let record = self.effect_mut(effect_id);
-            record.set_status(EffectStatus::OutcomeUnknown);
-            record.record_attempt(
-                AttemptStatus::OutcomeUnknown,
-                Some(outcome.content.clone()),
-                None,
-            );
-        } else if !known_tool {
-            let record = self.effect_mut(effect_id);
-            record.set_status(EffectStatus::Failed);
-            record.record_attempt(AttemptStatus::Failed, None, Some(outcome.content.clone()));
-        } else {
-            let error = if outcome.is_error {
-                Some(outcome.content.clone())
-            } else {
-                None
-            };
-            let record = self.effect_mut(effect_id);
-            record.set_status(EffectStatus::Committed);
-            record.record_attempt(
-                AttemptStatus::Succeeded,
-                Some(outcome.content.clone()),
-                error,
-            );
-        }
-    }
-}
-
-struct RunSetup {
-    stepper: Arc<dyn AgentStepper>,
-    effect_timeout: Option<Duration>,
-    parallel_limit: u32,
-    approver: Option<Arc<dyn Approver>>,
-    cancel: CancelFlag,
-}
-
-pub struct Agent {
-    name: String,
-    instructions: Option<String>,
+/// Drives one Run: accepts events, commits transitions, executes effects and
+/// resumes committed checkpoints.
+pub struct LocalEngine {
     dispatcher: Arc<dyn Dispatcher>,
     tools: ToolRegistry,
-    effect_timeout: Option<Duration>,
+    journal: Option<Arc<dyn EffectJournal>>,
+    observer: Option<Arc<dyn ObserverHook>>,
     max_turns: u32,
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
+    effect_timeout: Option<Duration>,
     approver: Option<Arc<dyn Approver>>,
-    skills: SkillRegistry,
-    context_budget_chars: Option<usize>,
-    plan: Option<SharedPlan>,
-    context_builder: Option<Arc<dyn ContextBuilder>>,
-    stepper: Option<Arc<dyn AgentStepper>>,
-    observer: Option<Arc<dyn ObserverHook>>,
-    journal: Option<Arc<dyn EffectJournal>>,
 }
 
-impl Agent {
-    pub fn builder(name: impl Into<String>) -> AgentBuilder {
-        AgentBuilder::new(name)
+impl LocalEngine {
+    pub fn new(dispatcher: Arc<dyn Dispatcher>, tools: ToolRegistry) -> Self {
+        Self {
+            dispatcher,
+            tools,
+            journal: None,
+            observer: None,
+            max_turns: 8,
+            max_tool_calls: 8,
+            max_parallel_tool_calls: 1,
+            effect_timeout: None,
+            approver: None,
+        }
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn with_journal(mut self, journal: Arc<dyn EffectJournal>) -> Self {
+        self.journal = Some(journal);
+        self
     }
 
-    pub fn plan(&self) -> Option<Vec<PlanItem>> {
-        self.plan
-            .as_ref()
-            .map(|plan| plan.lock().expect("plan lock poisoned").clone())
+    pub fn with_observer(mut self, observer: Arc<dyn ObserverHook>) -> Self {
+        self.observer = Some(observer);
+        self
     }
 
-    pub async fn run(&self, input: &str) -> Result<RunOutcome, RunError> {
-        self.run_with_options(input, RunOptions::default(), |_| {})
+    pub fn with_limits(
+        mut self,
+        max_turns: u32,
+        max_tool_calls: u32,
+        max_parallel_tool_calls: u32,
+    ) -> Self {
+        self.max_turns = max_turns;
+        self.max_tool_calls = max_tool_calls;
+        self.max_parallel_tool_calls = max_parallel_tool_calls.max(1);
+        self
+    }
+
+    pub fn with_effect_timeout(mut self, effect_timeout: Option<Duration>) -> Self {
+        self.effect_timeout = effect_timeout;
+        self
+    }
+
+    pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
+        self.approver = Some(approver);
+        self
+    }
+
+    pub fn tools(&self) -> &ToolRegistry {
+        &self.tools
+    }
+
+    /// Run one new Run from its initial event.
+    pub async fn run<F>(
+        &self,
+        stepper: Arc<dyn AgentStepper>,
+        history: &[HistoryItem],
+        input: &str,
+        options: RunOptions,
+        mut on_event: F,
+    ) -> Result<RunOutcome, RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        let run_id = RunId::fresh();
+        tracing::info!(run_id = %run_id, "agent run started");
+        if let Some(observer) = &self.observer {
+            observer.on_run_started(&run_id);
+        }
+        let mut state = AgentState::new(
+            run_id.clone(),
+            BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
+        );
+        state.history = history.to_vec();
+        state.session_id = options.session_id.clone();
+        state.turn_id = options.turn_id.clone();
+        let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
+        let mut seq = 0_u64;
+        enqueue(
+            &mut queue,
+            &mut seq,
+            EventKind::RunStarted {
+                input: input.to_owned(),
+            },
+        );
+        on_event(&RunEvent::RunStarted {
+            run_id: run_id.clone(),
+        });
+        self.drive(stepper, state, queue, Vec::new(), options, on_event)
             .await
     }
 
-    pub async fn run_with_options<F>(
+    /// Continue a Run from its last committed checkpoint. Requires a journal.
+    pub async fn resume<F>(
         &self,
-        input: &str,
+        stepper: Arc<dyn AgentStepper>,
+        run_id: &RunId,
         options: RunOptions,
         on_event: F,
     ) -> Result<RunOutcome, RunError>
     where
         F: FnMut(&RunEvent),
     {
-        self.run_with_history(&[], input, options, on_event).await
-    }
-
-    fn stepper_for_run(&self) -> Arc<dyn AgentStepper> {
-        match &self.stepper {
-            Some(stepper) => stepper.clone(),
-            None => {
-                let context_builder: Arc<dyn ContextBuilder> = match &self.context_builder {
-                    Some(builder) => builder.clone(),
-                    None => {
-                        let mut builder = SimpleContextBuilder::new(self.skills.index());
-                        if let Some(max_chars) = self.context_budget_chars {
-                            builder = builder.with_max_chars(max_chars);
-                        }
-                        Arc::new(builder)
-                    }
-                };
-                Arc::new(
-                    ReActStepper::new(self.instructions.clone(), self.tools.specs())
-                        .with_shared_context_builder(context_builder),
-                )
-            }
-        }
-    }
-
-    /// Continue a Run from its last committed checkpoint. Requires a journal.
-    pub async fn resume(&self, run_id: &RunId) -> Result<RunOutcome, RunError> {
-        self.resume_with_options(run_id, RunOptions::default(), |_| {})
+        self.resume_with_options(stepper, run_id, options, on_event)
             .await
     }
 
-    #[tracing::instrument(skip_all, fields(agent = %self.name, run_id = %run_id))]
+    #[tracing::instrument(skip_all, fields(run_id = %run_id))]
     pub async fn resume_with_options<F>(
         &self,
+        stepper: Arc<dyn AgentStepper>,
         run_id: &RunId,
         options: RunOptions,
         mut on_event: F,
@@ -355,11 +183,11 @@ impl Agent {
                 on_event(&RunEvent::RunCompleted {
                     answer: state.final_answer.clone(),
                 });
-                return Ok(RunOutcome { state, effects });
+                return Ok(RunOutcome::new(state, effects));
             }
             AgentPhase::Cancelled => {
                 on_event(&RunEvent::RunCancelled);
-                return Ok(RunOutcome { state, effects });
+                return Ok(RunOutcome::new(state, effects));
             }
             AgentPhase::Failed => {
                 return Err(RunError::Failed(
@@ -377,17 +205,6 @@ impl Agent {
             AgentPhase::AwaitingTool | AgentPhase::AwaitingModel => {}
         }
 
-        let setup = RunSetup {
-            stepper: self.stepper_for_run(),
-            effect_timeout: options.effect_timeout.or(self.effect_timeout),
-            parallel_limit: options
-                .max_parallel_tool_calls
-                .unwrap_or(self.max_parallel_tool_calls)
-                .max(1),
-            approver: options.approver.clone().or_else(|| self.approver.clone()),
-            cancel: options.cancel.clone(),
-        };
-
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
         match state.phase {
             AgentPhase::AwaitingTool => {
@@ -396,7 +213,7 @@ impl Agent {
                         journal.as_ref(),
                         &state,
                         &mut effects,
-                        setup.effect_timeout,
+                        options.effect_timeout.or(self.effect_timeout),
                     )
                     .await?;
                 for outcome in outcomes {
@@ -410,7 +227,8 @@ impl Agent {
             _ => unreachable!(),
         }
 
-        self.drive(setup, state, queue, effects, on_event).await
+        self.drive(stepper, state, queue, effects, options, on_event)
+            .await
     }
 
     /// Drain due outbox rows across all Runs, reclaiming expired leases.
@@ -610,77 +428,29 @@ impl Agent {
             .collect())
     }
 
-    #[tracing::instrument(skip_all, fields(agent = %self.name))]
-    pub async fn run_with_history<F>(
+    async fn drive<F>(
         &self,
-        history: &[HistoryItem],
-        input: &str,
+        stepper: Arc<dyn AgentStepper>,
+        mut state: AgentState,
+        mut queue: VecDeque<AcceptedEvent>,
+        mut effects: Vec<EffectRecord>,
         options: RunOptions,
         mut on_event: F,
     ) -> Result<RunOutcome, RunError>
     where
         F: FnMut(&RunEvent),
     {
-        let run_id = RunId::fresh();
-        tracing::info!(run_id = %run_id, "agent run started");
-        if let Some(observer) = &self.observer {
-            observer.on_run_started(&run_id);
-        }
-        let mut state = AgentState::new(
-            run_id.clone(),
-            BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
-        );
-        state.history = history.to_vec();
-        state.session_id = options.session_id.clone();
-        state.turn_id = options.turn_id.clone();
-        let effects: Vec<EffectRecord> = Vec::new();
-        let stepper = self.stepper_for_run();
         let effect_timeout = options.effect_timeout.or(self.effect_timeout);
         let parallel_limit = options
             .max_parallel_tool_calls
             .unwrap_or(self.max_parallel_tool_calls)
             .max(1);
         let approver = options.approver.clone().or_else(|| self.approver.clone());
-        let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
-        let mut seq = 0_u64;
-
-        enqueue(
-            &mut queue,
-            &mut seq,
-            EventKind::RunStarted {
-                input: input.to_owned(),
-            },
-        );
-        on_event(&RunEvent::RunStarted {
-            run_id: run_id.clone(),
-        });
-
-        let setup = RunSetup {
-            stepper,
-            effect_timeout,
-            parallel_limit,
-            approver,
-            cancel: options.cancel.clone(),
-        };
-        self.drive(setup, state, queue, effects, on_event).await
-    }
-
-    async fn drive<F>(
-        &self,
-        setup: RunSetup,
-        mut state: AgentState,
-        mut queue: VecDeque<AcceptedEvent>,
-        mut effects: Vec<EffectRecord>,
-        mut on_event: F,
-    ) -> Result<RunOutcome, RunError>
-    where
-        F: FnMut(&RunEvent),
-    {
         let run_id = state.run_id.clone();
         let mut seq = queue.iter().map(|event| event.seq).max().unwrap_or(0);
         let mut cancel_queued = false;
         loop {
-            if setup.cancel.is_cancelled() {
+            if options.cancel.is_cancelled() {
                 queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
             }
 
@@ -688,7 +458,7 @@ impl Agent {
                 .pop_front()
                 .ok_or_else(|| RunError::Protocol("no accepted event to process".to_owned()))?;
             let expected_version = state.state_version;
-            let transition = match setup.stepper.transition(&state, &event) {
+            let transition = match stepper.transition(&state, &event) {
                 Ok(transition) => transition,
                 Err(error) => {
                     let message = error.to_string();
@@ -790,7 +560,7 @@ impl Agent {
                                 .map_err(|error| RunError::Journal(error.to_string()))?;
                         }
                     }
-                    return Ok(RunOutcome { state, effects });
+                    return Ok(RunOutcome::new(state, effects));
                 }
                 Disposition::Failed => {
                     let message = state
@@ -809,7 +579,7 @@ impl Agent {
                 Disposition::Continue => {}
             }
 
-            if setup.cancel.is_cancelled() {
+            if options.cancel.is_cancelled() {
                 cancel_staged_effects(&mut effects[first_new..], self.journal.as_deref(), &run_id)?;
                 queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
                 continue;
@@ -822,21 +592,21 @@ impl Agent {
                     seq: &mut seq,
                     cancel_queued: &mut cancel_queued,
                     run_id: &run_id,
-                    approver: setup.approver.as_ref(),
+                    approver: approver.as_ref(),
                     effects: &mut effects,
                 };
                 self.execute_tool_batch(
                     tool_calls,
-                    setup.parallel_limit,
-                    setup.effect_timeout,
-                    &setup.cancel,
+                    parallel_limit,
+                    effect_timeout,
+                    &options.cancel,
                     &mut sink,
                 )
                 .await?;
             }
 
             for (effect_id, request) in model_requests {
-                if setup.cancel.is_cancelled() {
+                if options.cancel.is_cancelled() {
                     let record = effect_mut(&mut effects, &effect_id);
                     record.set_status(EffectStatus::CancelledBeforeDispatch);
                     if let Some(journal) = &self.journal {
@@ -867,7 +637,7 @@ impl Agent {
                                 &run_id,
                                 1,
                                 self.dispatcher.as_ref(),
-                                setup.effect_timeout,
+                                effect_timeout,
                             )
                             .await
                             .map_err(|error| RunError::Journal(error.to_string()))?;
@@ -891,7 +661,7 @@ impl Agent {
                             effect_mut(&mut effects, &effect_id)
                                 .set_status(EffectStatus::Dispatched);
                             self.dispatcher
-                                .call_model(&request, setup.effect_timeout)
+                                .call_model(&request, effect_timeout)
                                 .await
                                 .map_err(RunError::Model)
                         }
@@ -1171,199 +941,93 @@ impl Agent {
     }
 }
 
-pub struct AgentBuilder {
-    name: String,
-    instructions: Option<String>,
-    model: Option<Arc<dyn ModelProvider>>,
-    dispatcher: Option<Arc<dyn Dispatcher>>,
-    tools: ToolRegistry,
-    effect_timeout: Option<Duration>,
-    max_turns: u32,
-    max_tool_calls: u32,
-    max_parallel_tool_calls: u32,
-    approver: Option<Arc<dyn Approver>>,
-    skills: SkillRegistry,
-    context_budget_chars: Option<usize>,
-    planning: bool,
-    subagents: SubagentRegistry,
-    context_builder: Option<Arc<dyn ContextBuilder>>,
-    stepper: Option<Arc<dyn AgentStepper>>,
-    observer: Option<Arc<dyn ObserverHook>>,
-    journal: Option<Arc<dyn EffectJournal>>,
+struct BatchSink<'a, F> {
+    on_event: &'a mut F,
+    queue: &'a mut VecDeque<AcceptedEvent>,
+    seq: &'a mut u64,
+    cancel_queued: &'a mut bool,
+    run_id: &'a RunId,
+    approver: Option<&'a Arc<dyn Approver>>,
+    effects: &'a mut Vec<EffectRecord>,
 }
 
-impl AgentBuilder {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            instructions: None,
-            model: None,
-            dispatcher: None,
-            tools: ToolRegistry::new(),
-            effect_timeout: None,
-            max_turns: 8,
-            max_tool_calls: 8,
-            max_parallel_tool_calls: 1,
-            approver: None,
-            skills: SkillRegistry::new(),
-            context_budget_chars: None,
-            planning: false,
-            subagents: SubagentRegistry::new(),
-            context_builder: None,
-            stepper: None,
-            observer: None,
-            journal: None,
-        }
+impl<'a, F> BatchSink<'a, F>
+where
+    F: FnMut(&RunEvent),
+{
+    fn emit_stream(&mut self, event: &RunEvent) {
+        (self.on_event)(event);
     }
 
-    pub fn instructions(mut self, instructions: impl Into<String>) -> Self {
-        self.instructions = Some(instructions.into());
-        self
+    fn start_tool(&mut self, call: &ToolCallRequest) {
+        self.emit_stream(&RunEvent::ToolCallStarted {
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+        });
     }
 
-    pub fn model(mut self, model: impl ModelProvider + 'static) -> Self {
-        self.model = Some(Arc::new(model));
-        self
+    fn emit_tool_result(&mut self, outcome: &ToolOutcome) {
+        emit_tool_result(&mut *self.on_event, outcome);
     }
 
-    pub fn effect_timeout(mut self, effect_timeout: Duration) -> Self {
-        self.effect_timeout = Some(effect_timeout);
-        self
+    fn start_tool_outcome(&mut self, outcome: &ToolOutcome) {
+        self.emit_stream(&RunEvent::ToolCallStarted {
+            call_id: outcome.call_id.clone(),
+            name: outcome.name.clone(),
+        });
     }
 
-    pub fn tools(mut self, tools: ToolRegistry) -> Self {
-        self.tools = tools;
-        self
+    fn accept_outcome(&mut self, outcome: ToolOutcome) {
+        enqueue(
+            &mut *self.queue,
+            &mut *self.seq,
+            EventKind::ToolResult(outcome),
+        );
     }
 
-    pub fn tool(mut self, tool: impl Tool + 'static) -> Self {
-        self.tools.register(tool);
-        self
+    fn cancel(&mut self) {
+        queue_cancel(&mut *self.queue, &mut *self.seq, &mut *self.cancel_queued);
     }
 
-    pub fn max_turns(mut self, max_turns: u32) -> Self {
-        self.max_turns = max_turns;
-        self
+    fn effect_mut(&mut self, effect_id: &EffectId) -> &mut EffectRecord {
+        self.effects
+            .iter_mut()
+            .find(|record| &record.id == effect_id)
+            .expect("effect record must exist")
     }
 
-    pub fn approver(mut self, approver: impl Approver + 'static) -> Self {
-        self.approver = Some(Arc::new(approver));
-        self
-    }
-
-    pub fn max_parallel_tool_calls(mut self, max_parallel_tool_calls: u32) -> Self {
-        self.max_parallel_tool_calls = max_parallel_tool_calls.max(1);
-        self
-    }
-
-    pub fn max_tool_calls(mut self, max_tool_calls: u32) -> Self {
-        self.max_tool_calls = max_tool_calls;
-        self
-    }
-
-    pub fn skill(mut self, skill: Skill) -> Self {
-        self.skills.register(skill);
-        self
-    }
-
-    pub fn subagent(
-        mut self,
-        name: impl Into<String>,
-        description: impl Into<String>,
-        agent: Agent,
-    ) -> Self {
-        self.subagents.register(name, description, agent);
-        self
-    }
-
-    pub fn planning(mut self) -> Self {
-        self.planning = true;
-        self
-    }
-
-    /// Use a custom ContextBuilder. The builder owns skills and budget composition.
-    pub fn context_builder(mut self, builder: impl ContextBuilder + 'static) -> Self {
-        self.context_builder = Some(Arc::new(builder));
-        self
-    }
-
-    /// Replace the ReAct Stepper. The custom engine owns its decisions; the
-    /// coordinator still dispatches emitted intents and enforces budgets.
-    pub fn stepper(mut self, stepper: impl AgentStepper + 'static) -> Self {
-        self.stepper = Some(Arc::new(stepper));
-        self
-    }
-
-    pub fn observer(mut self, observer: impl ObserverHook + 'static) -> Self {
-        self.observer = Some(Arc::new(observer));
-        self
-    }
-
-    pub fn dispatcher(mut self, dispatcher: impl Dispatcher + 'static) -> Self {
-        self.dispatcher = Some(Arc::new(dispatcher));
-        self
-    }
-
-    pub fn journal(mut self, journal: impl EffectJournal + 'static) -> Self {
-        self.journal = Some(Arc::new(journal));
-        self
-    }
-
-    pub fn context_budget_chars(mut self, max_chars: usize) -> Self {
-        self.context_budget_chars = Some(max_chars);
-        self
-    }
-
-    pub fn build(self) -> Result<Agent, BuildError> {
-        let mut tools = self.tools;
-        if !self.skills.is_empty() {
-            tools.register(LoadSkillTool::new(Arc::new(self.skills.clone())));
-        }
-        if !self.subagents.is_empty() {
-            tools.register(SubagentTool::new(self.subagents.clone()));
-        }
-        let (instructions, plan) = if self.planning {
-            let plan: SharedPlan = Arc::new(Mutex::new(Vec::new()));
-            tools.register(UpdatePlanTool::new(plan.clone()));
-            let instructions = match self.instructions {
-                Some(instructions) => format!(
-                    "{instructions}
-
-Maintain a short plan with `update_plan` and keep it current."
-                ),
-                None => "Maintain a short plan with `update_plan` and keep it current.".to_owned(),
-            };
-            (Some(instructions), Some(plan))
+    fn record_tool_outcome(
+        &mut self,
+        effect_id: &EffectId,
+        known_tool: bool,
+        outcome: &ToolOutcome,
+    ) {
+        if outcome.outcome_unknown {
+            let record = self.effect_mut(effect_id);
+            record.set_status(EffectStatus::OutcomeUnknown);
+            record.record_attempt(
+                AttemptStatus::OutcomeUnknown,
+                Some(outcome.content.clone()),
+                None,
+            );
+        } else if !known_tool {
+            let record = self.effect_mut(effect_id);
+            record.set_status(EffectStatus::Failed);
+            record.record_attempt(AttemptStatus::Failed, None, Some(outcome.content.clone()));
         } else {
-            (self.instructions, None)
-        };
-        let dispatcher = match self.dispatcher {
-            Some(dispatcher) => dispatcher,
-            None => {
-                let model = self.model.ok_or_else(|| BuildError::MissingModel {
-                    name: self.name.clone(),
-                })?;
-                Arc::new(LocalDispatcher::new(model, tools.clone()))
-            }
-        };
-        Ok(Agent {
-            name: self.name,
-            instructions,
-            dispatcher,
-            tools,
-            effect_timeout: self.effect_timeout,
-            max_turns: self.max_turns,
-            max_tool_calls: self.max_tool_calls,
-            max_parallel_tool_calls: self.max_parallel_tool_calls,
-            approver: self.approver,
-            skills: self.skills,
-            context_budget_chars: self.context_budget_chars,
-            plan,
-            context_builder: self.context_builder,
-            stepper: self.stepper,
-            observer: self.observer,
-            journal: self.journal,
-        })
+            let error = if outcome.is_error {
+                Some(outcome.content.clone())
+            } else {
+                None
+            };
+            let record = self.effect_mut(effect_id);
+            record.set_status(EffectStatus::Committed);
+            record.record_attempt(
+                AttemptStatus::Succeeded,
+                Some(outcome.content.clone()),
+                error,
+            );
+        }
     }
 }
 

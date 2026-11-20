@@ -84,6 +84,10 @@ Tests observe public behaviour, not private helpers.
     selected root, `--journal` persists a run, `resume` requires its journal
     and model, `outbox` requires its journal, `tools` lists the workspace
     capabilities, and unknown options fail with usage.
+27. **Architecture** (`autra-testkit`): `cargo metadata` confirms core has no
+    Autra dependencies, execution depends on core, harness and runtime depend
+    only on core + execution, durable adapters do the same, and CLI/eval use
+    the facade rather than runtime.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

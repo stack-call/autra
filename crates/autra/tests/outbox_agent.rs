@@ -1,14 +1,14 @@
 use async_trait::async_trait;
+use autra::{
+    Agent, ApprovalDecision, ApprovalRequest, Approver, EffectJournal, JournalError, MemoryJournal,
+    OutboxEntry, RunError,
+};
 use autra_core::{
     AcceptedEvent, AgentState, AttemptStatus, EffectId, EffectKind, EffectRecord, EffectStatus,
     ModelCallSpec, ModelOutput, RunId, ToolCallRequest,
 };
 use autra_harness::{
     EchoTool, FakeModel, LocalWorkspace, ModelError, ModelProvider, WriteFileTool,
-};
-use autra_runtime::{
-    Agent, ApprovalDecision, ApprovalRequest, Approver, EffectJournal, JournalError, MemoryJournal,
-    OutboxEntry, RunError,
 };
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -297,7 +297,7 @@ async fn an_unknown_tool_is_reported_failed_through_the_outbox() {
 
 #[tokio::test]
 async fn a_claimed_tool_emits_started_before_its_result() {
-    use autra_runtime::RunEvent;
+    use autra::RunEvent;
 
     let journal = SpyJournal::default();
     let agent = Agent::builder("outbox")

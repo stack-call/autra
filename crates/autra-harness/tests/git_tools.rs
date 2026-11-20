@@ -3,8 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use autra_core::EffectClass;
-use autra_harness::{LocalWorkspace, Tool};
-use autra_runtime::{GitDiffTool, GitStatusTool};
+use autra_harness::{GitDiffTool, GitStatusTool, LocalWorkspace, Tool};
 use tempfile::tempdir;
 
 fn git_available() -> bool {

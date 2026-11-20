@@ -1,8 +1,8 @@
 use std::fs;
 
+use autra::{Agent, RunEvent, RunOptions, RunStatus};
 use autra_core::{ModelOutput, ToolCallRequest};
 use autra_harness::{FakeModel, ListFilesTool, LocalWorkspace, ReadFileTool};
-use autra_runtime::{Agent, RunEvent, RunOptions, RunStatus};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -105,7 +105,7 @@ async fn agent_writes_a_nested_file_and_runs_a_command() {
     let agent = Agent::builder("workspace-agent")
         .model(model)
         .tool(autra_harness::WriteFileTool::new(workspace.clone()))
-        .tool(autra_runtime::RunCommandTool::new(workspace))
+        .tool(autra_harness::RunCommandTool::new(workspace))
         .approver(AutoApprove)
         .build()
         .unwrap();

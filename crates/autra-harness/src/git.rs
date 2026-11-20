@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
+use crate::{LocalWorkspace, Tool, ToolError};
 use async_trait::async_trait;
 use autra_core::{EffectClass, ToolSpec};
-use autra_harness::{LocalWorkspace, Tool, ToolError};
 use serde::Deserialize;
 
 use crate::command::{ProcessOutput, run_program, truncate_output};

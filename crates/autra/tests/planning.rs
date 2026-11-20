@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use autra::Agent;
 use autra_core::{ModelCallSpec, ModelOutput, ToolCallRequest};
-use autra_harness::{HistoryItem, ModelError, ModelProvider, Skill};
-use autra_runtime::Agent;
+use autra_harness::{HistoryItem, ModelError, ModelProvider, PlanStatus};
 
 struct CapturingModel {
     responses: Mutex<VecDeque<ModelOutput>>,
@@ -27,7 +27,7 @@ impl ModelProvider for CapturingModel {
 }
 
 #[tokio::test]
-async fn agent_can_load_a_named_skill() {
+async fn update_plan_populates_the_agent_plan() {
     let systems = Arc::new(Mutex::new(Vec::new()));
     let model = CapturingModel {
         responses: Mutex::new(VecDeque::from(vec![
@@ -35,8 +35,8 @@ async fn agent_can_load_a_named_skill() {
                 text: None,
                 tool_calls: vec![ToolCallRequest {
                     call_id: "call-1".to_owned(),
-                    name: "load_skill".to_owned(),
-                    arguments: r#"{"name":"rust"}"#.to_owned(),
+                    name: "update_plan".to_owned(),
+                    arguments: r#"{"items":[{"title":"inspect","status":"completed"},{"title":"edit","status":"in_progress"}]}"#.to_owned(),
                 }],
             },
             ModelOutput {
@@ -46,19 +46,21 @@ async fn agent_can_load_a_named_skill() {
         ])),
         systems: systems.clone(),
     };
-    let agent = Agent::builder("skills")
+    let agent = Agent::builder("planner")
         .model(model)
-        .skill(Skill::new(
-            "rust",
-            "Rust guidance",
-            "Run cargo fmt before reporting.",
-        ))
+        .planning()
         .build()
         .unwrap();
 
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
+    let plan = agent.plan().unwrap();
+    assert_eq!(plan.len(), 2);
+    assert_eq!(plan[0].title, "inspect");
+    assert_eq!(plan[0].status, PlanStatus::Completed);
+    assert_eq!(plan[1].title, "edit");
+    assert_eq!(plan[1].status, PlanStatus::InProgress);
     let tool = outcome
         .state()
         .history
@@ -68,9 +70,8 @@ async fn agent_can_load_a_named_skill() {
             _ => None,
         })
         .unwrap();
-    assert!(tool.content.contains("Run cargo fmt before reporting."));
+    assert!(tool.content.contains("- [x] inspect"));
+    assert!(tool.content.contains("- [~] edit"));
     let systems = systems.lock().unwrap();
-    let system = systems[0].as_deref().unwrap();
-    assert!(system.contains("Available skills"));
-    assert!(system.contains("rust: Rust guidance"));
+    assert!(systems[0].as_deref().unwrap().contains("update_plan"));
 }

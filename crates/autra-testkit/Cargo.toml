@@ -7,5 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 autra-core = { path = "../autra-core" }
+autra-execution = { path = "../autra-execution" }
 autra-harness = { path = "../autra-harness" }
+
+[dev-dependencies]
 autra-runtime = { path = "../autra-runtime" }
+serde_json = "1"

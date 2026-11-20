@@ -2,8 +2,8 @@
 //! behavioural test suites for a specific adapter.
 
 use autra_core::{AgentStepper, STEPPER_PROTOCOL_VERSION};
+use autra_execution::{ExecutionHost, HOST_PROTOCOL_VERSION};
 use autra_harness::{ModelProvider, TOOL_PROTOCOL_VERSION, Tool};
-use autra_runtime::{ExecutionHost, HOST_PROTOCOL_VERSION};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ContractCheck {

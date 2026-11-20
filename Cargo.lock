@@ -39,15 +39,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "autra-cli"
+name = "autra"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "autra-core",
+ "autra-execution",
+ "autra-harness",
+ "autra-runtime",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-test",
+]
+
+[[package]]
+name = "autra-cli"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "autra",
+ "autra-core",
  "autra-durable-sqlite",
  "autra-harness",
  "autra-openai",
- "autra-runtime",
  "tempfile",
  "tokio",
  "tracing-subscriber",
@@ -66,10 +84,10 @@ dependencies = [
 name = "autra-durable-sqlite"
 version = "0.1.0"
 dependencies = [
+ "autra",
  "autra-core",
  "autra-execution",
  "autra-harness",
- "autra-runtime",
  "rusqlite",
  "serde_json",
  "tempfile",
@@ -80,9 +98,9 @@ dependencies = [
 name = "autra-eval"
 version = "0.1.0"
 dependencies = [
+ "autra",
  "autra-core",
  "autra-harness",
- "autra-runtime",
  "tokio",
 ]
 
@@ -133,13 +151,9 @@ dependencies = [
  "async-trait",
  "autra-core",
  "autra-execution",
- "autra-harness",
  "futures-util",
- "serde",
  "serde_json",
- "sha2",
  "tempfile",
- "thiserror",
  "tokio",
  "tracing",
  "tracing-test",
@@ -150,8 +164,10 @@ name = "autra-testkit"
 version = "0.1.0"
 dependencies = [
  "autra-core",
+ "autra-execution",
  "autra-harness",
  "autra-runtime",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use autra::{Agent, RunEvent, RunOptions, RunStatus};
 use autra_core::{CancelFlag, ModelCallSpec, ModelOutput, ToolCallRequest, ToolSpec};
 use autra_harness::{EchoTool, FakeModel, ModelError, ModelProvider, Tool, ToolError};
-use autra_runtime::{Agent, RunEvent, RunOptions, RunStatus};
 
 fn call(id: &str, name: &str, arguments: &str) -> ToolCallRequest {
     ToolCallRequest {

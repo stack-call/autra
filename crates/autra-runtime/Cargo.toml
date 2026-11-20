@@ -1,6 +1,6 @@
 [package]
 name = "autra-runtime"
-description = "Local execution host: effect dispatch, sessions, structured concurrency"
+description = "Local execution engine: dispatch, outbox, resume and concurrency"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,17 +9,12 @@ rust-version.workspace = true
 async-trait = "0.1"
 autra-core = { path = "../autra-core" }
 autra-execution = { path = "../autra-execution" }
-autra-harness = { path = "../autra-harness" }
 futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-thiserror = "2"
 tracing = "0.1"
-tokio = { version = "1", features = ["process", "rt", "time"] }
+tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
-serde_json = "1"
 tempfile = "3"
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 tokio = { version = "1", features = ["macros", "rt", "time"] }

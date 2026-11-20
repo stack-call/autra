@@ -1,6 +1,5 @@
 use autra_core::EffectClass;
-use autra_harness::{LocalWorkspace, Tool};
-use autra_runtime::RunCommandTool;
+use autra_harness::{LocalWorkspace, RunCommandTool, Tool};
 use tempfile::tempdir;
 
 #[tokio::test]

@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
+use autra::{Agent, ObserverHook};
 use autra_core::{AgentPhase, EffectIntent, RunId};
 use autra_harness::EchoModel;
-use autra_runtime::{Agent, ObserverHook};
 
 struct RecordingHook {
     events: Arc<Mutex<Vec<String>>>,

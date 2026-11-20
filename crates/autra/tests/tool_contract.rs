@@ -1,10 +1,10 @@
 use async_trait::async_trait;
+use autra::{Agent, ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions};
 use autra_core::{EffectClass, ModelOutput, ToolCallRequest, ToolSpec};
 use autra_harness::{
     FakeModel, TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolError, ToolInput,
     ToolOutput,
 };
-use autra_runtime::{Agent, ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions};
 
 struct ContractTool;
 

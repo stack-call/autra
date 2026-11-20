@@ -54,22 +54,24 @@ state transitions stay Sans-I/O; Effect execution belongs to the host.
                  ↑        ↑
         autra-harness   autra-runtime
                  ↑        ↑
-                 └── autra-cli
+                 └── autra ──┘
+                       ↑
+                   autra-cli
 
 optional adapters:
 autra-openai · autra-durable-sqlite · autra-restate · autra-openshell
 ```
 
 `autra-execution` owns the contracts shared by behaviour and hosts: `Tool`,
-`ModelProvider`, `EffectJournal`, `Approver`, `ObserverHook`,
+`ModelProvider`, `EffectJournal`, `Approver`, `ObserverHook`, `RunEvent`,
 `ExecutionHost` and `SandboxBackend`. It depends on `autra-core` only.
-`autra-durable-sqlite` now implements `EffectJournal` from execution, not
-from runtime.
+`autra-harness` and `autra-runtime` are siblings: behaviour and the local
+engine do not depend on each other. `autra` assembles a `ReActStepper` (or a
+custom one) with `LocalEngine`; the CLI and evaluation crate use the facade.
 
-Current limitation: `autra-runtime` still depends on `autra-harness` for the
-default `ReActStepper` and context assembly. The planned facade crate
-(`autra`) will own `Agent`/`AgentBuilder` and assemble harness plus runtime,
-allowing runtime to depend on core and execution only.
+The dependency rule is enforced by
+`crates/autra-testkit/tests/architecture.rs`, which reads `cargo metadata` and
+checks normal dependencies. Dev-dependencies are exempt.
 
 `autra-core` must not contain `OpenShellClient`, a SQLx pool, a Restate
 context, a Kubernetes type or an HTTP route. This is enforced by Cargo: the
@@ -80,9 +82,10 @@ core has no Tokio, database or sandbox dependency.
 | Crate | Role | Status |
 |---|---|---|
 | `autra-core` | IDs, AgentState, accepted events, Effect intents, budgets, cancellation, Stepper trait | MVP |
-| `autra-execution` | Tool, ModelProvider, EffectJournal, Approver, ObserverHook, Host and Sandbox contracts | Implemented |
+| `autra-execution` | Tool, ModelProvider, EffectJournal, Approver, ObserverHook, Run API, Host and Sandbox contracts | Implemented |
 | `autra-harness` | ReAct Stepper, context, skills, planning and concrete tools | MVP |
-| `autra-runtime` | Local coordinator, Agent facade, outbox, resume, sessions, timeouts | MVP |
+| `autra-runtime` | Local engine: coordinator, dispatch, outbox, resume, timeouts | Implemented |
+| `autra` | Product facade: Agent, AgentBuilder, Session, Subagent | Implemented |
 | `autra-cli` | `autractl run`, `demo`, `tools`, help | MVP |
 | `autra-openai` | OpenAI-compatible chat completions provider | Implemented, non-streaming |
 | `autra-eval` | Task-level outcome evaluation | Implemented |

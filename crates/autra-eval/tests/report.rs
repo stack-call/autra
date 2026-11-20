@@ -1,6 +1,6 @@
+use autra::Agent;
 use autra_eval::{EvalTask, run_tasks};
 use autra_harness::{EchoModel, FakeModel};
-use autra_runtime::Agent;
 
 #[tokio::test]
 async fn reports_passes_and_failures() {

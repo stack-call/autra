@@ -7,9 +7,9 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use crate::{LocalWorkspace, Tool, ToolError};
 use async_trait::async_trait;
 use autra_core::{EffectClass, ToolSpec};
-use autra_harness::{LocalWorkspace, Tool, ToolError};
 use serde::Deserialize;
 
 pub const RUN_COMMAND_TOOL: &str = "run_command";

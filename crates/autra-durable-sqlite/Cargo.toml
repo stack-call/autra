@@ -12,7 +12,7 @@ rusqlite = { version = "0.43", features = ["bundled"] }
 serde_json = "1"
 
 [dev-dependencies]
-autra-harness = { path = "../autra-harness" }
-autra-runtime = { path = "../autra-runtime" }
+autra = { path = "../autra" }
+autra-harness = { path = "../autra-harness", features = ["process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }

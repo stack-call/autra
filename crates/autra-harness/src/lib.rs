@@ -3,7 +3,11 @@
 //! MVP contents: the default ReAct stepper, the model-provider boundary, the
 //! tool contract and workspace-scoped read-only tools.
 
+#[cfg(feature = "process")]
+pub mod command;
 pub mod context;
+#[cfg(feature = "process")]
+pub mod git;
 pub mod model;
 pub mod planning;
 pub mod react;
@@ -11,9 +15,13 @@ pub mod skills;
 pub mod tools;
 
 pub use autra_core::{HistoryItem, ModelCallSpec, ModelOutput, ToolCallRequest, ToolOutcome};
+#[cfg(feature = "process")]
+pub use command::RunCommandTool;
 pub use context::{
     ContextBuilder, ContextError, ContextRequest, SimpleContextBuilder, SkillSummary,
 };
+#[cfg(feature = "process")]
+pub use git::{GitDiffTool, GitStatusTool};
 pub use model::{
     EchoModel, FakeModel, MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider,
 };

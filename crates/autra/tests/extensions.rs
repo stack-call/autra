@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use autra::Agent;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EngineState, EventKind,
     HistoryItem, ModelCallSpec, ModelOutput, StepError, Transition,
@@ -8,7 +9,6 @@ use autra_core::{
 use autra_harness::{
     ContextBuilder, ContextError, ContextRequest, EchoModel, ModelError, ModelProvider,
 };
-use autra_runtime::Agent;
 
 struct CustomContext;
 

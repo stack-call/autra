@@ -2,11 +2,9 @@ use std::fs;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use autra::{Agent, ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions, RunStatus};
 use autra_core::{ModelOutput, ToolCallRequest};
 use autra_harness::{EchoTool, FakeModel, HistoryItem, LocalWorkspace, WriteFileTool};
-use autra_runtime::{
-    Agent, ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions, RunStatus,
-};
 use tempfile::tempdir;
 
 struct ScriptedApprover {
