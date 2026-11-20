@@ -1,7 +1,17 @@
 # Extension Architecture
 
-Autra extends through Rust traits, explicit Builder composition and optional
-adapters. It is not a dynamic plugin platform.
+Today Autra extends through Rust traits, explicit Builder composition and
+optional adapters. It is not yet a dynamic plugin platform; the intended
+extension system is described at the end of this page as a design-only
+target.
+
+## Plugins are a future layer
+
+A capability (Tool, Provider, Context strategy, Policy, UI panel) is different
+from a plugin, which bundles several capabilities, validates dependencies and
+owns a lifecycle. The proposed plugin structure is recorded in
+[`plugins.md`](plugins.md) as a design-only document; no plugin API exists yet.
+Direct Builder registration remains the supported extension path.
 
 ## Three levels
 
@@ -85,3 +95,71 @@ Every extension group should declare:
 | Sandbox adapter and lifecycle binding | The trait exists, but no backend is wired into execution |
 | Dependency and close ordering | Builder composition has no explicit lifecycle manager |
 | Per-adapter behavioural tests | `autra-testkit` checks protocol basics; host/sandbox behaviour needs its own suite |
+
+## Future: the full extension system (design only)
+
+The complete proposal — four layers, middleware split, plugin lifecycle,
+scopes, permission rules and delivery order — is in
+[`extension-architecture-v1.md`](extension-architecture-v1.md). The summary
+below is the short version.
+
+The current implementation covers capability registration through Builders and
+a read-only `ObserverHook`. The intended extension system has four layers.
+Only capability registration and a subset of lifecycle events exist today;
+interceptors and plugin composition are not implemented. This section records
+the target shape so new features do not invent a conflicting one.
+
+```text
+Autra Extension System
+        │
+        ├── Capability Registration
+        │     Tool / Model / Context / Planner
+        │
+        ├── Lifecycle Events
+        │     before_model / after_model / ...
+        │
+        ├── Wrap Interceptors
+        │     model_call / tool_call ...
+        │
+        └── Plugin Composition
+              dependencies / init / cleanup / UI
+```
+
+| Layer | Responsibility | Today | Future |
+|---|---|---|---|
+| Capability Registration | Declare Tools, Model Providers, Context strategies, Planners, Skills, Memory sources | Builder paths (`tool`, `model`, `context_builder`, `stepper`, `skill`) | Typed registries that a plugin or application can fill; duplicate and conflict checks |
+| Lifecycle Events | Read-only notifications at defined stages | `ObserverHook` (run start, model request, effect accepted, run finished) | A typed catalog: `before_model`, `after_model`, `before_tool`, `after_tool`, approval, effect committed, run phase changes |
+| Wrap Interceptors | Middleware around a call: inspect, transform or short-circuit | None; a custom `Dispatcher` can wrap execution manually | Ordered `model_call` / `tool_call` chains for tracing, redaction, caching, policy checks, retries |
+| Plugin Composition | Bundle capabilities, hooks and interceptors with dependencies, init/cleanup and UI | None; design in [`plugins.md`](plugins.md) | A `Plugin` / `PluginManager` in the facade (or `autra-plugins`) that installs the other three layers |
+
+### Layer rules
+
+- **Registration is not authorization.** Registering a Tool, Policy or UI panel
+  does not grant it permission. Approval, scope, budget and commit remain in
+  the trusted execution layer.
+- **Lifecycle events are read-only.** An observer reports what happened; it
+  cannot change the state, arguments or outcome. Behaviour changes belong in
+  interceptors or engine components, subject to the same execution rules.
+- **Interceptors wrap, they do not bypass.** A `model_call` or `tool_call`
+  interceptor may transform a request or result, but may not skip approval,
+  cancellation, budget checks or the journal. Ordering must be deterministic,
+  and an interceptor must have a defined behaviour on error, timeout and
+  cancellation.
+- **Plugins compose, they do not execute.** A plugin fills registries and owns a
+  lifecycle; it never becomes a second Run path or receives a raw host handle.
+- **Layers are independently usable.** A single Tool can be registered without
+  an observer; an observer can exist without a plugin; a plugin can install
+  capabilities without UI. This is the progressive-complexity rule.
+
+### Layer contract tests
+
+Each layer needs its own contract test before it becomes a supported extension
+point:
+
+- registration: duplicate names, missing dependencies, rollback on failure;
+- lifecycle events: ordering, read-only facts, no mutation of accepted state;
+- interceptors: request/result transformation, ordering, cancellation and error
+  propagation, no bypass of approval or scope;
+- plugins: dependency graph, init/cleanup order, partial-install rollback.
+
+See [`plugins.md`](plugins.md) for the plugin composition design.

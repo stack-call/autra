@@ -139,6 +139,8 @@ Moonshot, vLLM, Ollama or LM Studio.
 - [Durability](docs/durability.md) · [Model providers](docs/model-providers.md)
 - [Testing and evaluation](docs/testing-and-evaluation.md) · [Observability](docs/observability.md)
 - [Evaluation](docs/evaluation.md) · [Harness v1 acceptance](docs/harness.md) · [Extensions](docs/extensions.md)
+- [Plugins and capabilities (design only)](docs/plugins.md)
+- [Extension architecture v1.0 (design proposal)](docs/extension-architecture-v1.md)
 - [Roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/) · [OpenShell](docs/integrations/openshell.md) · [Restate](docs/integrations/restate.md)
 

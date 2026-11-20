@@ -43,8 +43,8 @@ adapters. Memory, MCP and full Planning/Workflow remain future work.
 ## Boundaries
 
 - Execution host is `LocalEphemeral` by default; with an opt-in SQLite journal, `Agent::resume` continues committed checkpoints.
-- No durable journal, SQLite, Restate, OpenShell, MCP, Python SDK, HTTP server
-  or multi-session service.
+- No durable journal, SQLite, Restate, OpenShell, MCP, Python SDK, HTTP server,
+  multi-session service or plugin manager.
 - No OS sandbox. `run_command` runs an unsandboxed local shell in the workspace root; `LocalWorkspace` is path validation only.
 - Sessions and plans are in memory; approvals have no expiry or actor identity.
 - Runs carry optional Session/Turn ids; SessionManager, TurnRecord and a

@@ -16,7 +16,7 @@ The first complete harness (§0.4) is reached at a basic level; see
 | M5 Rich harness | Context policy, compaction, skills, planning, memory | Partial: ContextBuilder, budget, Skills and Planning done; memory pending |
 | M6 Sandbox and evaluation | OpenShell adapter, tracing, replay, evaluation set | Tracing and basic evaluation done; OpenShell and replay pending |
 | M7 Restate PoC | Hosted execution, capability matrix, comparison | Pending |
-| M8 Demand-driven expansion | MCP Gateway/Server, Python SDK, API server, remote workers | Pending |
+| M8 Demand-driven expansion | MCP Gateway/Server, Python SDK, API server, remote workers, plugin manager | Pending (plugin design in [`plugins.md`](plugins.md)) |
 
 ### Dual-track view
 

@@ -69,6 +69,11 @@ autra-openai · autra-durable-sqlite · autra-restate · autra-openshell
 engine do not depend on each other. `autra` assembles a `ReActStepper` (or a
 custom one) with `LocalEngine`; the CLI and evaluation crate use the facade.
 
+A future plugin manager belongs to the facade layer (or a separate
+`autra-plugins` crate) and only fills capability registries; it never becomes
+an execution path. See [`plugins.md`](plugins.md) and
+[`extension-architecture-v1.md`](extension-architecture-v1.md).
+
 The dependency rule is enforced by
 `crates/autra-testkit/tests/architecture.rs`, which reads `cargo metadata` and
 checks normal dependencies. Dev-dependencies are exempt.
