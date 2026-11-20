@@ -1,3 +1,4 @@
+use autra::{react_engine_state, react_history};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -51,7 +52,7 @@ fn call() -> ToolCallRequest {
 fn base_state(run_id: &RunId, phase: AgentPhase) -> AgentState {
     let mut state = AgentState::new(run_id.clone(), BudgetSnapshot::new(8, 8));
     state.phase = phase;
-    state.history = vec![HistoryItem::User("go".to_owned())];
+    state.engine_state = react_engine_state(vec![HistoryItem::User("go".to_owned())], Vec::new());
     state.budget.turns_used = 1;
     state
 }
@@ -94,11 +95,16 @@ async fn resume_dispatches_an_authorized_tool_then_continues() {
     let run_id = RunId::new("run-resume-tool");
     let call = call();
     let mut state = base_state(&run_id, AgentPhase::AwaitingTool);
-    state.history.push(HistoryItem::Assistant {
-        text: None,
-        tool_calls: vec![call.clone()],
-    });
-    state.pending_tool_calls = vec![call.clone()];
+    state.engine_state = react_engine_state(
+        vec![
+            HistoryItem::User("go".to_owned()),
+            HistoryItem::Assistant {
+                text: None,
+                tool_calls: vec![call.clone()],
+            },
+        ],
+        vec![call.clone()],
+    );
     state.budget.tool_calls_used = 1;
     journal.save_run(&state).unwrap();
     let effect = tool_effect(&call, EffectStatus::Authorized);
@@ -135,11 +141,16 @@ async fn resume_does_not_retry_a_dispatched_tool() {
     let run_id = RunId::new("run-resume-unknown");
     let call = call();
     let mut state = base_state(&run_id, AgentPhase::AwaitingTool);
-    state.pending_tool_calls = vec![call.clone()];
-    state.history.push(HistoryItem::Assistant {
-        text: None,
-        tool_calls: vec![call.clone()],
-    });
+    state.engine_state = react_engine_state(
+        vec![
+            HistoryItem::User("go".to_owned()),
+            HistoryItem::Assistant {
+                text: None,
+                tool_calls: vec![call.clone()],
+            },
+        ],
+        vec![call.clone()],
+    );
     journal.save_run(&state).unwrap();
     let effect = tool_effect(&call, EffectStatus::Dispatched);
     journal.record(&run_id, &effect).unwrap();
@@ -166,9 +177,8 @@ async fn resume_does_not_retry_a_dispatched_tool() {
         .unwrap();
     assert_eq!(tool.status, EffectStatus::OutcomeUnknown);
     assert_eq!(tool.attempts[0].status, AttemptStatus::OutcomeUnknown);
-    let tool_outcome = outcome
-        .state()
-        .history
+    let history = react_history(outcome.state());
+    let tool_outcome = history
         .iter()
         .find_map(|item| match item {
             HistoryItem::Tool(outcome) => Some(outcome),
@@ -261,11 +271,16 @@ async fn resume_retries_a_read_only_dispatched_tool() {
     let run_id = RunId::new("run-resume-retry");
     let call = call();
     let mut state = base_state(&run_id, AgentPhase::AwaitingTool);
-    state.pending_tool_calls = vec![call.clone()];
-    state.history.push(HistoryItem::Assistant {
-        text: None,
-        tool_calls: vec![call.clone()],
-    });
+    state.engine_state = react_engine_state(
+        vec![
+            HistoryItem::User("go".to_owned()),
+            HistoryItem::Assistant {
+                text: None,
+                tool_calls: vec![call.clone()],
+            },
+        ],
+        vec![call.clone()],
+    );
     journal.save_run(&state).unwrap();
     let effect = tool_effect(&call, EffectStatus::Dispatched);
     journal.record(&run_id, &effect).unwrap();

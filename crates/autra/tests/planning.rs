@@ -1,3 +1,4 @@
+use autra::react_history;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -61,9 +62,8 @@ async fn update_plan_populates_the_agent_plan() {
     assert_eq!(plan[0].status, PlanStatus::Completed);
     assert_eq!(plan[1].title, "edit");
     assert_eq!(plan[1].status, PlanStatus::InProgress);
-    let tool = outcome
-        .state()
-        .history
+    let history = react_history(outcome.state());
+    let tool = history
         .iter()
         .find_map(|item| match item {
             HistoryItem::Tool(tool) => Some(tool),

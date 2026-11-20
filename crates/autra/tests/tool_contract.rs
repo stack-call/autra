@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use autra::react_history;
 use autra::{Agent, ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions};
 use autra_core::{EffectClass, ModelOutput, ToolCallRequest, ToolSpec};
 use autra_harness::{
@@ -82,9 +83,8 @@ async fn runtime_uses_contract_and_execute() {
         .unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let tool = outcome
-        .state()
-        .history
+    let history = react_history(outcome.state());
+    let tool = history
         .iter()
         .find_map(|item| match item {
             autra_harness::HistoryItem::Tool(tool) => Some(tool),

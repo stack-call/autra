@@ -1,3 +1,4 @@
+use autra::react_history;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -62,13 +63,11 @@ fn tool_model(calls: Vec<ToolCallRequest>) -> FakeModel {
     ])
 }
 
-fn tool_contents(outcome: &RunOutcome) -> Vec<&str> {
-    outcome
-        .state()
-        .history
-        .iter()
+fn tool_contents(outcome: &RunOutcome) -> Vec<String> {
+    react_history(outcome.state())
+        .into_iter()
         .filter_map(|item| match item {
-            HistoryItem::Tool(tool) => Some(tool.content.as_str()),
+            HistoryItem::Tool(tool) => Some(tool.content),
             _ => None,
         })
         .collect()
@@ -120,7 +119,10 @@ async fn parallel_batch_runs_concurrently_and_keeps_model_order() {
         .unwrap();
 
     assert_eq!(max_active.load(Ordering::SeqCst), 2);
-    assert_eq!(tool_contents(&outcome), ["first", "second"]);
+    assert_eq!(
+        tool_contents(&outcome),
+        ["first".to_owned(), "second".to_owned()]
+    );
     assert_eq!(result_ids(&events), ["call-2", "call-1"]);
 }
 
@@ -142,7 +144,10 @@ async fn limit_one_stays_sequential() {
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(max_active.load(Ordering::SeqCst), 1);
-    assert_eq!(tool_contents(&outcome), ["first", "second"]);
+    assert_eq!(
+        tool_contents(&outcome),
+        ["first".to_owned(), "second".to_owned()]
+    );
 }
 
 #[tokio::test]
@@ -167,7 +172,10 @@ async fn run_options_override_the_builder_limit() {
     let outcome = agent.run_with_options("go", options, |_| {}).await.unwrap();
 
     assert_eq!(max_active.load(Ordering::SeqCst), 2);
-    assert_eq!(tool_contents(&outcome), ["first", "second"]);
+    assert_eq!(
+        tool_contents(&outcome),
+        ["first".to_owned(), "second".to_owned()]
+    );
 }
 
 struct CancellingModel {
@@ -255,7 +263,10 @@ async fn cancellation_mid_batch_records_in_flight_calls_and_starts_no_later_chun
     assert_eq!(outcome.status(), RunStatus::Cancelled);
     assert_eq!(started_ids(&events), ["call-1", "call-2"]);
     assert_eq!(result_ids(&events), ["call-2", "call-1"]);
-    assert_eq!(tool_contents(&outcome), ["first", "second"]);
+    assert_eq!(
+        tool_contents(&outcome),
+        ["first".to_owned(), "second".to_owned()]
+    );
     assert_eq!(max_active.load(Ordering::SeqCst), 2);
 }
 
@@ -300,9 +311,8 @@ async fn a_tool_panic_becomes_an_unknown_outcome() {
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let panicked: Vec<_> = outcome
-        .state()
-        .history
+    let history = react_history(outcome.state());
+    let panicked: Vec<_> = history
         .iter()
         .filter_map(|item| match item {
             HistoryItem::Tool(tool) => Some(tool),
@@ -345,9 +355,8 @@ async fn a_tool_panic_is_caught_in_sequential_mode() {
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let tool = outcome
-        .state()
-        .history
+    let history = react_history(outcome.state());
+    let tool = history
         .iter()
         .find_map(|item| match item {
             HistoryItem::Tool(tool) => Some(tool),

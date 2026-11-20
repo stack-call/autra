@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use autra_core::{AgentStepper, HistoryItem, RunId};
-use autra_execution::{Approver, EffectJournal, ModelProvider, ObserverHook, Tool, ToolRegistry};
+use autra_execution::{
+    Approver, DurableTransitionStore, ModelProvider, ObserverHook, Tool, ToolRegistry,
+};
 use autra_harness::{
     ContextBuilder, LoadSkillTool, PlanItem, ReActStepper, SharedPlan, SimpleContextBuilder, Skill,
     SkillRegistry, UpdatePlanTool,
@@ -148,7 +150,7 @@ pub struct AgentBuilder {
     context_builder: Option<Arc<dyn ContextBuilder>>,
     stepper: Option<Arc<dyn AgentStepper>>,
     observer: Option<Arc<dyn ObserverHook>>,
-    journal: Option<Arc<dyn EffectJournal>>,
+    journal: Option<Arc<dyn DurableTransitionStore>>,
 }
 
 impl AgentBuilder {
@@ -263,7 +265,7 @@ impl AgentBuilder {
         self
     }
 
-    pub fn journal(mut self, journal: impl EffectJournal + 'static) -> Self {
+    pub fn journal(mut self, journal: impl DurableTransitionStore + 'static) -> Self {
         self.journal = Some(Arc::new(journal));
         self
     }

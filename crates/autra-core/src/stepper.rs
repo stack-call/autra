@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::effect::EffectIntent;
 use crate::event::AcceptedEvent;
+use crate::message::{HistoryItem, ToolCallRequest};
 use crate::state::AgentState;
 
 pub const STEPPER_PROTOCOL_VERSION: u32 = 1;
@@ -16,6 +17,17 @@ pub trait AgentStepper: Send + Sync {
 
     fn protocol_version(&self) -> u32 {
         STEPPER_PROTOCOL_VERSION
+    }
+
+    /// Initialize engine-owned state when a Run starts. The engine calls this
+    /// once with the seeded conversation history; a resumed Run is not
+    /// re-initialized.
+    fn initialize(&self, _state: &mut AgentState, _history: &[HistoryItem]) {}
+
+    /// Tool calls the engine has accepted but not yet seen results for. A
+    /// non-ReAct engine may return an empty list.
+    fn pending_tool_calls(&self, _state: &AgentState) -> Vec<ToolCallRequest> {
+        Vec::new()
     }
 }
 

@@ -14,7 +14,8 @@ use autra_core::{
     TransitionProposal,
 };
 use autra_execution::{
-    Approver, EffectJournal, ObserverHook, RunError, RunEvent, RunOptions, RunOutcome, ToolRegistry,
+    Approver, DurableTransitionStore, EffectJournal, ObserverHook, RunError, RunEvent, RunOptions,
+    RunOutcome, ToolRegistry,
 };
 use tracing::Instrument;
 
@@ -29,7 +30,7 @@ use crate::dispatcher::{
 pub struct LocalEngine {
     dispatcher: Arc<dyn Dispatcher>,
     tools: ToolRegistry,
-    journal: Option<Arc<dyn EffectJournal>>,
+    journal: Option<Arc<dyn DurableTransitionStore>>,
     observer: Option<Arc<dyn ObserverHook>>,
     max_turns: u32,
     max_tool_calls: u32,
@@ -53,7 +54,7 @@ impl LocalEngine {
         }
     }
 
-    pub fn with_journal(mut self, journal: Arc<dyn EffectJournal>) -> Self {
+    pub fn with_journal(mut self, journal: Arc<dyn DurableTransitionStore>) -> Self {
         self.journal = Some(journal);
         self
     }
@@ -110,7 +111,7 @@ impl LocalEngine {
             run_id.clone(),
             BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
         );
-        state.history = history.to_vec();
+        stepper.initialize(&mut state, history);
         state.session_id = options.session_id.clone();
         state.turn_id = options.turn_id.clone();
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
@@ -210,6 +211,7 @@ impl LocalEngine {
             AgentPhase::AwaitingTool => {
                 let outcomes = self
                     .reconcile_tool_effects(
+                        stepper.as_ref(),
                         journal.as_ref(),
                         &state,
                         &mut effects,
@@ -238,7 +240,7 @@ impl LocalEngine {
             .as_ref()
             .ok_or_else(|| RunError::Protocol("outbox drain requires a journal".to_owned()))?;
         OutboxDispatcher::run_due(
-            journal.as_ref(),
+            journal.journal(),
             limit,
             self.dispatcher.as_ref(),
             self.effect_timeout,
@@ -249,7 +251,7 @@ impl LocalEngine {
 
     fn retire_interrupted_models(
         &self,
-        journal: &dyn EffectJournal,
+        journal: &dyn DurableTransitionStore,
         state: &AgentState,
         effects: &mut [EffectRecord],
     ) -> Result<(), RunError> {
@@ -281,13 +283,14 @@ impl LocalEngine {
 
     async fn reconcile_tool_effects(
         &self,
-        journal: &dyn EffectJournal,
+        stepper: &dyn AgentStepper,
+        journal: &dyn DurableTransitionStore,
         state: &AgentState,
         effects: &mut Vec<EffectRecord>,
         effect_timeout: Option<Duration>,
     ) -> Result<Vec<ToolOutcome>, RunError> {
         let run_id = &state.run_id;
-        let pending = state.pending_tool_calls.clone();
+        let pending = stepper.pending_tool_calls(state);
         if pending.is_empty() {
             return Err(RunError::Protocol(
                 "run is awaiting tools but has no pending calls".to_owned(),
@@ -402,7 +405,7 @@ impl LocalEngine {
 
         if needs_dispatch > 0 {
             OutboxDispatcher::run_once_for_run(
-                journal,
+                journal.journal(),
                 run_id,
                 needs_dispatch,
                 self.dispatcher.as_ref(),
@@ -881,7 +884,7 @@ impl LocalEngine {
 
     async fn execute_claimed_tool_batch<F>(
         &self,
-        journal: &dyn EffectJournal,
+        journal: &dyn DurableTransitionStore,
         approved: Vec<(usize, EffectId, ToolCallRequest)>,
         limit: usize,
         effect_timeout: Option<Duration>,
@@ -936,7 +939,7 @@ impl LocalEngine {
             .await
             .map_err(|error| RunError::Journal(error.to_string()))?;
         }
-        sync_effects(journal, &run_id, sink.effects)?;
+        sync_effects(journal.journal(), &run_id, sink.effects)?;
         Ok((cancelled || cancel.is_cancelled(), dispatched))
     }
 }
@@ -1088,7 +1091,7 @@ fn effect_mut<'a>(effects: &'a mut [EffectRecord], effect_id: &EffectId) -> &'a 
 
 fn mark_cancelled_before_dispatch<F: FnMut(&RunEvent)>(
     sink: &mut BatchSink<'_, F>,
-    journal: Option<&dyn EffectJournal>,
+    journal: Option<&dyn DurableTransitionStore>,
 ) -> Result<(), RunError> {
     let run_id = sink.run_id.clone();
     for record in sink.effects.iter_mut() {
@@ -1122,7 +1125,7 @@ fn accept_local(
 
 fn cancel_staged_effects(
     effects: &mut [EffectRecord],
-    journal: Option<&dyn EffectJournal>,
+    journal: Option<&dyn DurableTransitionStore>,
     run_id: &RunId,
 ) -> Result<(), RunError> {
     for record in effects.iter_mut() {

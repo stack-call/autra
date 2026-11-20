@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ids::{RunId, SessionId, TurnId};
-use crate::message::{HistoryItem, ToolCallRequest};
 use crate::scope::BudgetSnapshot;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,9 +39,9 @@ impl EngineState {
 
 /// Authoritative state of one run.
 ///
-/// Core owns `run_id`, session/turn references, phase, budget, final answer and
-/// last error. `history` and `pending_tool_calls` are currently ReAct-owned;
-/// another engine may ignore them and keep its own state in `engine_state`.
+/// Core owns identity, phase, budget, final answer, last error and an opaque,
+/// versioned `engine_state`. Engine-specific facts (for example ReAct history
+/// and pending tool calls) belong to the engine, not to Core.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentState {
     pub run_id: RunId,
@@ -53,8 +52,6 @@ pub struct AgentState {
     pub session_id: Option<SessionId>,
     pub turn_id: Option<TurnId>,
     pub phase: AgentPhase,
-    pub history: Vec<HistoryItem>,
-    pub pending_tool_calls: Vec<ToolCallRequest>,
     pub budget: BudgetSnapshot,
     pub final_answer: Option<String>,
     pub last_error: Option<String>,
@@ -69,12 +66,10 @@ impl AgentState {
             session_id: None,
             turn_id: None,
             phase: AgentPhase::Ready,
-            history: Vec::new(),
-            pending_tool_calls: Vec::new(),
             budget,
             final_answer: None,
             last_error: None,
-            engine_state: EngineState::new("react", 1),
+            engine_state: EngineState::new("none", 0),
         }
     }
 

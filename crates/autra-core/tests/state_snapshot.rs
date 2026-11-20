@@ -14,8 +14,6 @@ fn state_serializes_to_a_stable_snapshot() {
             "session_id": null,
             "turn_id": null,
             "phase": "Ready",
-            "history": [],
-            "pending_tool_calls": [],
             "budget": {
                 "max_turns": 2,
                 "turns_used": 0,
@@ -25,8 +23,8 @@ fn state_serializes_to_a_stable_snapshot() {
             "final_answer": null,
             "last_error": null,
             "engine_state": {
-                "engine_id": "react",
-                "schema_revision": 1,
+                "engine_id": "none",
+                "schema_revision": 0,
                 "data": null
             }
         })

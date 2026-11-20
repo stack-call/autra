@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use autra::{
-    Agent, ApprovalDecision, ApprovalRequest, Approver, EffectJournal, JournalError, MemoryJournal,
-    OutboxEntry, RunError,
+    Agent, ApprovalDecision, ApprovalRequest, Approver, DurableTransitionStore, EffectJournal,
+    JournalError, MemoryJournal, OutboxEntry, RunError,
 };
 use autra_core::{
     AcceptedEvent, AgentState, AttemptStatus, EffectId, EffectKind, EffectRecord, EffectStatus,
@@ -324,4 +324,31 @@ async fn a_claimed_tool_emits_started_before_its_result() {
         )
         .expect("result event");
     assert!(started < finished);
+}
+
+impl DurableTransitionStore for SpyJournal {
+    fn journal(&self) -> &dyn EffectJournal {
+        &self.inner
+    }
+
+    fn commit_transition(
+        &self,
+        run_id: &RunId,
+        expected_version: u64,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        new_effects: &[EffectRecord],
+    ) -> Result<(), JournalError> {
+        self.inner
+            .commit_transition(run_id, expected_version, event, state, new_effects)?;
+        for effect in new_effects {
+            if effect.status == EffectStatus::Authorized && !effect.intent_json.is_empty() {
+                let mut ids = self.enqueued_ids.lock().unwrap();
+                if ids.insert(effect.id.clone()) {
+                    self.enqueued.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+        Ok(())
+    }
 }

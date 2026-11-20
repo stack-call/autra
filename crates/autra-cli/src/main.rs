@@ -443,7 +443,7 @@ async fn demo_command() -> ExitCode {
 
 fn demo_tools_succeeded(outcome: &RunOutcome) -> bool {
     let succeeded = |name: &str| {
-        outcome.state().history.iter().any(
+        autra_harness::react_history(outcome.state()).iter().any(
             |item| matches!(item, HistoryItem::Tool(tool) if tool.name == name && !tool.is_error),
         )
     };

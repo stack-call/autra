@@ -1,3 +1,4 @@
+use autra::react_history;
 use autra::{Agent, RunEvent, RunOptions, RunStatus, SubagentRegistry, SubagentTool};
 use autra_core::{ModelOutput, ToolCallRequest};
 use autra_harness::{FakeModel, HistoryItem, Tool};
@@ -33,11 +34,9 @@ fn parent_model(calls: Vec<ToolCallRequest>) -> FakeModel {
     ])
 }
 
-fn tool_outcomes(outcome: &autra_runtime::RunOutcome) -> Vec<&autra_core::ToolOutcome> {
-    outcome
-        .state()
-        .history
-        .iter()
+fn tool_outcomes(outcome: &autra_runtime::RunOutcome) -> Vec<autra_core::ToolOutcome> {
+    react_history(outcome.state())
+        .into_iter()
         .filter_map(|item| match item {
             HistoryItem::Tool(tool) => Some(tool),
             _ => None,

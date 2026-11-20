@@ -2,12 +2,61 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use autra_core::{
-    AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EffectIntent, EventKind,
-    HistoryItem, ModelCallSpec, ModelOutput, StepError, ToolCallSpec, ToolOutcome, ToolSpec,
-    Transition,
+    AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EffectIntent, EngineState,
+    EventKind, HistoryItem, ModelCallSpec, ModelOutput, StepError, ToolCallRequest, ToolCallSpec,
+    ToolOutcome, ToolSpec, Transition,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::context::{ContextBuilder, ContextRequest, SimpleContextBuilder};
+
+const REACT_ENGINE_ID: &str = "react";
+const REACT_SCHEMA_REVISION: u32 = 1;
+
+/// State owned by the ReAct engine and stored opaquely in `AgentState`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct ReactState {
+    #[serde(default)]
+    history: Vec<HistoryItem>,
+    #[serde(default)]
+    pending_tool_calls: Vec<ToolCallRequest>,
+}
+
+fn react_state(state: &AgentState) -> ReactState {
+    if state.engine_state.engine_id != REACT_ENGINE_ID {
+        return ReactState::default();
+    }
+    serde_json::from_value(state.engine_state.data.clone()).unwrap_or_default()
+}
+
+fn store_react_state(next: &mut AgentState, react: ReactState) {
+    next.engine_state = EngineState::new(REACT_ENGINE_ID, REACT_SCHEMA_REVISION)
+        .with_data(serde_json::to_value(react).unwrap_or(Value::Null));
+}
+
+/// The conversation history of a ReAct run.
+pub fn react_history(state: &AgentState) -> Vec<HistoryItem> {
+    react_state(state).history
+}
+
+/// Tool calls that ReAct has not yet received results for.
+pub fn react_pending_tool_calls(state: &AgentState) -> Vec<ToolCallRequest> {
+    react_state(state).pending_tool_calls
+}
+
+/// Builds an EngineState for a ReAct checkpoint. Useful for resume fixtures.
+pub fn react_engine_state(
+    history: Vec<HistoryItem>,
+    pending_tool_calls: Vec<ToolCallRequest>,
+) -> EngineState {
+    let data = serde_json::to_value(ReactState {
+        history,
+        pending_tool_calls,
+    })
+    .unwrap_or(Value::Null);
+    EngineState::new(REACT_ENGINE_ID, REACT_SCHEMA_REVISION).with_data(data)
+}
 
 /// The default ReAct engine: model call, tool batch, then final answer.
 pub struct ReActStepper {
@@ -35,11 +84,11 @@ impl ReActStepper {
         self
     }
 
-    fn model_request(&self, state: &AgentState) -> Result<ModelCallSpec, StepError> {
+    fn model_request(&self, react: &ReactState) -> Result<ModelCallSpec, StepError> {
         self.context_builder
             .build(ContextRequest {
                 instructions: self.instructions.as_deref(),
-                history: &state.history,
+                history: &react.history,
                 tools: &self.tools,
             })
             .map_err(|error| StepError::new(error.to_string()))
@@ -76,11 +125,14 @@ impl ReActStepper {
         output: &ModelOutput,
     ) -> Result<Transition, StepError> {
         Self::expect_phase(state, AgentPhase::AwaitingModel, "ModelResult")?;
-        let mut next = state.clone();
-        next.history.push(HistoryItem::Assistant {
+        let mut react = react_state(state);
+        react.history.push(HistoryItem::Assistant {
             text: output.text.clone(),
             tool_calls: output.tool_calls.clone(),
         });
+        let mut next = state.clone();
+        store_react_state(&mut next, react.clone());
+
         if output.tool_calls.is_empty() {
             next.phase = AgentPhase::Completed;
             next.final_answer = output.text.clone();
@@ -113,7 +165,8 @@ impl ReActStepper {
             ));
         }
         next.budget.tool_calls_used += requested;
-        next.pending_tool_calls = output.tool_calls.clone();
+        react.pending_tool_calls = output.tool_calls.clone();
+        store_react_state(&mut next, react);
         next.phase = AgentPhase::AwaitingTool;
 
         let intents = output
@@ -135,7 +188,8 @@ impl ReActStepper {
         outcome: &ToolOutcome,
     ) -> Result<Transition, StepError> {
         Self::expect_phase(state, AgentPhase::AwaitingTool, "ToolResult")?;
-        if !state
+        let mut react = react_state(state);
+        if !react
             .pending_tool_calls
             .iter()
             .any(|call| call.call_id == outcome.call_id)
@@ -146,12 +200,14 @@ impl ReActStepper {
             ));
         }
 
-        let mut next = state.clone();
-        next.history.push(HistoryItem::Tool(outcome.clone()));
-        next.pending_tool_calls
+        react.history.push(HistoryItem::Tool(outcome.clone()));
+        react
+            .pending_tool_calls
             .retain(|call| call.call_id != outcome.call_id);
+        let mut next = state.clone();
+        store_react_state(&mut next, react.clone());
 
-        if !next.pending_tool_calls.is_empty() {
+        if !react.pending_tool_calls.is_empty() {
             return Ok(Transition {
                 next,
                 intents: Vec::new(),
@@ -164,7 +220,7 @@ impl ReActStepper {
         }
         next.budget.turns_used += 1;
         next.phase = AgentPhase::AwaitingModel;
-        let request = self.model_request(&next)?;
+        let request = self.model_request(&react)?;
         Ok(Transition {
             next,
             intents: vec![EffectIntent::CallModel(request)],
@@ -174,6 +230,20 @@ impl ReActStepper {
 }
 
 impl AgentStepper for ReActStepper {
+    fn pending_tool_calls(&self, state: &AgentState) -> Vec<ToolCallRequest> {
+        react_state(state).pending_tool_calls
+    }
+
+    fn initialize(&self, state: &mut AgentState, history: &[HistoryItem]) {
+        store_react_state(
+            state,
+            ReactState {
+                history: history.to_vec(),
+                pending_tool_calls: Vec::new(),
+            },
+        );
+    }
+
     fn transition(
         &self,
         state: &AgentState,
@@ -182,14 +252,16 @@ impl AgentStepper for ReActStepper {
         match &event.kind {
             EventKind::RunStarted { input } => {
                 Self::expect_phase(state, AgentPhase::Ready, "RunStarted")?;
+                let mut react = react_state(state);
+                react.history.push(HistoryItem::User(input.clone()));
                 let mut next = state.clone();
-                next.history.push(HistoryItem::User(input.clone()));
+                store_react_state(&mut next, react.clone());
                 if !next.budget.turn_available() {
                     return Ok(Self::failed(next, "max turns exceeded"));
                 }
                 next.budget.turns_used += 1;
                 next.phase = AgentPhase::AwaitingModel;
-                let request = self.model_request(&next)?;
+                let request = self.model_request(&react)?;
                 Ok(Transition {
                     next,
                     intents: vec![EffectIntent::CallModel(request)],
@@ -200,7 +272,7 @@ impl AgentStepper for ReActStepper {
             EventKind::ToolResult(outcome) => self.on_tool_result(state, outcome),
             EventKind::ResumeRequested => {
                 Self::expect_phase(state, AgentPhase::AwaitingModel, "ResumeRequested")?;
-                let request = self.model_request(state)?;
+                let request = self.model_request(&react_state(state))?;
                 Ok(Transition {
                     next: state.clone(),
                     intents: vec![EffectIntent::CallModel(request)],

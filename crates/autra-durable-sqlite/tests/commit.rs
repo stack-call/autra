@@ -3,7 +3,7 @@ use autra_core::{
     EffectRecord, EffectStatus, EventKind, ModelCallSpec, RunId,
 };
 use autra_durable_sqlite::SqliteEffectJournal;
-use autra_execution::EffectJournal;
+use autra_execution::{DurableTransitionStore, EffectJournal};
 use tempfile::tempdir;
 
 fn state(run_id: &RunId, version: u64) -> AgentState {

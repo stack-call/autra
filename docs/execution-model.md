@@ -46,10 +46,16 @@ reconciliation. See §6.6 of the design spec.
 
 ## RunState ownership
 
-Core owns run id, session/turn references, phase, budget, final answer and last
-error. `engine_state { engine_id, schema_revision, data }` is opaque to Core; the
-current ReAct fields `history` and `pending_tool_calls` are engine-specific. A
-custom Stepper may use `engine_state` and ignore the ReAct fields.
+Core owns run id, session/turn references, phase, state version, budget, final
+answer and last error. `engine_state { engine_id, schema_revision, data }` is
+opaque to Core.
+
+ReAct keeps its `history` and `pending_tool_calls` inside `engine_state` with
+`engine_id = "react"` and schema revision 1. `AgentStepper::initialize` seeds
+the engine state when a Run starts; `AgentStepper::pending_tool_calls` lets the
+engine resume an `AwaitingTool` checkpoint without knowing the engine's
+private fields. A custom Stepper owns its own `engine_state` and may ignore
+ReAct entirely.
 
 ## Current ReAct state machine
 

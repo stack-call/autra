@@ -2,7 +2,7 @@ use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, BudgetSnapshot, Disposition, EffectIntent,
     EventKind, ModelOutput, RunId,
 };
-use autra_harness::ReActStepper;
+use autra_harness::{ReActStepper, react_history};
 
 fn started(input: &str) -> AcceptedEvent {
     AcceptedEvent {
@@ -23,7 +23,7 @@ fn run_started_requests_a_model_call() {
     assert_eq!(transition.next.phase, AgentPhase::AwaitingModel);
     assert_eq!(transition.next.budget.turns_used, 1);
     assert_eq!(transition.disposition, Disposition::Continue);
-    assert_eq!(transition.next.history.len(), 1);
+    assert_eq!(react_history(&transition.next).len(), 1);
     match &transition.intents[0] {
         EffectIntent::CallModel(spec) => {
             assert_eq!(spec.system.as_deref(), Some("be brief"));
@@ -50,7 +50,7 @@ fn final_model_result_completes_the_run() {
 
     assert_eq!(transition.next.phase, AgentPhase::Completed);
     assert_eq!(transition.next.final_answer.as_deref(), Some("done"));
-    assert_eq!(transition.next.history.len(), 2);
+    assert_eq!(react_history(&transition.next).len(), 2);
     assert!(transition.intents.is_empty());
     assert_eq!(transition.disposition, Disposition::Finished);
 }

@@ -1,4 +1,5 @@
 use autra_core::{HistoryItem, SessionId, TurnId};
+use autra_harness::react_history;
 
 use crate::{Agent, RunError, RunEvent, RunOptions, RunOutcome};
 
@@ -71,7 +72,7 @@ impl Session {
             .agent
             .run_with_history(&self.history, input, options, |event| on_event(event))
             .await?;
-        self.history = outcome.state().history.clone();
+        self.history = react_history(outcome.state());
         Ok(outcome)
     }
 }

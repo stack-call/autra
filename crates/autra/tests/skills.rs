@@ -1,3 +1,4 @@
+use autra::react_history;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -59,9 +60,8 @@ async fn agent_can_load_a_named_skill() {
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let tool = outcome
-        .state()
-        .history
+    let history = react_history(outcome.state());
+    let tool = history
         .iter()
         .find_map(|item| match item {
             HistoryItem::Tool(tool) => Some(tool),

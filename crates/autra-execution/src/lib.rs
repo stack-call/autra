@@ -19,7 +19,9 @@ pub use approval::{
 };
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities};
-pub use journal::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
+pub use journal::{
+    DEFAULT_CLAIM_LEASE, DurableTransitionStore, EffectJournal, JournalError, OutboxEntry,
+};
 pub use model::{MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider};
 pub use run::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
 pub use sandbox::{

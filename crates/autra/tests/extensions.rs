@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use autra::Agent;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EngineState, EventKind,
-    HistoryItem, ModelCallSpec, ModelOutput, StepError, Transition,
+    ModelCallSpec, ModelOutput, StepError, Transition,
 };
 use autra_harness::{
     ContextBuilder, ContextError, ContextRequest, EchoModel, ModelError, ModelProvider,
@@ -64,9 +64,8 @@ impl AgentStepper for OneShotStepper {
         event: &AcceptedEvent,
     ) -> Result<Transition, StepError> {
         match &event.kind {
-            EventKind::RunStarted { input } => {
+            EventKind::RunStarted { input: _ } => {
                 let mut next = state.clone();
-                next.history.push(HistoryItem::User(input.clone()));
                 next.phase = AgentPhase::Completed;
                 next.final_answer = Some("custom stepper".to_owned());
                 next.engine_state = EngineState::new("one-shot", 1)

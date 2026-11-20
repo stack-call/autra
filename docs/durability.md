@@ -24,7 +24,7 @@ guarantees. See INV-08.
 
 ## NativeDurable protocol
 
-Each accepted event commits through `EffectJournal::commit_transition`:
+Each accepted event commits through `DurableTransitionStore::commit_transition`:
 
 1. compare the stored `state_version` with the expected version (CAS);
 2. write the next state with `state_version + 1`;
@@ -32,9 +32,14 @@ Each accepted event commits through `EffectJournal::commit_transition`:
 4. write the new EffectRecords;
 5. insert outbox rows for new `Authorized` effects.
 
-SQLite performs these steps in one transaction. A version conflict, duplicate
-sequence or write failure rolls the whole transition back: state, event,
-effects and outbox cannot disagree about whether the transition happened.
+`DurableTransitionStore` is a separate contract from `EffectJournal`. A plain
+`EffectJournal` has no default `commit_transition`; a host that claims durable
+semantics must implement the durable trait explicitly. SQLite performs these
+steps in one transaction. A version conflict, duplicate sequence or write
+failure rolls the whole transition back: state, event, effects and outbox
+cannot disagree about whether the transition happened. `MemoryJournal`
+implements the durable trait with in-process version and duplicate checks for
+tests; it is not crash-safe.
 Effects that need approval are committed as `AwaitingApproval`; their outbox
 row is created only after approval, which is a separate commit by design.
 

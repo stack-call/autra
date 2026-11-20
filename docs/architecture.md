@@ -81,9 +81,9 @@ core has no Tokio, database or sandbox dependency.
 
 | Crate | Role | Status |
 |---|---|---|
-| `autra-core` | IDs, AgentState, accepted events, Effect intents, budgets, cancellation, Stepper trait | MVP |
-| `autra-execution` | Tool, ModelProvider, EffectJournal, Approver, ObserverHook, Run API, Host and Sandbox contracts | Implemented |
-| `autra-harness` | ReAct Stepper, context, skills, planning and concrete tools | MVP |
+| `autra-core` | IDs, engine-agnostic AgentState, accepted events, Effect intents, budgets, cancellation, Stepper trait | MVP |
+| `autra-execution` | Tool, ModelProvider, EffectJournal/DurableTransitionStore, Approver, ObserverHook, Run API, Host and Sandbox contracts | Implemented |
+| `autra-harness` | ReAct (owns history in engine_state), context, skills, planning and concrete tools | MVP |
 | `autra-runtime` | Local engine: coordinator, dispatch, outbox, resume, timeouts | Implemented |
 | `autra` | Product facade: Agent, AgentBuilder, Session, Subagent | Implemented |
 | `autra-cli` | `autractl run`, `demo`, `tools`, help | MVP |

@@ -1,5 +1,6 @@
 //! In-process EffectJournal for local runs and tests.
 
+use autra_execution::DurableTransitionStore;
 pub use autra_execution::journal::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
 
 use std::collections::BTreeMap;
@@ -149,6 +150,51 @@ impl EffectJournal for MemoryJournal {
     }
 
     fn release_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {
+        Ok(())
+    }
+}
+
+impl DurableTransitionStore for MemoryJournal {
+    fn journal(&self) -> &dyn EffectJournal {
+        self
+    }
+
+    fn commit_transition(
+        &self,
+        run_id: &RunId,
+        expected_version: u64,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        new_effects: &[EffectRecord],
+    ) -> Result<(), JournalError> {
+        let current = self
+            .load_run(run_id)?
+            .map_or(0, |stored| stored.state_version);
+        if current != expected_version {
+            return Err(JournalError::new(format!(
+                "state version conflict for run `{run_id}`: expected {expected_version}, found {current}"
+            )));
+        }
+        if state.state_version != expected_version + 1 {
+            return Err(JournalError::new(format!(
+                "new state version {} does not follow {expected_version}",
+                state.state_version
+            )));
+        }
+        if self
+            .load_events(run_id)?
+            .iter()
+            .any(|committed| committed.seq == event.seq)
+        {
+            return Err(JournalError::new(format!(
+                "event seq {} was already committed for run `{run_id}`",
+                event.seq
+            )));
+        }
+        self.commit_event(run_id, event, state, new_effects)?;
+        for effect in new_effects {
+            self.enqueue_effect(run_id, effect)?;
+        }
         Ok(())
     }
 }

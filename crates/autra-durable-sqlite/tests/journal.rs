@@ -108,7 +108,7 @@ async fn a_sqlite_checkpoint_can_be_resumed_after_reopen() {
         AgentPhase, AgentState, BudgetSnapshot, EffectIntent, EffectStatus, HistoryItem,
         ModelOutput, ToolCallRequest, ToolCallSpec,
     };
-    use autra_harness::{EchoTool, FakeModel};
+    use autra_harness::{EchoTool, FakeModel, react_engine_state};
 
     let dir = tempdir().unwrap();
     let path = dir.path().join("resume.db");
@@ -122,14 +122,16 @@ async fn a_sqlite_checkpoint_can_be_resumed_after_reopen() {
         let journal = SqliteEffectJournal::open(&path).unwrap();
         let mut state = AgentState::new(run_id.clone(), BudgetSnapshot::new(8, 8));
         state.phase = AgentPhase::AwaitingTool;
-        state.history = vec![
-            HistoryItem::User("go".to_owned()),
-            HistoryItem::Assistant {
-                text: None,
-                tool_calls: vec![call.clone()],
-            },
-        ];
-        state.pending_tool_calls = vec![call.clone()];
+        state.engine_state = react_engine_state(
+            vec![
+                HistoryItem::User("go".to_owned()),
+                HistoryItem::Assistant {
+                    text: None,
+                    tool_calls: vec![call.clone()],
+                },
+            ],
+            vec![call.clone()],
+        );
         state.budget.turns_used = 1;
         state.budget.tool_calls_used = 1;
         journal.save_run(&state).unwrap();

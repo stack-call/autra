@@ -54,48 +54,6 @@ pub trait EffectJournal: Send + Sync {
     fn load_events(&self, _run_id: &RunId) -> Result<Vec<AcceptedEvent>, JournalError> {
         Ok(Vec::new())
     }
-    /// Atomically commit the next state, one accepted event and the effects it
-    /// introduced. Hosts with a real transaction override this to include the
-    /// outbox rows for Authorized effects.
-    fn commit_transition(
-        &self,
-        run_id: &RunId,
-        expected_version: u64,
-        event: &AcceptedEvent,
-        state: &AgentState,
-        new_effects: &[EffectRecord],
-    ) -> Result<(), JournalError> {
-        let current = self
-            .load_run(run_id)?
-            .map_or(0, |stored| stored.state_version);
-        if current != expected_version {
-            return Err(JournalError::new(format!(
-                "state version conflict for run `{run_id}`: expected {expected_version}, found {current}"
-            )));
-        }
-        if state.state_version != expected_version + 1 {
-            return Err(JournalError::new(format!(
-                "new state version {} does not follow {expected_version}",
-                state.state_version
-            )));
-        }
-        if self
-            .load_events(run_id)?
-            .iter()
-            .any(|committed| committed.seq == event.seq)
-        {
-            return Err(JournalError::new(format!(
-                "event seq {} was already committed for run `{run_id}`",
-                event.seq
-            )));
-        }
-        self.commit_event(run_id, event, state, new_effects)?;
-        for effect in new_effects {
-            self.enqueue_effect(run_id, effect)?;
-        }
-        Ok(())
-    }
-
     fn enqueue_effect(&self, _run_id: &RunId, _effect: &EffectRecord) -> Result<(), JournalError> {
         Ok(())
     }
@@ -150,3 +108,23 @@ pub trait EffectJournal: Send + Sync {
 
 /// Default lease for a claimed outbox row.
 pub const DEFAULT_CLAIM_LEASE: Duration = Duration::from_secs(30);
+
+/// A journal that can commit a transition atomically with its effects.
+///
+/// This is a separate contract on purpose: a plain `EffectJournal` may be
+/// in-memory or best-effort, and must not silently claim durable semantics.
+pub trait DurableTransitionStore: EffectJournal {
+    /// The underlying journal, used for dispatch, recovery and inspection.
+    fn journal(&self) -> &dyn EffectJournal;
+
+    /// Commit the next state, one accepted event, the effects it introduced and
+    /// the outbox rows for its `Authorized` effects as one unit.
+    fn commit_transition(
+        &self,
+        run_id: &RunId,
+        expected_version: u64,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        new_effects: &[EffectRecord],
+    ) -> Result<(), JournalError>;
+}
