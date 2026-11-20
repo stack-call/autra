@@ -60,6 +60,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "autra-eval"
+version = "0.1.0"
+dependencies = [
+ "autra-core",
+ "autra-harness",
+ "autra-runtime",
+ "tokio",
+]
+
+[[package]]
 name = "autra-harness"
 version = "0.1.0"
 dependencies = [

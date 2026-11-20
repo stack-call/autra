@@ -1,0 +1,14 @@
+[package]
+name = "autra-eval"
+description = "Task-level evaluation for Autra agents"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+autra-runtime = { path = "../autra-runtime" }
+
+[dev-dependencies]
+autra-core = { path = "../autra-core" }
+autra-harness = { path = "../autra-harness" }
+tokio = { version = "1", features = ["macros", "rt"] }

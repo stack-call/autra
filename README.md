@@ -18,6 +18,7 @@ explicit effects, optional infrastructure.
 | `crates/autra-runtime` | Local host: effect dispatch, sessions, concurrency, cancellation | §10–§12 |
 | `crates/autra-cli` | `autractl`: local runs, streaming, approvals | §14.4 |
 | `crates/autra-openai` | OpenAI-compatible model provider, non-streaming | — |
+| `crates/autra-eval` | Task-level outcome evaluation | §17.4 |
 
 Dependency direction is enforced by Cargo: `autra-core` must not depend on
 Tokio, a database, a sandbox backend, or any harness/runtime crate.
@@ -72,5 +73,5 @@ Moonshot, vLLM, Ollama or LM Studio.
 - [Context and memory](docs/context-and-memory.md) · [Tool security](docs/tool-security.md)
 - [Durability](docs/durability.md) · [Model providers](docs/model-providers.md)
 - [Testing and evaluation](docs/testing-and-evaluation.md) · [Observability](docs/observability.md)
-- [Roadmap](docs/roadmap.md)
+- [Evaluation](docs/evaluation.md) · [Roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/) · [OpenShell](docs/integrations/openshell.md) · [Restate](docs/integrations/restate.md)

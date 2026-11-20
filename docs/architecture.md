@@ -59,6 +59,7 @@ core has no Tokio, database or sandbox dependency.
 | `autra-runtime` | Local coordinator, Agent facade, events, budgets, cancellation, timeouts | MVP |
 | `autra-cli` | `autractl run`, `demo`, `tools`, help | MVP |
 | `autra-openai` | OpenAI-compatible chat completions provider | Implemented, non-streaming |
+| `autra-eval` | Task-level outcome evaluation | Implemented |
 
 ## Product stack and guarantees
 
