@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -103,12 +104,22 @@ pub trait Tool: Send + Sync {
 #[error("{message}")]
 pub struct ToolError {
     pub message: String,
+    pub outcome_unknown: bool,
 }
 
 impl ToolError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            outcome_unknown: false,
+        }
+    }
+
+    /// The tool may have changed external state before failing.
+    pub fn outcome_unknown(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            outcome_unknown: true,
         }
     }
 }
@@ -204,6 +215,10 @@ impl LocalWorkspace {
         Ok(Self { root })
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn resolve(&self, relative: &str) -> Result<std::path::PathBuf, ToolError> {
         use std::path::Component;
 
@@ -270,15 +285,56 @@ impl LocalWorkspace {
         let file_name = candidate
             .file_name()
             .ok_or_else(|| ToolError::new(format!("path has no file name: `{relative}`")))?;
-        let parent = std::fs::canonicalize(parent).map_err(|error| {
+        let parent = self.create_parents(parent, relative)?;
+        Ok(parent.join(file_name))
+    }
+
+    fn create_parents(
+        &self,
+        parent: &Path,
+        relative: &str,
+    ) -> Result<std::path::PathBuf, ToolError> {
+        if parent.exists() {
+            let canonical = std::fs::canonicalize(parent).map_err(|error| {
+                ToolError::new(format!("cannot resolve parent of `{relative}`: {error}"))
+            })?;
+            if !canonical.starts_with(&self.root) {
+                return Err(ToolError::new(format!(
+                    "path escapes the workspace: `{relative}`"
+                )));
+            }
+            return Ok(canonical);
+        }
+        let mut existing = parent;
+        while !existing.exists() {
+            existing = existing
+                .parent()
+                .ok_or_else(|| ToolError::new(format!("cannot resolve parent of `{relative}`")))?;
+        }
+        let canonical = std::fs::canonicalize(existing).map_err(|error| {
             ToolError::new(format!("cannot resolve parent of `{relative}`: {error}"))
         })?;
-        if !parent.starts_with(&self.root) {
+        if !canonical.starts_with(&self.root) {
             return Err(ToolError::new(format!(
                 "path escapes the workspace: `{relative}`"
             )));
         }
-        Ok(parent.join(file_name))
+        let remainder = parent
+            .strip_prefix(existing)
+            .unwrap_or_else(|_| Path::new(""));
+        let target = canonical.join(remainder);
+        std::fs::create_dir_all(&target).map_err(|error| {
+            ToolError::new(format!("cannot create parent of `{relative}`: {error}"))
+        })?;
+        let target = std::fs::canonicalize(&target).map_err(|error| {
+            ToolError::new(format!("cannot resolve parent of `{relative}`: {error}"))
+        })?;
+        if !target.starts_with(&self.root) {
+            return Err(ToolError::new(format!(
+                "path escapes the workspace: `{relative}`"
+            )));
+        }
+        Ok(target)
     }
 }
 
@@ -481,7 +537,7 @@ impl Tool for WriteFileTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "write_file".to_owned(),
-            description: "Write UTF-8 content to a workspace file. Requires approval.".to_owned(),
+            description: "Write UTF-8 content to a workspace file, creating parent directories. Requires approval.".to_owned(),
             input_schema: WRITE_FILE_SCHEMA.to_owned(),
         }
     }
@@ -510,5 +566,151 @@ impl Tool for WriteFileTool {
             args.content.len(),
             args.path
         ))
+    }
+}
+
+const SEARCH_TEXT_SCHEMA: &str = r#"{"type":"object","properties":{"query":{"type":"string","description":"Text to search for"},"path":{"type":"string","description":"Workspace-relative file or directory (default \".\")"},"case_sensitive":{"type":"boolean","description":"Match case exactly (default false)"},"max_results":{"type":"integer","description":"Maximum matches to return (default 50, max 200)"}},"required":["query"]}"#;
+const SEARCH_MAX_RESULTS: usize = 200;
+const SEARCH_MAX_FILE_BYTES: u64 = 1024 * 1024;
+const SEARCH_MAX_FILES: usize = 20_000;
+const SEARCH_MAX_LINE_CHARS: usize = 400;
+const SEARCH_SKIP_DIRS: [&str; 3] = [".git", "target", "node_modules"];
+
+/// Finds text in workspace files and reports `path:line: text` matches.
+pub struct SearchTextTool {
+    workspace: LocalWorkspace,
+}
+
+impl SearchTextTool {
+    pub fn new(workspace: LocalWorkspace) -> Self {
+        Self { workspace }
+    }
+}
+
+#[derive(Deserialize)]
+struct SearchTextArgs {
+    query: String,
+    #[serde(default = "default_path")]
+    path: String,
+    #[serde(default)]
+    case_sensitive: bool,
+    #[serde(default = "default_max_results")]
+    max_results: usize,
+}
+
+fn default_max_results() -> usize {
+    50
+}
+
+fn truncate_line(line: &str) -> String {
+    let mut shortened: String = line.chars().take(SEARCH_MAX_LINE_CHARS).collect();
+    if line.chars().count() > SEARCH_MAX_LINE_CHARS {
+        shortened.push('…');
+    }
+    shortened
+}
+
+#[async_trait]
+impl Tool for SearchTextTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "search_text".to_owned(),
+            description: "Search UTF-8 files in the workspace and return path:line matches."
+                .to_owned(),
+            input_schema: SEARCH_TEXT_SCHEMA.to_owned(),
+        }
+    }
+
+    fn effect_class(&self) -> EffectClass {
+        EffectClass::ReadOnly
+    }
+
+    async fn call(&self, arguments: &str) -> Result<String, ToolError> {
+        let args: SearchTextArgs = serde_json::from_str(arguments)
+            .map_err(|error| invalid_arguments("search_text", error))?;
+        if args.query.is_empty() {
+            return Err(ToolError::new("search query must not be empty"));
+        }
+        let start = self.workspace.resolve(&args.path)?;
+        let needle = if args.case_sensitive {
+            args.query.clone()
+        } else {
+            args.query.to_lowercase()
+        };
+        let limit = args.max_results.clamp(1, SEARCH_MAX_RESULTS);
+        let mut matches = Vec::new();
+        let mut files_read = 0_usize;
+        let mut truncated = false;
+        let mut stack = vec![start];
+
+        'walk: while let Some(path) = stack.pop() {
+            let metadata = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                let entries = match std::fs::read_dir(&path) {
+                    Ok(entries) => entries,
+                    Err(_) => continue,
+                };
+                for entry in entries.flatten() {
+                    let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if is_dir && SEARCH_SKIP_DIRS.contains(&name.as_ref()) {
+                        continue;
+                    }
+                    stack.push(entry.path());
+                }
+                continue;
+            }
+            if !metadata.is_file() || metadata.len() > SEARCH_MAX_FILE_BYTES {
+                continue;
+            }
+            files_read += 1;
+            if files_read > SEARCH_MAX_FILES {
+                truncated = true;
+                break;
+            }
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let Ok(text) = std::str::from_utf8(&bytes) else {
+                continue;
+            };
+            let relative = path.strip_prefix(self.workspace.root()).unwrap_or(&path);
+            for (index, line) in text.lines().enumerate() {
+                let matched = if args.case_sensitive {
+                    line.contains(&needle)
+                } else {
+                    line.to_lowercase().contains(&needle)
+                };
+                if matched {
+                    matches.push(format!(
+                        "{}:{}: {}",
+                        relative.display(),
+                        index + 1,
+                        truncate_line(line)
+                    ));
+                    if matches.len() >= limit {
+                        truncated = true;
+                        break 'walk;
+                    }
+                }
+            }
+        }
+
+        if matches.is_empty() {
+            return Ok(format!("no matches for `{}`", args.query));
+        }
+        let mut output = matches.join("\n");
+        if truncated {
+            output.push_str(&format!("\n[stopped at {limit} matches]"));
+        }
+        Ok(output)
     }
 }

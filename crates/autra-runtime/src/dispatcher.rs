@@ -110,7 +110,7 @@ async fn execute_tool(
             let future = AssertUnwindSafe(with_timeout(timeout, tool.execute(input, context)));
             match future.catch_unwind().await {
                 Ok(Ok(Ok(output))) => Ok(output.content),
-                Ok(Ok(Err(error))) => Err((error.to_string(), false)),
+                Ok(Ok(Err(error))) => Err((error.to_string(), error.outcome_unknown)),
                 Ok(Err(())) => Err((
                     format!(
                         "tool `{}` timed out; it may still have run and its outcome is unknown",

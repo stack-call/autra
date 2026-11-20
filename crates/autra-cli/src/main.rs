@@ -1,11 +1,15 @@
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use autra_harness::{
     EchoModel, EchoTool, FakeModel, HistoryItem, ListFilesTool, LocalWorkspace, ModelOutput,
-    ReadFileTool, ToolCallRequest, ToolRegistry, WriteFileTool,
+    ReadFileTool, SearchTextTool, ToolCallRequest, ToolRegistry, WriteFileTool,
 };
 use autra_openai::OpenAiCompatibleModel;
-use autra_runtime::{Agent, RunError, RunEvent, RunOptions, RunOutcome, Session};
+use autra_runtime::{
+    Agent, ApprovalDecision, ApprovalRequest, Approver, RunCommandTool, RunError, RunEvent,
+    RunOptions, RunOutcome, Session,
+};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -28,25 +32,42 @@ async fn main() -> ExitCode {
     }
 }
 
+struct Flags {
+    model: Option<String>,
+    workspace: Option<String>,
+    auto_approve: bool,
+    read_only: bool,
+    rest: Vec<String>,
+}
+
+const WORKSPACE_INSTRUCTIONS: &str = "\
+You are a coding agent working inside one workspace.
+Inspect the workspace with list_files, search_text and read_file before changing it.
+Use write_file to create or replace files; missing parent directories are created.
+Use run_command to build, test or inspect the project. Keep changes focused, stay
+inside the workspace, and when you finish summarize what changed and what you verified.";
+
 async fn run_command(args: &[String]) -> ExitCode {
-    let (model_name, prompt_parts) = match parse_flags(args) {
-        Ok(parsed) => parsed,
+    let flags = match parse_flags(args, "run") {
+        Ok(flags) => flags,
         Err(()) => return ExitCode::FAILURE,
     };
-    let prompt = prompt_parts.join(" ");
+    let prompt = flags.rest.join(" ");
     if prompt.trim().is_empty() {
-        eprintln!("usage: autractl run [--model <name>] <prompt>");
+        eprintln!(
+            "usage: autractl run [--workspace <dir>] [--model <name>] [--yes] [--read-only] <prompt>"
+        );
         return ExitCode::FAILURE;
     }
 
-    let agent = match build_agent(model_name.as_deref()) {
+    let agent = match build_agent(&flags) {
         Ok(agent) => agent,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::FAILURE;
         }
     };
-    let options = options_for_model(model_name.as_deref());
+    let options = options_for_model(flags.model.as_deref());
 
     match execute(agent, &prompt, options).await {
         Ok(outcome) => {
@@ -61,16 +82,18 @@ async fn run_command(args: &[String]) -> ExitCode {
 }
 
 async fn chat_command(args: &[String]) -> ExitCode {
-    let (model_name, rest) = match parse_flags(args) {
-        Ok(parsed) => parsed,
+    let flags = match parse_flags(args, "chat") {
+        Ok(flags) => flags,
         Err(()) => return ExitCode::FAILURE,
     };
-    if !rest.is_empty() {
-        eprintln!("usage: autractl chat [--model <name>]");
+    if !flags.rest.is_empty() {
+        eprintln!(
+            "usage: autractl chat [--workspace <dir>] [--model <name>] [--yes] [--read-only]"
+        );
         return ExitCode::FAILURE;
     }
 
-    let agent = match build_agent(model_name.as_deref()) {
+    let agent = match build_agent(&flags) {
         Ok(agent) => agent,
         Err(error) => {
             eprintln!("{error}");
@@ -78,7 +101,7 @@ async fn chat_command(args: &[String]) -> ExitCode {
         }
     };
     let mut session = Session::new(agent);
-    let options = options_for_model(model_name.as_deref());
+    let options = options_for_model(flags.model.as_deref());
     let stdin = std::io::stdin();
     let mut line = String::new();
 
@@ -111,9 +134,19 @@ async fn chat_command(args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn parse_flags(args: &[String]) -> Result<(Option<String>, Vec<String>), ()> {
-    let mut model_name = None;
-    let mut rest = Vec::new();
+fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
+    let usage = || {
+        eprintln!(
+            "usage: autractl {command} [--workspace <dir>] [--model <name>] [--yes] [--read-only]"
+        );
+    };
+    let mut flags = Flags {
+        model: None,
+        workspace: None,
+        auto_approve: false,
+        read_only: false,
+        rest: Vec::new(),
+    };
     let mut parsing_flags = true;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -121,28 +154,67 @@ fn parse_flags(args: &[String]) -> Result<(Option<String>, Vec<String>), ()> {
             parsing_flags = false;
             continue;
         }
-        if parsing_flags && arg == "--model" {
-            match iter.next() {
-                Some(name) if !name.is_empty() => model_name = Some(name.clone()),
+        if !parsing_flags || !arg.starts_with('-') {
+            flags.rest.push(arg.clone());
+            continue;
+        }
+        match arg.as_str() {
+            "--model" | "-m" => match iter.next() {
+                Some(name) if !name.is_empty() => flags.model = Some(name.clone()),
                 _ => {
-                    eprintln!("usage: autractl run [--model <name>] <prompt>");
+                    usage();
                     return Err(());
                 }
+            },
+            "--workspace" | "-C" => match iter.next() {
+                Some(path) if !path.is_empty() => flags.workspace = Some(path.clone()),
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--yes" | "-y" => flags.auto_approve = true,
+            "--read-only" => flags.read_only = true,
+            other => {
+                eprintln!("unknown option `{other}`");
+                usage();
+                return Err(());
             }
-        } else {
-            rest.push(arg.clone());
         }
     }
-    Ok((model_name, rest))
+    Ok(flags)
 }
 
-fn build_agent(model_name: Option<&str>) -> Result<Agent, String> {
-    let builder = Agent::builder("cli-agent").instructions("Answer the user concisely.");
-    let builder = match model_name {
+fn build_agent(flags: &Flags) -> Result<Agent, String> {
+    let root = flags.workspace.as_deref().unwrap_or(".");
+    let workspace = LocalWorkspace::open(root).map_err(|error| error.to_string())?;
+    let mut tools = ToolRegistry::new();
+    tools.register(ListFilesTool::new(workspace.clone()));
+    tools.register(ReadFileTool::new(workspace.clone()));
+    tools.register(SearchTextTool::new(workspace.clone()));
+    if flags.read_only {
+        eprintln!("[workspace] {root} (read-only)");
+    } else {
+        tools.register(WriteFileTool::new(workspace.clone()));
+        tools.register(RunCommandTool::new(workspace));
+        eprintln!("[workspace] {root}");
+    }
+    let builder = Agent::builder("autractl")
+        .instructions(WORKSPACE_INSTRUCTIONS)
+        .tools(tools)
+        .max_turns(24)
+        .max_tool_calls(64)
+        .max_parallel_tool_calls(4);
+    let builder = match flags.model.as_deref() {
         Some(name) => {
             builder.model(OpenAiCompatibleModel::from_env(name).map_err(|error| error.to_string())?)
         }
         None => builder.model(EchoModel),
+    };
+    let builder = if flags.auto_approve {
+        builder.approver(AutoApprove)
+    } else {
+        builder.approver(InteractiveApprover)
     };
     builder.build().map_err(|error| error.to_string())
 }
@@ -155,6 +227,37 @@ fn options_for_model(model_name: Option<&str>) -> RunOptions {
         }
     } else {
         RunOptions::default()
+    }
+}
+
+struct AutoApprove;
+
+#[async_trait::async_trait]
+impl Approver for AutoApprove {
+    async fn approve(&self, _request: &ApprovalRequest) -> ApprovalDecision {
+        ApprovalDecision::Approved
+    }
+}
+
+struct InteractiveApprover;
+
+#[async_trait::async_trait]
+impl Approver for InteractiveApprover {
+    async fn approve(&self, request: &ApprovalRequest) -> ApprovalDecision {
+        eprint!("[approval] run `{}`? [y/N] ", request.tool_name);
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        match io::stdin().read_line(&mut answer) {
+            Ok(_) => {
+                let answer = answer.trim().to_lowercase();
+                if answer == "y" || answer == "yes" {
+                    ApprovalDecision::Approved
+                } else {
+                    ApprovalDecision::Rejected
+                }
+            }
+            Err(_) => ApprovalDecision::Rejected,
+        }
     }
 }
 
@@ -235,7 +338,9 @@ fn tools_command() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let registry = builtin_registry(workspace);
+    let mut registry = builtin_registry(workspace.clone());
+    registry.register(SearchTextTool::new(workspace.clone()));
+    registry.register(RunCommandTool::new(workspace));
     for spec in registry.specs() {
         println!("{}\t{}", spec.name, spec.description);
     }

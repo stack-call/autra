@@ -12,7 +12,7 @@ implemented.
 | Skills | `SkillRegistry`, `load_skill` | Loading does not grant permissions |
 | Planning | `update_plan`, `Agent::plan()` | In-memory per Agent; no planner engine |
 | Restricted Subagents | `spawn_subagent`, named child Agents | Tool-backed; no runtime ChildRun cancellation/budget slice |
-| Workspace Tools | `read_file`, `list_files`, `write_file` | `write_file` requires approval; no shell/apply_patch |
+| Workspace Tools | `read_file`, `list_files`, `search_text`, `write_file`, `run_command` | Writes and commands require approval; `run_command` is not a sandbox |
 | Tracing | `agent.session.turn`, `agent.run`, `gen_ai.model.call`, `agent.tool.execute` | No OTel exporter |
 | Basic Evaluation | `autra-eval` task report | Outcome-based; not runtime fault evidence |
 
@@ -45,13 +45,13 @@ adapters. Memory, MCP and full Planning/Workflow remain future work.
 - Execution host is `LocalEphemeral`: no process-exit recovery.
 - No durable journal, SQLite, Restate, OpenShell, MCP, Python SDK, HTTP server
   or multi-session service.
-- No shell command tool or OS sandbox; `LocalWorkspace` is path validation only.
+- No OS sandbox. `run_command` runs an unsandboxed local shell in the workspace root; `LocalWorkspace` is path validation only.
 - Sessions and plans are in memory; approvals have no expiry or actor identity.
 - Runs carry optional Session/Turn ids; SessionManager, TurnRecord and a
   SessionStore are not implemented.
 - Subagents do not propagate cancellation or share a budget slice.
-- The CLI's `run`/`chat` commands do not register workspace tools; `demo` uses
-  the read-only workspace tools and `tools` lists the built-in registry.
+- The CLI's `run`/`chat` commands register the workspace tools and require
+  approval for `write_file` and `run_command` unless `--yes` is passed.
 
 ## Evidence
 

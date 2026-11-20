@@ -10,6 +10,7 @@ name = "autractl"
 path = "src/main.rs"
 
 [dependencies]
+async-trait = "0.1"
 autra-harness = { path = "../autra-harness" }
 autra-openai = { path = "../autra-openai" }
 autra-runtime = { path = "../autra-runtime" }

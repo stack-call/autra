@@ -1,5 +1,14 @@
 # Autra
 
+> **愿景 / Vision**
+>
+> Autra 希望为 Agent 提供一套统一、可组合、可验证的构建与执行模型，让智能行为能够自由演进，而执行控制、权限、安全和可靠性始终保持明确的语义。
+>
+> Autra aims to give agents a unified, composable and verifiable model for
+> building and execution, so intelligent behavior can evolve freely while
+> execution control, permissions, security and reliability always keep explicit
+> semantics.
+
 A Rust-native agent framework: composable intelligence, structured execution,
 explicit effects, optional infrastructure.
 
@@ -49,10 +58,35 @@ HTTP client for real providers.
 After building, the binary is `autractl` (or prefix with
 `cargo run -p autra-cli --`).
 
-- `autractl run [--model <name>] <prompt>` — run one agent and print its events.
-- `autractl chat [--model <name>]` — one turn per stdin line, keeping session history.
+- `autractl run [options] <prompt>` — run one turn as a workspace agent and print its events.
+- `autractl chat [options]` — one turn per stdin line, keeping session history.
 - `autractl demo` — deterministic list-files, read-README demo.
 - `autractl tools` — list the built-in tools.
+
+`run` and `chat` work inside one workspace and expose these tools:
+
+| Tool | Purpose | Approval |
+|---|---|---|
+| `list_files` | list one directory | no |
+| `read_file` | read a UTF-8 file | no |
+| `search_text` | search files and return `path:line` matches | no |
+| `write_file` | create or replace a file, including parent directories | yes |
+| `run_command` | run a shell command in the workspace root | yes |
+
+| Flag | Meaning |
+|---|---|
+| `--workspace <dir>`, `-C <dir>` | workspace root (default `.`); file tools stay inside it |
+| `--model <name>`, `-m <name>` | OpenAI-compatible model; omit for the local echo model |
+| `--yes`, `-y` | approve `write_file` and `run_command` without prompting |
+| `--read-only` | expose only `list_files`, `read_file` and `search_text` |
+
+```powershell
+cargo run -p autra-cli -- run --workspace ..\my-project --yes --model gpt-4o-mini "Fix the failing test and run it again"
+```
+
+> `run_command` is a local unsandboxed shell, not an OS sandbox. Prefer
+> `--read-only` for inspection, and avoid `--yes` on repositories you do not
+> trust. See [tool security](docs/tool-security.md).
 
 ## Real model provider
 
@@ -64,6 +98,8 @@ completions endpoint.
 
 ```bash
 OPENAI_API_KEY=... cargo run -p autra-cli -- run --model gpt-4o-mini "Explain this crate"
+# or, inside a project:
+cargo run -p autra-cli -- run --model gpt-4o-mini "Add a --verbose flag to the CLI"
 ```
 
 Set `OPENAI_BASE_URL` to target a compatible provider such as DeepSeek,

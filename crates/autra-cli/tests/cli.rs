@@ -120,3 +120,56 @@ fn chat_runs_one_turn_per_line() {
     assert_eq!(text.matches("[model] echo: hello").count(), 1);
     assert_eq!(text.matches("[model] echo: again").count(), 1);
 }
+
+#[test]
+fn run_uses_the_selected_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = autractl()
+        .args([
+            "run",
+            "--workspace",
+            dir.path().to_str().unwrap(),
+            "--read-only",
+            "hello",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("echo: hello"));
+    assert!(stderr(&output).contains("[workspace]"));
+    assert!(stderr(&output).contains("read-only"));
+}
+
+#[test]
+fn tools_lists_the_workspace_capabilities() {
+    let output = autractl().arg("tools").output().unwrap();
+
+    assert!(output.status.success());
+    let output_text = stdout(&output);
+    for name in [
+        "list_files",
+        "read_file",
+        "search_text",
+        "write_file",
+        "run_command",
+    ] {
+        assert!(
+            output_text.contains(name),
+            "missing {name} in:\n{output_text}"
+        );
+    }
+}
+
+#[test]
+fn unknown_options_fail_with_usage() {
+    let output = autractl()
+        .args(["run", "--readonly", "hello"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let error_text = stderr(&output);
+    assert!(error_text.contains("unknown option `--readonly`"));
+    assert!(error_text.contains("usage: autractl run"));
+}

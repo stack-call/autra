@@ -56,10 +56,19 @@ Tests observe public behaviour, not private helpers.
     effects never enter the outbox.
 20. **Dispatcher** (`autra-runtime`): a custom dispatcher replaces model/tool
     execution and can run without a builder model.
+21. **Workspace tools** (`autra-harness`, `autra-runtime`): `search_text` skips
+    symlinks and build directories, caps results and stays inside the root;
+    `write_file` creates parent directories; `run_command` runs in the
+    workspace root, reports non-zero exits, and marks a timeout unknown. An
+    end-to-end Agent run writes a nested file and runs a command after two
+    approvals.
+22. **Workspace CLI** (`autra-cli`): `run --workspace --read-only` uses the
+    selected root, `tools` lists the workspace capabilities, and unknown
+    options fail with usage.
 
-CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
-a missing provider key. Core `/implement` tests remain at the Agent seam, not
-the CLI.
+CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
+workspace flags and a missing provider key. Core `/implement` tests remain at
+the Agent seam, not the CLI.
 
 ## Commands
 

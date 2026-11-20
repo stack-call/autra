@@ -39,7 +39,7 @@ MCP Client is an M3 experience item; MCP Gateway/Server stays in M8.
 ## Delivered
 
 - `autra-core`, `autra-harness`, `autra-runtime`, `autra-cli` MVP slices.
-- Read-only workspace tools with path confinement and bounded output.
+- Workspace agent tools with path confinement and bounded output: read, list, search, write and an approval-bound local command runner.
 - Bounded parallel tool batches, opt-in and defaulting to sequential.
 - Tool approval bound to Run, call, tool and argument digest; guarded write_file.
 - In-memory Sessions with sequential turns, history seeding and Run session/turn identity.

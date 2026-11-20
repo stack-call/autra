@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod command;
 pub mod dispatcher;
 pub mod hooks;
 pub mod host;
@@ -18,6 +19,7 @@ pub use agent::{
     Agent, AgentBuilder, BuildError, RunError, RunEvent, RunOptions, RunOutcome, RunStatus,
 };
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
+pub use command::RunCommandTool;
 pub use dispatcher::{
     DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, OutboxDispatcher,
 };

@@ -76,3 +76,18 @@ async fn write_file_caps_content() {
     assert!(error.to_string().contains("exceeds"));
     assert!(!dir.path().join("big.txt").exists());
 }
+
+#[tokio::test]
+async fn write_file_creates_missing_parent_directories() {
+    let dir = tempdir().unwrap();
+    let tool = WriteFileTool::new(workspace(dir.path()));
+
+    tool.call(r#"{"path":"src/nested/note.txt","content":"hello"}"#)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(dir.path().join("src/nested/note.txt")).unwrap(),
+        "hello"
+    );
+}

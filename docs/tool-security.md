@@ -33,15 +33,24 @@ The current MVP implements the description plus a minimal contract
 - `read_file` caps output, truncates on a UTF-8 boundary, and never buffers the
   whole file.
 - `list_files` caps entries and marks directories.
-- Built-in read-only tools are `ReadOnly`. `write_file` declares `Idempotent`,
-  requires approval, stays inside the workspace and caps content at 1 MiB.
+- Built-in read-only tools are `ReadOnly`. `search_text` walks the workspace,
+  skips symlinks, `.git`, `target` and `node_modules`, caps file size and result
+  count, and never leaves the root.
+- `write_file` declares `Idempotent`, requires approval, creates missing parent
+  directories inside the workspace and caps content at 1 MiB.
+- `run_command` declares `NonIdempotent`, requires approval, runs an
+  unsandboxed shell in the workspace root, caps output at 32 KiB and defaults
+  to a 60-second timeout. A timed-out command is reported as `OutcomeUnknown`
+  because it may already have changed the workspace. `--read-only` removes it
+  and `write_file`; `--yes` skips its approval prompt.
 - Before dispatching an approval-required call, the runtime asks an `Approver`.
   The request binds the Run id, call id, tool name, arguments and a SHA-256
   argument digest. A rejected call or a missing approver produces an error
   outcome and does not execute.
 
-`LocalWorkspace` is **user-space path validation, not a sandbox**. It does not
-isolate processes, mounts, environment variables or the network.
+`LocalWorkspace` is **user-space path validation, not a sandbox**, and
+`run_command` is an unsandboxed shell convenience. Neither isolates processes,
+mounts, environment variables or the network.
 
 ## Threat boundaries
 
