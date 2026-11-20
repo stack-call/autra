@@ -12,7 +12,7 @@ pub trait AgentStepper: Send + Sync {
         &self,
         state: &AgentState,
         event: &AcceptedEvent,
-    ) -> Result<Transition, StepError>;
+    ) -> Result<TransitionProposal, StepError>;
 
     fn protocol_version(&self) -> u32 {
         STEPPER_PROTOCOL_VERSION
@@ -20,11 +20,14 @@ pub trait AgentStepper: Send + Sync {
 }
 
 #[derive(Clone, Debug)]
-pub struct Transition {
+pub struct TransitionProposal {
     pub next: AgentState,
     pub intents: Vec<EffectIntent>,
     pub disposition: Disposition,
 }
+
+/// Backward-compatible alias. New code should name the Proposal explicitly.
+pub type Transition = TransitionProposal;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Disposition {

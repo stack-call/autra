@@ -7,7 +7,8 @@ use std::time::Duration;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, AttemptStatus, BudgetSnapshot, CancelFlag,
     Disposition, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, EventKind,
-    HistoryItem, ModelCallSpec, RunId, SessionId, StepError, ToolCallRequest, ToolOutcome, TurnId,
+    HistoryItem, ModelCallSpec, RunId, SessionId, StepError, ToolCallRequest, ToolOutcome,
+    TransitionProposal, TurnId,
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
@@ -350,7 +351,7 @@ impl Agent {
                     return Err(RunError::Step(error));
                 }
             };
-            state = transition.next;
+            let (intents, disposition) = accept_local(&mut state, transition);
 
             if let EventKind::ModelResult(output) = &event.kind {
                 on_event(&RunEvent::ModelResult {
@@ -359,7 +360,7 @@ impl Agent {
                 });
             }
 
-            match transition.disposition {
+            match disposition {
                 Disposition::Finished => {
                     if state.phase == AgentPhase::Cancelled {
                         on_event(&RunEvent::RunCancelled);
@@ -397,13 +398,13 @@ impl Agent {
             }
 
             if let Some(observer) = &self.observer {
-                for intent in &transition.intents {
+                for intent in &intents {
                     observer.on_effect_accepted(&run_id, intent);
                 }
             }
             let mut tool_calls: Vec<(EffectId, ToolCallRequest)> = Vec::new();
             let mut model_requests: Vec<(EffectId, ModelCallSpec)> = Vec::new();
-            for intent in transition.intents {
+            for intent in intents {
                 let effect_id = EffectId::fresh();
                 let digest = digest_intent(&intent);
                 let record = match &intent {
@@ -940,4 +941,14 @@ fn mark_cancelled_before_dispatch<F: FnMut(&RunEvent)>(sink: &mut BatchSink<'_, 
             record.set_status(EffectStatus::CancelledBeforeDispatch);
         }
     }
+}
+
+fn accept_local(
+    state: &mut AgentState,
+    proposal: TransitionProposal,
+) -> (Vec<EffectIntent>, Disposition) {
+    // LocalEphemeral is the single writer; a durable host must commit the
+    // state and effect intents atomically at this boundary instead.
+    *state = proposal.next;
+    (proposal.intents, proposal.disposition)
 }

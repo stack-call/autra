@@ -3,7 +3,7 @@
 ## The loop
 
 ```text
-AcceptedEvent ──▶ AgentStepper ──▶ Transition
+AcceptedEvent ──▶ AgentStepper ──▶ TransitionProposal
                                      │
                         ┌────────────┴────────────┐
                         ▼                         ▼

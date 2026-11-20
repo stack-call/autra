@@ -448,10 +448,10 @@ pub trait AgentStepper: Send + Sync {
         &self,
         state: &AgentState,
         event: &AcceptedEvent,
-    ) -> Result<Transition, StepError>;
+    ) -> Result<TransitionProposal, StepError>;
 }
 
-pub struct Transition {
+pub struct TransitionProposal {
     pub next: AgentState,
     pub intents: Vec<EffectIntent>,
     pub disposition: RunDisposition,
@@ -471,7 +471,7 @@ pub enum EffectIntent {
 ### 6.2 完整执行闭环
 
 ```text
-AcceptedEvent ───▶ AgentStepper ───▶ Transition
+AcceptedEvent ───▶ AgentStepper ───▶ TransitionProposal
                                       │
                          ┌────────────┴───────────┐
                          ▼                        ▼
@@ -522,8 +522,9 @@ RunStarted
 
 ### 6.6 Proposal / Commit 与 Effect 三层
 
-`AgentStepper` 返回的是 **Proposal**，不是已提交事实。建议将当前 `Transition` 命名为
-`TransitionProposal`；Coordinator 负责校验版本、授权、预算和并发，然后提交。
+`AgentStepper` 返回的是 **Proposal**，不是已提交事实。当前类型已命名为
+`TransitionProposal`（`Transition` 保留为兼容别名）；Coordinator 负责校验版本、授权、预算和
+并发，然后提交。
 
 ```text
 AcceptedEvent → Stepper → TransitionProposal → Coordinator Validate/Commit → Committed state
