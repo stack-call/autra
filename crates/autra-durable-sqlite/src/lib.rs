@@ -1,5 +1,6 @@
-//! SQLite-backed EffectJournal. This v0 persists Run snapshots, EffectRecords
-//! and accepted events; outbox dispatch, resume and reconciliation are future work.
+//! SQLite-backed EffectJournal. This v0 persists Run snapshots, EffectRecords,
+//! accepted events and the effect outbox; resume and reconciliation are future
+//! work.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

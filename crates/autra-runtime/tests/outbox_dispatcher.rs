@@ -2,11 +2,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use autra_core::{
-    EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, ModelCallSpec, ModelOutput,
-    RunId, ToolCallRequest, ToolCallSpec, ToolOutcome,
+    CancelFlag, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, ModelCallSpec,
+    ModelOutput, RunId, ToolCallRequest, ToolCallSpec, ToolOutcome,
 };
 use autra_harness::ModelError;
-use autra_runtime::{DispatchOutcome, Dispatcher, EffectJournal, MemoryJournal, OutboxDispatcher};
+use autra_runtime::{
+    DispatchOptions, DispatchOutcome, Dispatcher, EffectJournal, MemoryJournal, OutboxDispatcher,
+};
 
 struct StaticDispatcher {
     model_ok: bool,
@@ -140,5 +142,48 @@ async fn a_model_error_completes_the_effect_as_failed() {
     let stored = journal.load(&run_id).unwrap();
     assert_eq!(stored[0].status, EffectStatus::Failed);
     assert!(stored[0].error.as_deref().unwrap().contains("model-boom"));
+    assert!(journal.claim_due_effects(10, "check").unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cancellation_before_dispatch_removes_the_outbox_row() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("run-cancel");
+    let effect = enqueue(
+        &journal,
+        &run_id,
+        EffectIntent::CallTool(ToolCallSpec {
+            call: ToolCallRequest {
+                call_id: "call-1".to_owned(),
+                name: "echo".to_owned(),
+                arguments: "{}".to_owned(),
+            },
+        }),
+        EffectKind::ToolCall,
+    );
+    let dispatcher = StaticDispatcher { model_ok: true };
+    let cancel = CancelFlag::new();
+    cancel.cancel();
+
+    let results = OutboxDispatcher::run_once_for_run_with(
+        &journal,
+        &run_id,
+        DispatchOptions {
+            limit: 10,
+            max_parallel: 2,
+            timeout: None,
+            cancel: Some(&cancel),
+        },
+        &dispatcher,
+        |_| {},
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert!(matches!(results[0].outcome, DispatchOutcome::Cancelled));
+    assert_eq!(results[0].effect_id, effect.id);
+    let stored = journal.load(&run_id).unwrap();
+    assert_eq!(stored[0].status, EffectStatus::CancelledBeforeDispatch);
     assert!(journal.claim_due_effects(10, "check").unwrap().is_empty());
 }

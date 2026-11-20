@@ -19,7 +19,7 @@ pub use agent::{
 };
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
 pub use dispatcher::{
-    DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, OutboxDispatcher,
+    DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, OutboxDispatcher,
 };
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities, LocalHost};

@@ -11,9 +11,9 @@ We added a `Dispatcher` trait with `call_model` and `call_tool`, a
 `AgentBuilder::dispatcher`. A custom dispatcher can replace the local executor;
 a custom dispatcher also removes the need for a builder model.
 
-Consequences: execution has one replaceable boundary. The Agent still enqueues
-and completes effects in its own journal path; a claim-driven outbox dispatcher
-loop is not wired yet, so at-least-once delivery is not promised.
+Consequences: execution has one replaceable boundary. A journaled Agent now
+enqueues and claims effects through the outbox loop; see ADR-0035. At-least-once
+delivery is still not promised.
 
 Alternatives considered: direct calls (current status quo), a trait on the model
 only (tools still bypass), and a separate process dispatcher (premature).

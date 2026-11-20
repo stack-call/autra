@@ -9,13 +9,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use autra_core::{
-    AttemptStatus, EffectId, EffectIntent, EffectRecord, EffectStatus, ModelCallSpec, ModelOutput,
-    RunId, ToolCallRequest, ToolOutcome,
+    AttemptStatus, CancelFlag, EffectId, EffectIntent, EffectRecord, EffectStatus, ModelCallSpec,
+    ModelOutput, RunId, ToolCallRequest, ToolOutcome,
 };
 use autra_harness::{ModelError, ModelProvider, ToolContext, ToolInput, ToolRegistry};
-use futures_util::FutureExt;
+use futures_util::{FutureExt, StreamExt};
 
-use crate::journal::{EffectJournal, JournalError};
+use crate::journal::{EffectJournal, JournalError, OutboxEntry};
 
 /// Executes accepted effect intents. A custom Dispatcher can wrap a provider,
 /// a sandbox or a remote worker.
@@ -33,6 +33,13 @@ pub trait Dispatcher: Send + Sync {
         call: &ToolCallRequest,
         timeout: Option<Duration>,
     ) -> ToolOutcome;
+
+    /// Whether the named tool can be executed here. A dispatcher that cannot
+    /// answer keeps the default; the outbox loop uses this to tell an unknown
+    /// tool apart from a tool that returned an error.
+    fn knows_tool(&self, _name: &str) -> bool {
+        true
+    }
 }
 
 pub struct LocalDispatcher {
@@ -68,6 +75,10 @@ impl Dispatcher for LocalDispatcher {
         timeout: Option<Duration>,
     ) -> ToolOutcome {
         execute_tool(self.tools.clone(), call.clone(), timeout, run_id.clone()).await
+    }
+
+    fn knows_tool(&self, name: &str) -> bool {
+        self.tools.get(name).is_some()
     }
 }
 
@@ -135,6 +146,7 @@ async fn execute_tool(
 pub enum DispatchOutcome {
     Model(Result<ModelOutput, ModelError>),
     Tool(ToolOutcome),
+    Cancelled,
 }
 
 #[derive(Debug)]
@@ -143,11 +155,21 @@ pub struct DispatchResult {
     pub outcome: DispatchOutcome,
 }
 
-/// Claim-driven outbox loop. It executes the locked effect only after claiming
-/// it, then records the outcome and completes the outbox row.
+/// Knobs for one outbox pass.
+#[derive(Clone, Copy, Debug)]
+pub struct DispatchOptions<'a> {
+    pub limit: usize,
+    pub max_parallel: usize,
+    pub timeout: Option<Duration>,
+    pub cancel: Option<&'a CancelFlag>,
+}
+
+/// Claim-driven outbox loop. It executes only claimed effects, records the
+/// outcome and completes the outbox row.
 pub struct OutboxDispatcher;
 
 impl OutboxDispatcher {
+    /// Dispatch up to `limit` due effects for one Run, sequentially.
     pub async fn run_once_for_run(
         journal: &dyn EffectJournal,
         run_id: &RunId,
@@ -155,53 +177,151 @@ impl OutboxDispatcher {
         dispatcher: &dyn Dispatcher,
         timeout: Option<Duration>,
     ) -> Result<Vec<DispatchResult>, JournalError> {
-        let entries = journal.claim_due_effects_for_run(run_id, limit, "local-dispatcher")?;
-        let mut results = Vec::new();
-        for entry in entries {
-            let intent: EffectIntent = match serde_json::from_str(&entry.intent_json) {
-                Ok(intent) => intent,
-                Err(error) => {
-                    let _ = journal.release_outbox(&entry.effect_id);
-                    return Err(JournalError::new(format!(
-                        "cannot decode effect intent: {error}"
-                    )));
-                }
-            };
-            let outcome = match &intent {
-                EffectIntent::CallModel(spec) => {
-                    DispatchOutcome::Model(dispatcher.call_model(spec, timeout).await)
-                }
-                EffectIntent::CallTool(spec) => {
-                    DispatchOutcome::Tool(dispatcher.call_tool(run_id, &spec.call, timeout).await)
-                }
-            };
-            let mut effects = journal.load(run_id)?;
-            let Some(record) = effects
-                .iter_mut()
-                .find(|record| record.id == entry.effect_id)
-            else {
-                let _ = journal.release_outbox(&entry.effect_id);
-                return Err(JournalError::new(format!(
-                    "effect record `{}` not found",
-                    entry.effect_id
-                )));
-            };
-            apply_outcome(record, &outcome);
-            if let Err(error) = journal.record(run_id, record) {
-                let _ = journal.release_outbox(&entry.effect_id);
-                return Err(error);
-            }
-            journal.complete_outbox(&entry.effect_id)?;
-            results.push(DispatchResult {
-                effect_id: entry.effect_id,
-                outcome,
-            });
+        Self::run_once_for_run_with(
+            journal,
+            run_id,
+            DispatchOptions {
+                limit,
+                max_parallel: 1,
+                timeout,
+                cancel: None,
+            },
+            dispatcher,
+            |_| {},
+        )
+        .await
+    }
+
+    /// Claim due effects for one Run, dispatch them with bounded parallelism
+    /// and report each finished effect through `on_result` in completion order.
+    /// A cancellation observed before an effect starts leaves the effect
+    /// `CancelledBeforeDispatch` and removes its outbox row.
+    pub async fn run_once_for_run_with<F>(
+        journal: &dyn EffectJournal,
+        run_id: &RunId,
+        options: DispatchOptions<'_>,
+        dispatcher: &dyn Dispatcher,
+        mut on_result: F,
+    ) -> Result<Vec<DispatchResult>, JournalError>
+    where
+        F: FnMut(&DispatchResult),
+    {
+        let entries =
+            journal.claim_due_effects_for_run(run_id, options.limit, "local-dispatcher")?;
+        let mut results = Vec::with_capacity(entries.len());
+        let mut futures = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            futures.push(dispatch_entry(
+                journal,
+                run_id,
+                entry,
+                dispatcher,
+                options.timeout,
+                options.cancel,
+            ));
+        }
+        let mut stream =
+            futures_util::stream::iter(futures).buffer_unordered(options.max_parallel.max(1));
+        while let Some(result) = stream.next().await {
+            let result = result?;
+            on_result(&result);
+            results.push(result);
         }
         Ok(results)
     }
 }
 
-fn apply_outcome(record: &mut EffectRecord, outcome: &DispatchOutcome) {
+async fn dispatch_entry(
+    journal: &dyn EffectJournal,
+    run_id: &RunId,
+    entry: &OutboxEntry,
+    dispatcher: &dyn Dispatcher,
+    timeout: Option<Duration>,
+    cancel: Option<&CancelFlag>,
+) -> Result<DispatchResult, JournalError> {
+    if cancel.map(CancelFlag::is_cancelled).unwrap_or(false) {
+        return finish_entry(journal, run_id, entry, DispatchOutcome::Cancelled, true);
+    }
+    let intent: EffectIntent = match serde_json::from_str(&entry.intent_json) {
+        Ok(intent) => intent,
+        Err(error) => {
+            let _ = journal.release_outbox(&entry.effect_id);
+            return Err(JournalError::new(format!(
+                "cannot decode effect intent: {error}"
+            )));
+        }
+    };
+    let known_tool = match &intent {
+        EffectIntent::CallModel(_) => true,
+        EffectIntent::CallTool(spec) => dispatcher.knows_tool(&spec.call.name),
+    };
+    mark_dispatched(journal, run_id, entry)?;
+    let outcome = match &intent {
+        EffectIntent::CallModel(spec) => {
+            DispatchOutcome::Model(dispatcher.call_model(spec, timeout).await)
+        }
+        EffectIntent::CallTool(spec) => {
+            DispatchOutcome::Tool(dispatcher.call_tool(run_id, &spec.call, timeout).await)
+        }
+    };
+    finish_entry(journal, run_id, entry, outcome, known_tool)
+}
+
+fn mark_dispatched(
+    journal: &dyn EffectJournal,
+    run_id: &RunId,
+    entry: &OutboxEntry,
+) -> Result<(), JournalError> {
+    let mut effects = journal.load(run_id)?;
+    let Some(record) = effects
+        .iter_mut()
+        .find(|record| record.id == entry.effect_id)
+    else {
+        let _ = journal.release_outbox(&entry.effect_id);
+        return Err(JournalError::new(format!(
+            "effect record `{}` not found",
+            entry.effect_id
+        )));
+    };
+    record.set_status(EffectStatus::Dispatched);
+    if let Err(error) = journal.record(run_id, record) {
+        let _ = journal.release_outbox(&entry.effect_id);
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn finish_entry(
+    journal: &dyn EffectJournal,
+    run_id: &RunId,
+    entry: &OutboxEntry,
+    outcome: DispatchOutcome,
+    known_tool: bool,
+) -> Result<DispatchResult, JournalError> {
+    let mut effects = journal.load(run_id)?;
+    let Some(record) = effects
+        .iter_mut()
+        .find(|record| record.id == entry.effect_id)
+    else {
+        let _ = journal.release_outbox(&entry.effect_id);
+        return Err(JournalError::new(format!(
+            "effect record `{}` not found",
+            entry.effect_id
+        )));
+    };
+    apply_outcome(record, &outcome, known_tool);
+    if let Err(error) = journal.record(run_id, record) {
+        let _ = journal.release_outbox(&entry.effect_id);
+        return Err(error);
+    }
+    journal.complete_outbox(&entry.effect_id)?;
+    Ok(DispatchResult {
+        effect_id: entry.effect_id.clone(),
+        outcome,
+    })
+}
+
+fn apply_outcome(record: &mut EffectRecord, outcome: &DispatchOutcome, known_tool: bool) {
     match outcome {
         DispatchOutcome::Model(Ok(output)) => {
             record.set_status(EffectStatus::Committed);
@@ -219,6 +339,10 @@ fn apply_outcome(record: &mut EffectRecord, outcome: &DispatchOutcome) {
                 None,
             );
         }
+        DispatchOutcome::Tool(outcome) if !known_tool => {
+            record.set_status(EffectStatus::Failed);
+            record.record_attempt(AttemptStatus::Failed, None, Some(outcome.content.clone()));
+        }
         DispatchOutcome::Tool(outcome) if outcome.is_error => {
             record.set_status(EffectStatus::Committed);
             record.record_attempt(
@@ -234,6 +358,9 @@ fn apply_outcome(record: &mut EffectRecord, outcome: &DispatchOutcome) {
                 Some(outcome.content.clone()),
                 None,
             );
+        }
+        DispatchOutcome::Cancelled => {
+            record.set_status(EffectStatus::CancelledBeforeDispatch);
         }
     }
 }

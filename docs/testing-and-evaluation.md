@@ -50,8 +50,11 @@ Tests observe public behaviour, not private helpers.
     attempts, release and complete.
 18. **Outbox dispatcher loop** (`autra-runtime`): a claimed tool or model effect
     runs through a Dispatcher, is recorded as committed, failed or
-    outcome-unknown, and leaves the outbox.
-19. **Dispatcher** (`autra-runtime`): a custom dispatcher replaces model/tool
+    outcome-unknown, and leaves the outbox; a cancelled claim is removed.
+19. **Journaled Agent execution** (`autra-runtime`): a journaled Run enqueues
+    and claims every effect, including bounded parallel tool batches; rejected
+    effects never enter the outbox.
+20. **Dispatcher** (`autra-runtime`): a custom dispatcher replaces model/tool
     execution and can run without a builder model.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and

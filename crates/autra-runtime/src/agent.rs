@@ -15,7 +15,9 @@ use autra_harness::{
 use tracing::Instrument;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver, digest_intent};
-use crate::dispatcher::{Dispatcher, LocalDispatcher};
+use crate::dispatcher::{
+    DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, OutboxDispatcher,
+};
 use crate::hooks::ObserverHook;
 use crate::journal::EffectJournal;
 use crate::subagent::{SubagentRegistry, SubagentTool};
@@ -161,6 +163,13 @@ where
 
     fn emit_tool_result(&mut self, outcome: &ToolOutcome) {
         emit_tool_result(&mut *self.on_event, outcome);
+    }
+
+    fn start_tool_outcome(&mut self, outcome: &ToolOutcome) {
+        self.emit_stream(&RunEvent::ToolCallStarted {
+            call_id: outcome.call_id.clone(),
+            name: outcome.name.clone(),
+        });
     }
 
     fn accept_outcome(&mut self, outcome: ToolOutcome) {
@@ -476,7 +485,6 @@ impl Agent {
                     break;
                 }
                 effect_mut(&mut effects, &effect_id).set_status(EffectStatus::Authorized);
-                effect_mut(&mut effects, &effect_id).set_status(EffectStatus::Dispatched);
                 on_event(&RunEvent::ModelCallStarted {
                     turn: state.budget.turns_used,
                 });
@@ -485,23 +493,77 @@ impl Agent {
                 }
                 let model_span =
                     tracing::info_span!("gen_ai.model.call", turn = state.budget.turns_used);
-                let output_result = self
-                    .dispatcher
-                    .call_model(&request, effect_timeout)
-                    .instrument(model_span)
-                    .await;
+                let output_result = async {
+                    match &self.journal {
+                        Some(journal) => {
+                            let record = effect_mut(&mut effects, &effect_id).clone();
+                            journal
+                                .record(&run_id, &record)
+                                .map_err(|error| RunError::Journal(error.to_string()))?;
+                            journal
+                                .enqueue_effect(&run_id, &record)
+                                .map_err(|error| RunError::Journal(error.to_string()))?;
+                            let results = OutboxDispatcher::run_once_for_run(
+                                journal.as_ref(),
+                                &run_id,
+                                1,
+                                self.dispatcher.as_ref(),
+                                effect_timeout,
+                            )
+                            .await
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                            sync_effects(journal.as_ref(), &run_id, &mut effects)?;
+                            let result = results
+                                .into_iter()
+                                .find(|result| result.effect_id == effect_id)
+                                .ok_or_else(|| {
+                                    RunError::Protocol(
+                                        "the claimed model effect produced no outcome".to_owned(),
+                                    )
+                                })?;
+                            match result.outcome {
+                                DispatchOutcome::Model(output) => output.map_err(RunError::Model),
+                                _ => Err(RunError::Protocol(
+                                    "the model effect produced a non-model outcome".to_owned(),
+                                )),
+                            }
+                        }
+                        None => {
+                            effect_mut(&mut effects, &effect_id)
+                                .set_status(EffectStatus::Dispatched);
+                            self.dispatcher
+                                .call_model(&request, effect_timeout)
+                                .await
+                                .map_err(RunError::Model)
+                        }
+                    }
+                }
+                .instrument(model_span)
+                .await;
                 let output = match output_result {
                     Ok(output) => {
-                        let record = effect_mut(&mut effects, &effect_id);
-                        record.set_status(EffectStatus::Committed);
-                        record.record_attempt(AttemptStatus::Succeeded, output.text.clone(), None);
+                        if self.journal.is_none() {
+                            let record = effect_mut(&mut effects, &effect_id);
+                            record.set_status(EffectStatus::Committed);
+                            record.record_attempt(
+                                AttemptStatus::Succeeded,
+                                output.text.clone(),
+                                None,
+                            );
+                        }
                         output
                     }
                     Err(error) => {
                         let message = error.to_string();
-                        let record = effect_mut(&mut effects, &effect_id);
-                        record.set_status(EffectStatus::Failed);
-                        record.record_attempt(AttemptStatus::Failed, None, Some(message.clone()));
+                        if self.journal.is_none() {
+                            let record = effect_mut(&mut effects, &effect_id);
+                            record.set_status(EffectStatus::Failed);
+                            record.record_attempt(
+                                AttemptStatus::Failed,
+                                None,
+                                Some(message.clone()),
+                            );
+                        }
                         state.phase = AgentPhase::Failed;
                         state.last_error = Some(message.clone());
                         on_event(&RunEvent::RunFailed {
@@ -510,7 +572,7 @@ impl Agent {
                         if let Some(observer) = &self.observer {
                             observer.on_run_finished(&run_id, &state.phase);
                         }
-                        return Err(RunError::Model(error));
+                        return Err(error);
                     }
                 };
                 enqueue(&mut queue, &mut seq, EventKind::ModelResult(output));
@@ -591,7 +653,22 @@ impl Agent {
             return Ok(());
         }
 
-        if limit == 1 || approved_calls.len() == 1 {
+        if let Some(journal) = &self.journal {
+            let (was_cancelled, dispatched) = self
+                .execute_claimed_tool_batch(
+                    journal.as_ref(),
+                    approved_calls,
+                    limit,
+                    effect_timeout,
+                    cancel,
+                    sink,
+                )
+                .await?;
+            cancelled = was_cancelled;
+            for (index, outcome) in dispatched {
+                outcomes[index] = Some(outcome);
+            }
+        } else if limit == 1 || approved_calls.len() == 1 {
             for (index, effect_id, call) in approved_calls {
                 if cancel.is_cancelled() {
                     cancelled = true;
@@ -660,6 +737,64 @@ impl Agent {
             sink.cancel();
         }
         Ok(())
+    }
+
+    async fn execute_claimed_tool_batch<F>(
+        &self,
+        journal: &dyn EffectJournal,
+        approved: Vec<(usize, EffectId, ToolCallRequest)>,
+        limit: usize,
+        effect_timeout: Option<Duration>,
+        cancel: &CancelFlag,
+        sink: &mut BatchSink<'_, F>,
+    ) -> Result<(bool, Vec<(usize, ToolOutcome)>), RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        let run_id = sink.run_id.clone();
+        let mut index_by_effect = std::collections::HashMap::new();
+        for (index, effect_id, _) in &approved {
+            let record = sink.effect_mut(effect_id).clone();
+            journal
+                .record(&run_id, &record)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+            journal
+                .enqueue_effect(&run_id, &record)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+            index_by_effect.insert(effect_id.clone(), *index);
+        }
+        let mut cancelled = false;
+        let mut dispatched = Vec::new();
+        {
+            let mut on_result = |result: &DispatchResult| match &result.outcome {
+                DispatchOutcome::Tool(outcome) => {
+                    sink.start_tool_outcome(outcome);
+                    sink.emit_tool_result(outcome);
+                    if let Some(index) = index_by_effect.get(&result.effect_id) {
+                        dispatched.push((*index, outcome.clone()));
+                    }
+                }
+                DispatchOutcome::Cancelled => cancelled = true,
+                DispatchOutcome::Model(_) => {}
+            };
+            let options = DispatchOptions {
+                limit: approved.len(),
+                max_parallel: limit.max(1),
+                timeout: effect_timeout,
+                cancel: Some(cancel),
+            };
+            OutboxDispatcher::run_once_for_run_with(
+                journal,
+                &run_id,
+                options,
+                self.dispatcher.as_ref(),
+                &mut on_result,
+            )
+            .await
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        }
+        sync_effects(journal, &run_id, sink.effects)?;
+        Ok((cancelled || cancel.is_cancelled(), dispatched))
     }
 }
 
@@ -857,6 +992,22 @@ Maintain a short plan with `update_plan` and keep it current."
             journal: self.journal,
         })
     }
+}
+
+fn sync_effects(
+    journal: &dyn EffectJournal,
+    run_id: &RunId,
+    effects: &mut [EffectRecord],
+) -> Result<(), RunError> {
+    let stored = journal
+        .load(run_id)
+        .map_err(|error| RunError::Journal(error.to_string()))?;
+    for record in effects.iter_mut() {
+        if let Some(updated) = stored.iter().find(|stored| stored.id == record.id) {
+            *record = updated.clone();
+        }
+    }
+    Ok(())
 }
 
 fn enqueue(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, kind: EventKind) {
