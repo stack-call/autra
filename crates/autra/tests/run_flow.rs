@@ -31,6 +31,7 @@ async fn echo_agent_returns_the_echoed_answer() {
         [
             "RunStarted",
             "ModelCallStarted",
+            "ModelDelta",
             "ModelResult",
             "RunCompleted"
         ]
@@ -53,6 +54,7 @@ fn event_names(events: &[RunEvent]) -> Vec<&'static str> {
         .map(|event| match event {
             RunEvent::RunStarted { .. } => "RunStarted",
             RunEvent::ModelCallStarted { .. } => "ModelCallStarted",
+            RunEvent::ModelDelta { .. } => "ModelDelta",
             RunEvent::ModelResult { .. } => "ModelResult",
             RunEvent::ApprovalRequested { .. } => "ApprovalRequested",
             RunEvent::ApprovalDecided { .. } => "ApprovalDecided",
@@ -195,6 +197,7 @@ async fn tool_calls_are_executed_and_fed_back() {
             "ToolCallStarted",
             "ToolResult",
             "ModelCallStarted",
+            "ModelDelta",
             "ModelResult",
             "RunCompleted"
         ]

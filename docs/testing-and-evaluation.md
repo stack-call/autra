@@ -103,6 +103,12 @@ Tests observe public behaviour, not private helpers.
     an approver; an allow rule cannot lower the baseline; deny commands block
     `run_command`; approval requests carry revision, actor and expiry; the CLI
     loads a JSON policy file.
+31. **Streaming** (`autra`, `autra-openai`): deltas arrive before the final
+    model result; a non-streaming provider emits one delta; the OpenAI adapter
+    parses SSE content and tool-call fragments.
+32. **Snapshots** (`autra-runtime`, `autra-cli`): a hub records a final
+    snapshot; subscriptions receive events and end at finish; subscribing after
+    finish returns the snapshot; `autractl snapshot` reads a journaled Run.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

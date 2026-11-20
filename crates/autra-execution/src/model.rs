@@ -25,6 +25,20 @@ pub trait ModelProvider: Send + Sync {
     fn protocol_version(&self) -> u32 {
         MODEL_PROTOCOL_VERSION
     }
+
+    /// Streaming variant. The default emits the complete text once, so every
+    /// provider works without a streaming implementation.
+    async fn complete_streaming(
+        &self,
+        request: &ModelCallSpec,
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<ModelOutput, ModelError> {
+        let output = self.complete(request).await?;
+        if let Some(text) = output.text.clone() {
+            on_delta(text);
+        }
+        Ok(output)
+    }
 }
 
 #[derive(Debug, Error)]

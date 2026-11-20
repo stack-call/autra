@@ -10,6 +10,7 @@ pub mod dispatcher;
 pub mod engine;
 pub mod hooks;
 pub mod host;
+pub mod hub;
 pub mod journal;
 pub mod policy;
 pub mod sandbox;
@@ -24,6 +25,7 @@ pub use dispatcher::{
 pub use engine::LocalEngine;
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities, LocalHost};
+pub use hub::{RunHub, RunSubscription};
 pub use journal::{EffectJournal, JournalError, MemoryJournal, OutboxEntry};
 pub use policy::RulePolicy;
 pub use sandbox::{

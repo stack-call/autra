@@ -71,3 +71,68 @@ async fn malformed_json_error_includes_the_body() {
     assert!(error.to_string().contains("invalid model response JSON"));
     assert!(error.to_string().contains("not json"));
 }
+
+#[tokio::test]
+async fn streams_content_deltas() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"he\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"llo\"}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    let model =
+        OpenAiCompatibleModel::new(OpenAiConfig::new(server.uri(), "test-key", "test-model"))
+            .unwrap();
+    let mut deltas = Vec::new();
+
+    let output = model
+        .complete_streaming(&request(), &mut |delta| deltas.push(delta))
+        .await
+        .unwrap();
+
+    assert_eq!(deltas, ["he", "llo"]);
+    assert_eq!(output.text.as_deref(), Some("hello"));
+    assert!(output.tool_calls.is_empty());
+    assert!(model.capabilities().streaming);
+}
+
+#[tokio::test]
+async fn streams_tool_call_fragments() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\\\"\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"hi\\\"}\"}}]}}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(body),
+        )
+        .mount(&server)
+        .await;
+    let model =
+        OpenAiCompatibleModel::new(OpenAiConfig::new(server.uri(), "test-key", "test-model"))
+            .unwrap();
+
+    let output = model
+        .complete_streaming(&request(), &mut |_| {})
+        .await
+        .unwrap();
+
+    assert_eq!(output.tool_calls.len(), 1);
+    assert_eq!(output.tool_calls[0].call_id, "call_1");
+    assert_eq!(output.tool_calls[0].name, "echo");
+    assert_eq!(output.tool_calls[0].arguments, r#"{"text":"hi"}"#);
+}

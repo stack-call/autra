@@ -16,7 +16,7 @@ use autra_core::{
 use autra_execution::{
     Approver, ChildExecutionContext, DEFAULT_APPROVAL_TTL, DurableTransitionStore, EffectJournal,
     ObserverHook, PolicyChain, PolicyDecision, PolicyRequest, RunError, RunEvent, RunOptions,
-    RunOutcome, ToolContext, ToolPolicy, ToolRegistry,
+    RunOutcome, RunSnapshot, ToolContext, ToolPolicy, ToolRegistry,
 };
 use tracing::Instrument;
 
@@ -26,6 +26,7 @@ use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
     OutboxDispatcher,
 };
+use crate::hub::RunHub;
 
 /// Drives one Run: accepts events, commits transitions, executes effects and
 /// resumes committed checkpoints.
@@ -43,6 +44,7 @@ pub struct LocalEngine {
     policy: PolicyChain,
     actor: Option<String>,
     approval_ttl: Option<Duration>,
+    hub: Option<Arc<RunHub>>,
 }
 
 impl LocalEngine {
@@ -60,6 +62,7 @@ impl LocalEngine {
             policy: PolicyChain::new(),
             actor: None,
             approval_ttl: None,
+            hub: None,
         }
     }
 
@@ -113,6 +116,11 @@ impl LocalEngine {
 
     pub fn with_approval_ttl(mut self, ttl: Duration) -> Self {
         self.approval_ttl = Some(ttl);
+        self
+    }
+
+    pub fn with_run_hub(mut self, hub: Arc<RunHub>) -> Self {
+        self.hub = Some(hub);
         self
     }
 
@@ -238,6 +246,9 @@ impl LocalEngine {
         let mut state = AgentState::new(run_id.clone(), budget);
         state.parent_run_id = parent_run_id;
         stepper.initialize(&mut state, &history);
+        if let Some(hub) = &self.hub {
+            hub.start(RunSnapshot::from_state(&state, 0, 0));
+        }
         state.session_id = options.session_id.clone();
         state.turn_id = options.turn_id.clone();
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
@@ -558,7 +569,7 @@ impl LocalEngine {
         mut queue: VecDeque<AcceptedEvent>,
         mut effects: Vec<EffectRecord>,
         options: RunOptions,
-        mut on_event: F,
+        on_event: F,
     ) -> Result<RunOutcome, RunError>
     where
         F: FnMut(&RunEvent),
@@ -570,6 +581,14 @@ impl LocalEngine {
             .max(1);
         let approver = options.approver.clone().or_else(|| self.approver.clone());
         let run_id = state.run_id.clone();
+        let hub = self.hub.clone();
+        let mut forward = on_event;
+        let mut on_event = |event: &RunEvent| {
+            if let Some(hub) = &hub {
+                hub.publish(&run_id, event);
+            }
+            forward(event);
+        };
         let mut seq = queue.iter().map(|event| event.seq).max().unwrap_or(0);
         let mut cancel_queued = false;
         loop {
@@ -590,6 +609,9 @@ impl LocalEngine {
                     on_event(&RunEvent::RunFailed {
                         message: message.clone(),
                     });
+                    if let Some(hub) = &self.hub {
+                        hub.finish(RunSnapshot::from_state(&state, event.seq, effects.len()));
+                    }
                     return Err(RunError::Step(error));
                 }
             };
@@ -648,6 +670,9 @@ impl LocalEngine {
                     )
                     .map_err(|error| RunError::Journal(error.to_string()))?;
             }
+            if let Some(hub) = &self.hub {
+                hub.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
+            }
 
             if let EventKind::ModelResult(output) = &event.kind {
                 on_event(&RunEvent::ModelResult {
@@ -679,6 +704,9 @@ impl LocalEngine {
                                 .map_err(|error| RunError::Journal(error.to_string()))?;
                         }
                     }
+                    if let Some(hub) = &self.hub {
+                        hub.finish(RunSnapshot::from_state(&state, event.seq, effects.len()));
+                    }
                     return Ok(RunOutcome::new(state, effects));
                 }
                 Disposition::Failed => {
@@ -692,6 +720,9 @@ impl LocalEngine {
                     tracing::warn!(message = %message, "agent run failed");
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
+                    }
+                    if let Some(hub) = &self.hub {
+                        hub.finish(RunSnapshot::from_state(&state, event.seq, effects.len()));
                     }
                     return Err(RunError::Failed(message));
                 }
@@ -782,10 +813,29 @@ impl LocalEngine {
                         None => {
                             effect_mut(&mut effects, &effect_id)
                                 .set_status(EffectStatus::Dispatched);
-                            self.dispatcher
-                                .call_model(&request, effect_timeout)
-                                .await
-                                .map_err(RunError::Model)
+                            let (sender, mut receiver) =
+                                tokio::sync::mpsc::unbounded_channel::<String>();
+                            let mut on_delta = move |text: String| {
+                                let _ = sender.send(text);
+                            };
+                            let call = self.dispatcher.call_model_streaming(
+                                &request,
+                                effect_timeout,
+                                &mut on_delta,
+                            );
+                            tokio::pin!(call);
+                            let result = loop {
+                                tokio::select! {
+                                    result = &mut call => break result,
+                                    Some(text) = receiver.recv() => {
+                                        on_event(&RunEvent::ModelDelta { text });
+                                    }
+                                }
+                            };
+                            while let Ok(text) = receiver.try_recv() {
+                                on_event(&RunEvent::ModelDelta { text });
+                            }
+                            result.map_err(RunError::Model)
                         }
                     }
                 }

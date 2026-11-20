@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use autra_core::{
-    AgentPhase, AgentState, CancelFlag, EffectRecord, RunId, SessionId, StepError, ToolCallRequest,
-    TurnId,
+    AgentPhase, AgentState, BudgetSnapshot, CancelFlag, EffectRecord, RunId, SessionId, StepError,
+    ToolCallRequest, TurnId,
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::approval::Approver;
@@ -55,6 +56,9 @@ pub enum RunEvent {
     ModelCallStarted {
         turn: u32,
     },
+    ModelDelta {
+        text: String,
+    },
     ModelResult {
         text: Option<String>,
         tool_calls: Vec<ToolCallRequest>,
@@ -86,6 +90,34 @@ pub enum RunEvent {
     RunFailed {
         message: String,
     },
+}
+
+/// A point-in-time view of a Run for clients that cannot hold the state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunSnapshot {
+    pub run_id: RunId,
+    pub parent_run_id: Option<RunId>,
+    pub phase: AgentPhase,
+    pub budget: BudgetSnapshot,
+    pub final_answer: Option<String>,
+    pub last_error: Option<String>,
+    pub last_event_seq: u64,
+    pub effect_count: usize,
+}
+
+impl RunSnapshot {
+    pub fn from_state(state: &AgentState, last_event_seq: u64, effect_count: usize) -> Self {
+        Self {
+            run_id: state.run_id.clone(),
+            parent_run_id: state.parent_run_id.clone(),
+            phase: state.phase.clone(),
+            budget: state.budget.clone(),
+            final_answer: state.final_answer.clone(),
+            last_error: state.last_error.clone(),
+            last_event_seq,
+            effect_count,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

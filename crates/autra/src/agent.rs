@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use crate::subagent::{SubagentRegistry, SubagentTool};
 use autra_runtime::{
-    ChildHandle, ChildSpec, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine,
+    ChildHandle, ChildSpec, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine, RunHub,
 };
 
 pub use autra_execution::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
@@ -237,6 +237,7 @@ pub struct AgentBuilder {
     policy: PolicyChain,
     actor: Option<String>,
     approval_ttl: Option<Duration>,
+    hub: Option<Arc<RunHub>>,
 }
 
 impl AgentBuilder {
@@ -264,6 +265,7 @@ impl AgentBuilder {
             policy: PolicyChain::new(),
             actor: None,
             approval_ttl: None,
+            hub: None,
         }
     }
 
@@ -375,6 +377,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn run_hub(mut self, hub: Arc<RunHub>) -> Self {
+        self.hub = Some(hub);
+        self
+    }
+
     pub fn journal(mut self, journal: impl DurableTransitionStore + 'static) -> Self {
         self.journal = Some(Arc::new(journal));
         self
@@ -439,6 +446,9 @@ Maintain a short plan with `update_plan` and keep it current."
         }
         if let Some(ttl) = self.approval_ttl {
             engine = engine.with_approval_ttl(ttl);
+        }
+        if let Some(hub) = self.hub {
+            engine = engine.with_run_hub(hub);
         }
         Ok(Agent {
             name: self.name,

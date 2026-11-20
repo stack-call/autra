@@ -33,6 +33,7 @@ fn event_names(events: &[RunEvent]) -> Vec<&'static str> {
         .map(|event| match event {
             RunEvent::RunStarted { .. } => "RunStarted",
             RunEvent::ModelCallStarted { .. } => "ModelCallStarted",
+            RunEvent::ModelDelta { .. } => "ModelDelta",
             RunEvent::ModelResult { .. } => "ModelResult",
             RunEvent::ApprovalRequested { .. } => "ApprovalRequested",
             RunEvent::ApprovalDecided { .. } => "ApprovalDecided",

@@ -36,6 +36,20 @@ pub trait Dispatcher: Send + Sync {
         timeout: Option<Duration>,
     ) -> ToolOutcome;
 
+    /// Streaming model call. The default emits the complete text once.
+    async fn call_model_streaming(
+        &self,
+        request: &ModelCallSpec,
+        timeout: Option<Duration>,
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<ModelOutput, ModelError> {
+        let output = self.call_model(request, timeout).await?;
+        if let Some(text) = output.text.clone() {
+            on_delta(text);
+        }
+        Ok(output)
+    }
+
     /// Execute a tool with the invoking scope. Custom dispatchers that only
     /// know `call_tool` keep working through this default.
     async fn call_tool_with_context(
@@ -105,6 +119,20 @@ impl Dispatcher for LocalDispatcher {
         timeout: Option<Duration>,
     ) -> ToolOutcome {
         execute_tool(self.tools.clone(), call.clone(), timeout, context.clone()).await
+    }
+
+    async fn call_model_streaming(
+        &self,
+        request: &ModelCallSpec,
+        timeout: Option<Duration>,
+        on_delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<ModelOutput, ModelError> {
+        match with_timeout(timeout, self.model.complete_streaming(request, on_delta)).await {
+            Ok(result) => result,
+            Err(()) => Err(ModelError::new(
+                "model call exceeded the configured timeout",
+            )),
+        }
     }
 
     fn knows_tool(&self, name: &str) -> bool {

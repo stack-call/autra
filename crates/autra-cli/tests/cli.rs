@@ -321,3 +321,37 @@ fn a_valid_policy_file_is_loaded() {
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert!(stdout(&output).contains("echo: hello"));
 }
+
+#[test]
+fn snapshot_reads_a_journaled_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("snapshot.db");
+    let run = autractl()
+        .args([
+            "run",
+            "--journal",
+            db.to_str().unwrap(),
+            "--read-only",
+            "hello",
+        ])
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "stderr: {}", stderr(&run));
+    let run_id = stdout(&run)
+        .lines()
+        .find_map(|line| line.strip_prefix("[run] "))
+        .and_then(|line| line.strip_suffix(" started"))
+        .expect("run id in events")
+        .to_owned();
+
+    let snapshot = autractl()
+        .args(["snapshot", "--journal", db.to_str().unwrap(), &run_id])
+        .output()
+        .unwrap();
+
+    assert!(snapshot.status.success(), "stderr: {}", stderr(&snapshot));
+    let value: serde_json::Value = serde_json::from_slice(&snapshot.stdout).unwrap();
+    assert_eq!(value["run_id"], run_id);
+    assert_eq!(value["phase"], "Completed");
+    assert_eq!(value["final_answer"], "echo: hello");
+}

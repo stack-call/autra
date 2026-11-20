@@ -26,7 +26,7 @@ pub use journal::{
 };
 pub use model::{MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider};
 pub use policy::{PolicyChain, PolicyDecision, PolicyRequest, ToolPolicy, baseline_decision};
-pub use run::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
+pub use run::{RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot, RunStatus};
 pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
     SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus,

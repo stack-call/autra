@@ -1,8 +1,14 @@
 use autra_core::{HistoryItem, ModelCallSpec, ModelOutput, ToolCallRequest};
 use autra_harness::ModelError;
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
-pub(crate) fn build_request(model: &str, request: &ModelCallSpec) -> Result<Value, ModelError> {
+pub(crate) fn build_request(
+    model: &str,
+    request: &ModelCallSpec,
+    stream: bool,
+) -> Result<Value, ModelError> {
     let mut messages = Vec::new();
     if let Some(system) = &request.system {
         if !system.is_empty() {
@@ -14,6 +20,9 @@ pub(crate) fn build_request(model: &str, request: &ModelCallSpec) -> Result<Valu
     }
 
     let mut body = json!({ "model": model, "messages": messages });
+    if stream {
+        body["stream"] = json!(true);
+    }
     if !request.tools.is_empty() {
         let mut tools = Vec::new();
         for tool in &request.tools {
@@ -155,7 +164,7 @@ mod tests {
             }],
         };
 
-        let body = build_request("test-model", &request).unwrap();
+        let body = build_request("test-model", &request, false).unwrap();
 
         assert_eq!(body["model"], "test-model");
         assert_eq!(body["messages"][0]["role"], "system");
@@ -241,7 +250,7 @@ mod tests {
             }],
         };
 
-        assert!(build_request("test-model", &request).is_err());
+        assert!(build_request("test-model", &request, false).is_err());
     }
 }
 
@@ -267,4 +276,83 @@ mod null_argument_tests {
 
         assert_eq!(output.tool_calls[0].arguments, "");
     }
+}
+
+#[derive(Default)]
+pub(crate) struct StreamAccumulator {
+    pub content: String,
+    pub tool_calls: BTreeMap<usize, StreamToolCall>,
+}
+
+#[derive(Default)]
+pub(crate) struct StreamToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+/// Apply one `data:` payload from an OpenAI-compatible SSE stream. Returns the
+/// content delta, if any.
+pub(crate) fn apply_stream_data(
+    data: &str,
+    accumulator: &mut StreamAccumulator,
+) -> Result<Option<String>, ModelError> {
+    if data.is_empty() || data == "[DONE]" {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(data).map_err(|error| {
+        ModelError::new(format!(
+            "invalid model stream chunk: {error}: {}",
+            truncate(data, 200)
+        ))
+    })?;
+    if let Some(error) = value.get("error") {
+        return Err(ModelError::new(format!("model stream error: {error}")));
+    }
+    let mut delta_text = None;
+    if let Some(text) = value
+        .pointer("/choices/0/delta/content")
+        .and_then(Value::as_str)
+    {
+        accumulator.content.push_str(text);
+        delta_text = Some(text.to_owned());
+    }
+    if let Some(calls) = value
+        .pointer("/choices/0/delta/tool_calls")
+        .and_then(Value::as_array)
+    {
+        for call in calls {
+            let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let entry = accumulator.tool_calls.entry(index).or_default();
+            if let Some(id) = call.get("id").and_then(Value::as_str) {
+                entry.id = id.to_owned();
+            }
+            if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                entry.name.push_str(name);
+            }
+            if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str) {
+                entry.arguments.push_str(arguments);
+            }
+        }
+    }
+    Ok(delta_text)
+}
+
+pub(crate) fn finish_stream(accumulator: StreamAccumulator) -> ModelOutput {
+    let text = if accumulator.content.is_empty() {
+        None
+    } else {
+        Some(accumulator.content)
+    };
+    let tool_calls = accumulator
+        .tool_calls
+        .into_values()
+        .filter(|call| !call.name.is_empty() || !call.arguments.is_empty())
+        .map(|call| ToolCallRequest {
+            call_id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+        })
+        .collect();
+    ModelOutput { text, tool_calls }
 }

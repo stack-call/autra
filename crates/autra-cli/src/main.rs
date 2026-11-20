@@ -6,8 +6,8 @@ use autra_core::{RunId, SessionId};
 use autra_durable_sqlite::{SqliteEffectJournal, SqliteSessionStore};
 
 use autra::{
-    Agent, ApprovalDecision, ApprovalRequest, Approver, RulePolicy, RunError, RunEvent, RunOptions,
-    RunOutcome, Session, SessionStore,
+    Agent, ApprovalDecision, ApprovalRequest, Approver, EffectJournal, RulePolicy, RunError,
+    RunEvent, RunOptions, RunOutcome, Session, SessionStore,
 };
 use autra_harness::{
     EchoModel, EchoTool, EditFileTool, FakeModel, GitDiffTool, GitStatusTool, HistoryItem,
@@ -29,6 +29,7 @@ async fn main() -> ExitCode {
         Some("chat") => chat_command(&args[1..]).await,
         Some("resume") => resume_command(&args[1..]).await,
         Some("outbox") => outbox_command(&args[1..]).await,
+        Some("snapshot") => snapshot_command(&args[1..]),
         Some("demo") => demo_command().await,
         Some("tools") => tools_command(),
         Some(other) => {
@@ -297,6 +298,59 @@ fn string_list(value: &serde_json::Value, key: &str) -> Result<Vec<String>, Stri
             })
             .collect(),
         Some(_) => Err(format!("policy `{key}` must be an array")),
+    }
+}
+
+fn snapshot_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "snapshot") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    let Some(run_id) = flags.rest.first() else {
+        eprintln!("usage: autractl snapshot --journal <path> <run-id>");
+        return ExitCode::FAILURE;
+    };
+    let Some(path) = flags.journal.as_ref() else {
+        eprintln!("snapshot requires --journal <path>");
+        return ExitCode::FAILURE;
+    };
+    let journal = match SqliteEffectJournal::open(path) {
+        Ok(journal) => journal,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let run_id = RunId::new(run_id.clone());
+    let state = match journal.load_run(&run_id) {
+        Ok(Some(state)) => state,
+        Ok(None) => {
+            eprintln!("run `{run_id}` was not found in the journal");
+            return ExitCode::FAILURE;
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let (events, effects) = match (journal.load_events(&run_id), journal.load(&run_id)) {
+        (Ok(events), Ok(effects)) => (events, effects),
+        (Err(error), _) | (_, Err(error)) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let last_seq = events.iter().map(|event| event.seq).max().unwrap_or(0);
+    let snapshot = autra::RunSnapshot::from_state(&state, last_seq, effects.len());
+    match serde_json::to_string_pretty(&snapshot) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("cannot encode snapshot: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -598,6 +652,10 @@ fn print_event(event: &RunEvent) {
         RunEvent::RunStarted { run_id } => println!("[run] {run_id} started"),
         RunEvent::RunResumed { run_id } => println!("[run] {run_id} resumed"),
         RunEvent::ModelCallStarted { turn } => println!("[model] turn {turn}"),
+        RunEvent::ModelDelta { text } => {
+            print!("{text}");
+            let _ = io::stdout().flush();
+        }
         RunEvent::ModelResult { text, tool_calls } => {
             if let Some(text) = text {
                 println!("[model] {}", preview(text));
