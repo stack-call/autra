@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 async-trait = "0.1"
 autra-core = { path = "../autra-core" }
+autra-execution = { path = "../autra-execution" }
 autra-harness = { path = "../autra-harness" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }

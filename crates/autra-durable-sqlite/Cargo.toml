@@ -7,11 +7,12 @@ rust-version.workspace = true
 
 [dependencies]
 autra-core = { path = "../autra-core" }
-autra-runtime = { path = "../autra-runtime" }
+autra-execution = { path = "../autra-execution" }
 rusqlite = { version = "0.43", features = ["bundled"] }
 serde_json = "1"
 
 [dev-dependencies]
 autra-harness = { path = "../autra-harness" }
+autra-runtime = { path = "../autra-runtime" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt"] }

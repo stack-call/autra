@@ -12,7 +12,7 @@ use autra_core::{
     AttemptStatus, CancelFlag, EffectId, EffectIntent, EffectRecord, EffectStatus, ModelCallSpec,
     ModelOutput, RunId, ToolCallRequest, ToolOutcome,
 };
-use autra_harness::{ModelError, ModelProvider, ToolContext, ToolInput, ToolRegistry};
+use autra_execution::{ModelError, ModelProvider, ToolContext, ToolInput, ToolRegistry};
 use futures_util::{FutureExt, StreamExt};
 
 use crate::journal::{EffectJournal, JournalError, OutboxEntry};
@@ -142,8 +142,7 @@ async fn execute_tool(
     }
 }
 
-/// Default lease for a claimed outbox row.
-pub const DEFAULT_CLAIM_LEASE: Duration = Duration::from_secs(30);
+pub use autra_execution::journal::DEFAULT_CLAIM_LEASE;
 
 #[derive(Debug)]
 pub enum DispatchOutcome {

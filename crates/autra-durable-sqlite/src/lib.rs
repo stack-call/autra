@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
-use autra_runtime::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
+use autra_execution::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct SqliteEffectJournal {

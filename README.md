@@ -24,8 +24,9 @@ explicit effects, optional infrastructure.
 | Path | Role | Spec |
 |---|---|---|
 | `crates/autra-core` | Sans-I/O stepper: IDs, state, accepted events, effect intents, scopes | §6 |
-| `crates/autra-harness` | ReAct engine, model provider boundary, context, tools | §7–§9 |
-| `crates/autra-runtime` | Local host: effect dispatch, sessions, concurrency, cancellation | §10–§12 |
+| `crates/autra-execution` | Execution contracts: tool/model/journal/approval/host/sandbox, shared by harness and hosts | §31 |
+| `crates/autra-harness` | ReAct engine, context, skills, planning and concrete tools implementing execution contracts | §7–§9 |
+| `crates/autra-runtime` | Local host: coordinator, effect dispatch, outbox, resume, sessions | §10–§12 |
 | `crates/autra-cli` | `autractl`: local runs, streaming, approvals | §14.4 |
 | `crates/autra-openai` | OpenAI-compatible model provider, non-streaming | — |
 | `crates/autra-eval` | Task-level outcome evaluation | §17.4 |
@@ -34,6 +35,9 @@ explicit effects, optional infrastructure.
 
 Dependency direction is enforced by Cargo: `autra-core` must not depend on
 Tokio, a database, a sandbox backend, or any harness/runtime crate.
+`autra-execution` depends on `autra-core` only; harness and hosts share those
+contracts. `autra-runtime` still depends on `autra-harness` for the default
+ReAct assembly until the facade split; see [architecture](docs/architecture.md).
 
 ## Development
 
