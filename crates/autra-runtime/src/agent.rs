@@ -687,6 +687,7 @@ impl Agent {
             let event = queue
                 .pop_front()
                 .ok_or_else(|| RunError::Protocol("no accepted event to process".to_owned()))?;
+            let expected_version = state.state_version;
             let transition = match setup.stepper.transition(&state, &event) {
                 Ok(transition) => transition,
                 Err(error) => {
@@ -699,10 +700,63 @@ impl Agent {
                     return Err(RunError::Step(error));
                 }
             };
-            let (intents, disposition) = accept_local(&mut state, transition);
+            let (intents, disposition) = accept_local(&mut state, transition, expected_version);
+
+            let first_new = effects.len();
+            let mut tool_calls: Vec<(EffectId, ToolCallRequest)> = Vec::new();
+            let mut model_requests: Vec<(EffectId, ModelCallSpec)> = Vec::new();
+            for intent in intents {
+                if let Some(observer) = &self.observer {
+                    observer.on_effect_accepted(&run_id, &intent);
+                }
+                let effect_id = EffectId::fresh();
+                let digest = digest_intent(&intent);
+                let intent_json = serde_json::to_string(&intent).unwrap_or_default();
+                let requires_approval = match &intent {
+                    EffectIntent::CallModel(_) => false,
+                    EffectIntent::CallTool(spec) => self
+                        .tools
+                        .get(&spec.call.name)
+                        .map(|tool| tool.contract().requires_approval)
+                        .unwrap_or(false),
+                };
+                let mut record = match &intent {
+                    EffectIntent::CallModel(_) => EffectRecord::new(
+                        effect_id.clone(),
+                        EffectKind::ModelCall,
+                        None,
+                        None,
+                        digest,
+                    ),
+                    EffectIntent::CallTool(spec) => EffectRecord::new(
+                        effect_id.clone(),
+                        EffectKind::ToolCall,
+                        Some(spec.call.name.clone()),
+                        Some(spec.call.call_id.clone()),
+                        digest,
+                    ),
+                }
+                .with_intent_json(intent_json);
+                record.set_status(if requires_approval {
+                    EffectStatus::AwaitingApproval
+                } else {
+                    EffectStatus::Authorized
+                });
+                effects.push(record);
+                match intent {
+                    EffectIntent::CallTool(spec) => tool_calls.push((effect_id, spec.call)),
+                    EffectIntent::CallModel(request) => model_requests.push((effect_id, request)),
+                }
+            }
             if let Some(journal) = &self.journal {
                 journal
-                    .commit_event(&run_id, &event, &state, &effects)
+                    .commit_transition(
+                        &run_id,
+                        expected_version,
+                        &event,
+                        &state,
+                        &effects[first_new..],
+                    )
                     .map_err(|error| RunError::Journal(error.to_string()))?;
             }
 
@@ -756,43 +810,9 @@ impl Agent {
             }
 
             if setup.cancel.is_cancelled() {
+                cancel_staged_effects(&mut effects[first_new..], self.journal.as_deref(), &run_id)?;
                 queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
                 continue;
-            }
-
-            if let Some(observer) = &self.observer {
-                for intent in &intents {
-                    observer.on_effect_accepted(&run_id, intent);
-                }
-            }
-            let mut tool_calls: Vec<(EffectId, ToolCallRequest)> = Vec::new();
-            let mut model_requests: Vec<(EffectId, ModelCallSpec)> = Vec::new();
-            for intent in intents {
-                let effect_id = EffectId::fresh();
-                let digest = digest_intent(&intent);
-                let intent_json = serde_json::to_string(&intent).unwrap_or_default();
-                let record = match &intent {
-                    EffectIntent::CallModel(_) => EffectRecord::new(
-                        effect_id.clone(),
-                        EffectKind::ModelCall,
-                        None,
-                        None,
-                        digest,
-                    ),
-                    EffectIntent::CallTool(spec) => EffectRecord::new(
-                        effect_id.clone(),
-                        EffectKind::ToolCall,
-                        Some(spec.call.name.clone()),
-                        Some(spec.call.call_id.clone()),
-                        digest,
-                    ),
-                }
-                .with_intent_json(intent_json);
-                effects.push(record);
-                match intent {
-                    EffectIntent::CallTool(spec) => tool_calls.push((effect_id, spec.call)),
-                    EffectIntent::CallModel(request) => model_requests.push((effect_id, request)),
-                }
             }
 
             if !tool_calls.is_empty() {
@@ -817,8 +837,16 @@ impl Agent {
 
             for (effect_id, request) in model_requests {
                 if setup.cancel.is_cancelled() {
-                    effect_mut(&mut effects, &effect_id)
-                        .set_status(EffectStatus::CancelledBeforeDispatch);
+                    let record = effect_mut(&mut effects, &effect_id);
+                    record.set_status(EffectStatus::CancelledBeforeDispatch);
+                    if let Some(journal) = &self.journal {
+                        journal
+                            .record(&run_id, record)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                        journal
+                            .complete_outbox(&effect_id)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                    }
                     queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
                     break;
                 }
@@ -834,13 +862,6 @@ impl Agent {
                 let output_result = async {
                     match &self.journal {
                         Some(journal) => {
-                            let record = effect_mut(&mut effects, &effect_id).clone();
-                            journal
-                                .record(&run_id, &record)
-                                .map_err(|error| RunError::Journal(error.to_string()))?;
-                            journal
-                                .enqueue_effect(&run_id, &record)
-                                .map_err(|error| RunError::Journal(error.to_string()))?;
                             let results = OutboxDispatcher::run_once_for_run(
                                 journal.as_ref(),
                                 &run_id,
@@ -929,6 +950,7 @@ impl Agent {
         F: FnMut(&RunEvent),
     {
         let limit = limit.max(1) as usize;
+        let run_id = sink.run_id.clone();
         let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
         let mut approved: Vec<Option<(EffectId, ToolCallRequest)>> = vec![None; calls.len()];
         let mut cancelled = false;
@@ -971,6 +993,11 @@ impl Agent {
                     let record = sink.effect_mut(effect_id);
                     record.set_status(EffectStatus::Rejected);
                     record.error = Some(outcome.content.clone());
+                    if let Some(journal) = &self.journal {
+                        journal
+                            .record(&run_id, record)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                    }
                     sink.emit_tool_result(&outcome);
                     outcomes[index] = Some(outcome);
                     continue;
@@ -988,7 +1015,7 @@ impl Agent {
             .collect();
 
         if cancelled {
-            mark_cancelled_before_dispatch(sink);
+            mark_cancelled_before_dispatch(sink, self.journal.as_deref())?;
             for outcome in outcomes.into_iter().flatten() {
                 sink.accept_outcome(outcome);
             }
@@ -1071,7 +1098,7 @@ impl Agent {
         }
 
         if cancelled || cancel.is_cancelled() {
-            mark_cancelled_before_dispatch(sink);
+            mark_cancelled_before_dispatch(sink, self.journal.as_deref())?;
         }
         for outcome in outcomes.into_iter().flatten() {
             sink.accept_outcome(outcome);
@@ -1395,25 +1422,62 @@ fn effect_mut<'a>(effects: &'a mut [EffectRecord], effect_id: &EffectId) -> &'a 
         .expect("effect record must exist")
 }
 
-fn mark_cancelled_before_dispatch<F: FnMut(&RunEvent)>(sink: &mut BatchSink<'_, F>) {
+fn mark_cancelled_before_dispatch<F: FnMut(&RunEvent)>(
+    sink: &mut BatchSink<'_, F>,
+    journal: Option<&dyn EffectJournal>,
+) -> Result<(), RunError> {
+    let run_id = sink.run_id.clone();
     for record in sink.effects.iter_mut() {
         if matches!(
             record.status,
             EffectStatus::Recorded | EffectStatus::AwaitingApproval | EffectStatus::Authorized
         ) {
             record.set_status(EffectStatus::CancelledBeforeDispatch);
+            if let Some(journal) = journal {
+                journal
+                    .record(&run_id, record)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                journal
+                    .complete_outbox(&record.id)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+            }
         }
     }
+    Ok(())
 }
 
 fn accept_local(
     state: &mut AgentState,
     proposal: TransitionProposal,
+    expected_version: u64,
 ) -> (Vec<EffectIntent>, Disposition) {
-    // LocalEphemeral is the single writer; a durable host must commit the
-    // state and effect intents atomically at this boundary instead.
     *state = proposal.next;
+    state.state_version = expected_version + 1;
     (proposal.intents, proposal.disposition)
+}
+
+fn cancel_staged_effects(
+    effects: &mut [EffectRecord],
+    journal: Option<&dyn EffectJournal>,
+    run_id: &RunId,
+) -> Result<(), RunError> {
+    for record in effects.iter_mut() {
+        if matches!(
+            record.status,
+            EffectStatus::Recorded | EffectStatus::AwaitingApproval | EffectStatus::Authorized
+        ) {
+            record.set_status(EffectStatus::CancelledBeforeDispatch);
+            if let Some(journal) = journal {
+                journal
+                    .record(run_id, record)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                journal
+                    .complete_outbox(&record.id)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn tool_outcome_after_resume(call: &ToolCallRequest, record: Option<&EffectRecord>) -> ToolOutcome {

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
 use autra_runtime::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct SqliteEffectJournal {
     connection: Arc<Mutex<Connection>>,
@@ -30,6 +30,7 @@ impl SqliteEffectJournal {
                 CREATE TABLE IF NOT EXISTS runs (
                     run_id TEXT PRIMARY KEY,
                     state_json TEXT NOT NULL,
+                    state_version INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS run_events (
@@ -50,6 +51,11 @@ impl SqliteEffectJournal {
                 );",
             )
             .map_err(|error| JournalError::new(format!("cannot migrate journal: {error}")))?;
+        // Existing v0 databases predate optimistic state versions.
+        let _ = connection.execute(
+            "ALTER TABLE runs ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -148,11 +154,12 @@ impl EffectJournal for SqliteEffectJournal {
             .map_err(|_| JournalError::new("journal lock poisoned"))?;
         connection
             .execute(
-                "INSERT INTO runs (run_id, state_json) VALUES (?1, ?2)
+                "INSERT INTO runs (run_id, state_json, state_version) VALUES (?1, ?2, ?3)
                  ON CONFLICT(run_id) DO UPDATE SET
                    state_json = excluded.state_json,
+                   state_version = excluded.state_version,
                    updated_at = CURRENT_TIMESTAMP",
-                params![state.run_id.as_str(), payload],
+                params![state.run_id.as_str(), payload, state.state_version as i64],
             )
             .map_err(|error| JournalError::new(format!("cannot save run: {error}")))?;
         Ok(())
@@ -226,16 +233,21 @@ impl EffectJournal for SqliteEffectJournal {
         })?;
         transaction
             .execute(
-                "INSERT INTO runs (run_id, state_json) VALUES (?1, ?2)
+                "INSERT INTO runs (run_id, state_json, state_version) VALUES (?1, ?2, ?3)
                  ON CONFLICT(run_id) DO UPDATE SET
                    state_json = excluded.state_json,
+                   state_version = excluded.state_version,
                    updated_at = CURRENT_TIMESTAMP",
-                params![state.run_id.as_str(), state_payload],
+                params![
+                    state.run_id.as_str(),
+                    state_payload,
+                    state.state_version as i64
+                ],
             )
             .map_err(|error| JournalError::new(format!("cannot save run: {error}")))?;
         transaction
             .execute(
-                "INSERT OR REPLACE INTO run_events (run_id, seq, event_json)
+                "INSERT INTO run_events (run_id, seq, event_json)
                  VALUES (?1, ?2, ?3)",
                 params![run_id.as_str(), event.seq as i64, event_payload],
             )
@@ -254,6 +266,97 @@ impl EffectJournal for SqliteEffectJournal {
                     params![effect.id.as_str(), run_id.as_str(), payload],
                 )
                 .map_err(|error| JournalError::new(format!("cannot record effect: {error}")))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| JournalError::new(format!("cannot commit journal: {error}")))?;
+        Ok(())
+    }
+
+    fn commit_transition(
+        &self,
+        run_id: &RunId,
+        expected_version: u64,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        new_effects: &[EffectRecord],
+    ) -> Result<(), JournalError> {
+        let event_payload = serde_json::to_string(event)
+            .map_err(|error| JournalError::new(format!("cannot serialize event: {error}")))?;
+        let state_payload = serde_json::to_string(state)
+            .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let transaction = connection.transaction().map_err(|error| {
+            JournalError::new(format!("cannot begin journal transaction: {error}"))
+        })?;
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT state_version FROM runs WHERE run_id = ?1",
+                params![run_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| JournalError::new(format!("cannot read run version: {error}")))?;
+        let current = current.unwrap_or(0) as u64;
+        if current != expected_version {
+            return Err(JournalError::new(format!(
+                "state version conflict for run `{run_id}`: expected {expected_version}, found {current}"
+            )));
+        }
+        if state.state_version != expected_version + 1 {
+            return Err(JournalError::new(format!(
+                "new state version {} does not follow {expected_version}",
+                state.state_version
+            )));
+        }
+        transaction
+            .execute(
+                "INSERT INTO runs (run_id, state_json, state_version) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                   state_json = excluded.state_json,
+                   state_version = excluded.state_version,
+                   updated_at = CURRENT_TIMESTAMP",
+                params![
+                    state.run_id.as_str(),
+                    state_payload,
+                    state.state_version as i64
+                ],
+            )
+            .map_err(|error| JournalError::new(format!("cannot save run: {error}")))?;
+        transaction
+            .execute(
+                "INSERT INTO run_events (run_id, seq, event_json) VALUES (?1, ?2, ?3)",
+                params![run_id.as_str(), event.seq as i64, event_payload],
+            )
+            .map_err(|error| JournalError::new(format!("cannot record event: {error}")))?;
+        for effect in new_effects {
+            let payload = serde_json::to_string(effect)
+                .map_err(|error| JournalError::new(format!("cannot serialize effect: {error}")))?;
+            transaction
+                .execute(
+                    "INSERT INTO effects (effect_id, run_id, payload_json)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(effect_id) DO UPDATE SET
+                       run_id = excluded.run_id,
+                       payload_json = excluded.payload_json,
+                       updated_at = CURRENT_TIMESTAMP",
+                    params![effect.id.as_str(), run_id.as_str(), payload],
+                )
+                .map_err(|error| JournalError::new(format!("cannot record effect: {error}")))?;
+            if effect.status == EffectStatus::Authorized && !effect.intent_json.is_empty() {
+                transaction
+                    .execute(
+                        "INSERT OR IGNORE INTO effect_outbox (effect_id, run_id, intent_json)
+                         VALUES (?1, ?2, ?3)",
+                        params![effect.id.as_str(), run_id.as_str(), effect.intent_json],
+                    )
+                    .map_err(|error| {
+                        JournalError::new(format!("cannot enqueue effect: {error}"))
+                    })?;
+            }
         }
         transaction
             .commit()

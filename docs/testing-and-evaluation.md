@@ -76,7 +76,11 @@ Tests observe public behaviour, not private helpers.
     lease can be reclaimed; a terminal record is cleaned up without dispatch;
     an in-flight record becomes `OutcomeUnknown`; `run_due` drains rows across
     runs.
-25. **Workspace CLI** (`autra-cli`): `run --workspace --read-only` uses the
+25. **Atomic transition commit** (`autra-durable-sqlite`): state, event,
+    effects and Authorized outbox rows commit together; a stale
+    `state_version` is rejected; a duplicate event sequence rolls the whole
+    transaction back.
+26. **Workspace CLI** (`autra-cli`): `run --workspace --read-only` uses the
     selected root, `--journal` persists a run, `resume` requires its journal
     and model, `outbox` requires its journal, `tools` lists the workspace
     capabilities, and unknown options fail with usage.

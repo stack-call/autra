@@ -8,7 +8,7 @@ host provides it.
 | Host | Owns | Does not promise | Status |
 |---|---|---|---|
 | `LocalEphemeral` | In-process state, concurrency, interaction, cancellation | Recovery after process exit | Implemented |
-| `NativeDurable` | SQLite journal, transactional outbox, checkpoints, recovery at recorded boundaries | Exactly-once external I/O | Planned |
+| `NativeDurable` | SQLite journal, transactional outbox, atomic transition commit, resume at recorded boundaries | Exactly-once external I/O; automatic background recovery | Partial |
 | `RestateHosted` | Restate journal, workflow/handler, durable waits, service calls | Custom SQLite journal equivalence, automatic workspace persistence | Planned |
 
 The three hosts share Stepper semantics but not recovery, timer or delivery
@@ -22,15 +22,21 @@ guarantees. See INV-08.
 - A cancelled Run returns a Cancelled outcome; an in-flight Effect may finish.
 - No recovery after process exit, and no durable journal.
 
-## NativeDurable plan
+## NativeDurable protocol
 
-The first durable host will use SQLite and an outbox:
+Each accepted event commits through `EffectJournal::commit_transition`:
 
-1. validate `run.state_version`;
-2. write the next state or checkpoint;
-3. append ordered durable events;
-4. write a unique Effect intent and outbox record;
-5. advance sequence/version and commit.
+1. compare the stored `state_version` with the expected version (CAS);
+2. write the next state with `state_version + 1`;
+3. append the event with a strict insert, so a duplicate sequence fails;
+4. write the new EffectRecords;
+5. insert outbox rows for new `Authorized` effects.
+
+SQLite performs these steps in one transaction. A version conflict, duplicate
+sequence or write failure rolls the whole transition back: state, event,
+effects and outbox cannot disagree about whether the transition happened.
+Effects that need approval are committed as `AwaitingApproval`; their outbox
+row is created only after approval, which is a separate commit by design.
 
 A dispatcher consumes only committed outbox rows and rescans unfinished intents
 after restart. External APIs cannot join a local transaction, so the window

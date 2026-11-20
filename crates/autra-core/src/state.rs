@@ -46,6 +46,10 @@ impl EngineState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentState {
     pub run_id: RunId,
+    /// Monotonic version of the committed run state. A journal uses it for
+    /// optimistic concurrency checks.
+    #[serde(default)]
+    pub state_version: u64,
     pub session_id: Option<SessionId>,
     pub turn_id: Option<TurnId>,
     pub phase: AgentPhase,
@@ -61,6 +65,7 @@ impl AgentState {
     pub fn new(run_id: RunId, budget: BudgetSnapshot) -> Self {
         Self {
             run_id,
+            state_version: 0,
             session_id: None,
             turn_id: None,
             phase: AgentPhase::Ready,

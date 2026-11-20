@@ -10,6 +10,7 @@ use autra_runtime::{
     Agent, ApprovalDecision, ApprovalRequest, Approver, EffectJournal, JournalError, MemoryJournal,
     OutboxEntry, RunError,
 };
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
@@ -18,6 +19,7 @@ use tempfile::tempdir;
 struct SpyJournal {
     inner: MemoryJournal,
     enqueued: Arc<AtomicUsize>,
+    enqueued_ids: Arc<Mutex<HashSet<EffectId>>>,
     claimed: Arc<AtomicUsize>,
     last_run: Arc<Mutex<Option<RunId>>>,
 }
@@ -73,7 +75,12 @@ impl EffectJournal for SpyJournal {
     }
 
     fn enqueue_effect(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError> {
-        self.enqueued.fetch_add(1, Ordering::SeqCst);
+        if effect.status == EffectStatus::Authorized && !effect.intent_json.is_empty() {
+            let mut ids = self.enqueued_ids.lock().unwrap();
+            if ids.insert(effect.id.clone()) {
+                self.enqueued.fetch_add(1, Ordering::SeqCst);
+            }
+        }
         self.inner.enqueue_effect(run_id, effect)
     }
 
