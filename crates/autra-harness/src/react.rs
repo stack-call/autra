@@ -30,6 +30,11 @@ impl ReActStepper {
         self
     }
 
+    pub fn with_shared_context_builder(mut self, builder: Arc<dyn ContextBuilder>) -> Self {
+        self.context_builder = builder;
+        self
+    }
+
     fn model_request(&self, state: &AgentState) -> Result<ModelCallSpec, StepError> {
         self.context_builder
             .build(ContextRequest {

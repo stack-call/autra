@@ -74,7 +74,7 @@ Moonshot, vLLM, Ollama or LM Studio.
 - [Context and memory](docs/context-and-memory.md) · [Tool security](docs/tool-security.md)
 - [Durability](docs/durability.md) · [Model providers](docs/model-providers.md)
 - [Testing and evaluation](docs/testing-and-evaluation.md) · [Observability](docs/observability.md)
-- [Evaluation](docs/evaluation.md) · [Harness v1 acceptance](docs/harness.md)
+- [Evaluation](docs/evaluation.md) · [Harness v1 acceptance](docs/harness.md) · [Extensions](docs/extensions.md)
 - [Roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/) · [OpenShell](docs/integrations/openshell.md) · [Restate](docs/integrations/restate.md)
 

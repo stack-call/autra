@@ -2,7 +2,7 @@
 
 > **文档版本**：v1.0 — Architecture Proposal / Draft  
 > **项目名称**：Autra  
-> **增补**：§4.4 产品分层视图；§4.5 领域归属；§4.6/§5.4/§6.6/§7.4/§10.7/§12.8 V2.0 职责与协议；项目定名 Autra（2026-11-20）  
+> **增补**：§4.4 产品分层视图；§4.5 领域归属；§4.6/§5.4/§6.6/§7.4/§10.7/§12.8 V2.0 职责与协议；§31 扩展架构与能力契约；项目定名 Autra（2026-11-20）  
 > **日期**：2026-11-19  
 > **项目类别**：Rust 原生 Agent Framework（非 Agent Hosting Platform）  
 > **核心定位**：Composable Intelligence · Structured Execution · Explicit Effects · Optional Infrastructure  
@@ -1643,3 +1643,67 @@ A：只将具有可复现失败场景的需求升级为 Core 语义；先交付�
 > **Autra 是一个以 Rust 为核心，拥有可组合智能、结构化执行、显式副作用和可选基础设施的原生 Agent 框架。**
 
 **发布声明**：本文为完整的架构与开发计划，**不是产品已完成的说明**。所有接口均为提案，实际代码应先从最小可运行的 Agent Loop 与确定性测试出发，依据开发证据逐步修订本规范。
+
+---
+
+## 31. 扩展架构与能力契约
+
+Autra 的扩展不是动态插件平台，而是 **Rust trait + Builder 显式组合 + 可选 Adapter**。
+
+### 31.1 三个扩展层次
+
+| 层次 | 面向 | 例子 | 规则 |
+|---|---|---|---|
+| Capability | Agent 开发者 | Tool、Model Provider、Context 策略、Skills、Memory、MCP | 通过 Builder 注册；不修改 Core/Runtime |
+| Behavior | 高级开发者 | Engine、Planner、Subagent 策略、Hooks、Context 策略 | 复用执行协议；不得绕过 Scope/审批 |
+| Infrastructure | 框架/平台开发者 | Durable Host、Sandbox、Gateway、Telemetry、Workspace、Remote Worker | 可选 Adapter；不污染 Core |
+
+### 31.2 四组扩展
+
+| 分组 | 接口 | 当前状态 |
+|---|---|---|
+| Intelligence | `AgentStepper`、`ContextBuilder`、Planner、Memory、`SkillRegistry` | Engine/Context/Skills 已实现；Planner/Memory 待做 |
+| Capability | `Tool`、`ModelProvider`、MCP | Tool/Provider 已实现；MCP 待做 |
+| Execution | Execution Host、`SandboxBackend`、Workspace | Local 内建；Host/Sandbox trait 待做 |
+| Observation | Hooks、`tracing`、`autra-eval` | tracing/Eval 已实现；类型化 Hooks 待做 |
+
+### 31.3 当前扩展入口
+
+| 扩展 | 注册方式 | 当前契约 |
+|---|---|---|
+| Tool | `AgentBuilder::tool` | `spec`、`effect_class`、`requires_approval`、`call(&str)`；审批与派发由 Coordinator 负责 |
+| Model Provider | `AgentBuilder::model` | `ModelProvider::complete`；Provider 特有字段留在 Adapter |
+| Context 策略 | `AgentBuilder::context_builder` | `ContextBuilder::build`；自定义 Builder 自行组合 Skills/预算 |
+| Engine | `AgentBuilder::stepper` | `AgentStepper::transition` 返回提案；Coordinator 校验、提交与派发 |
+| Skill | `AgentBuilder::skill` | 命名指令 + 只读 `load_skill`；加载不授予权限 |
+| Subagent | `AgentBuilder::subagent` | 命名子 Agent + `spawn_subagent`；tool-backed，不是 runtime ChildRun |
+| Approver | `AgentBuilder::approver` | `Approver::approve`；Coordinator 绑定调用 |
+| Observation | `tracing` subscriber、`autra-eval` | Trace/Eval 不是执行状态 |
+
+原则：新增 Tool、Provider、Context 策略或 Stepper **不应要求修改 `autra-core` 或
+`autra-runtime` 内部代码**。
+
+### 31.4 扩展契约
+
+每类扩展应声明六项：接口、注册方式、依赖、生命周期、安全边界、Contract Tests。
+生命周期包括初始化、可用状态、取消、关闭顺序和错误处理；安全边界包括它不能做什么，
+以及哪些授权仍属于可信 Host。
+
+### 31.5 扩展原则
+
+- **Extension by Composition**：组合现有组件，而不是修改 Core 或继承大基类。
+- **Semantics Are Protected**：可改变行为，不能绕过权限、状态提交、预算或执行边界。
+- **Capabilities Are Explicit**：扩展声明提供什么；Host 声明保证什么；不支持时类型化报错。
+- **Lifecycle Is Managed**：依赖、初始化、关闭和版本升级有明确契约。
+- **Progressive Extensibility**：简单 Tool 只需最小接口；Engine/Host 才需要深层协议。
+
+### 31.6 当前缺口
+
+ToolDescriptor/ToolContract 尚未拆分；`ModelCapabilities`、Planner trait、
+`SandboxBackend`/Host trait、依赖与关闭顺序、协议版本协商、共享 Contract Test Suite
+仍待实现。Hooks 目前只有设计分类，没有类型化注册入口。
+
+### 31.7 明确不做
+
+第一版不做动态加载、热替换、Marketplace 或全局 Service Locator。Rust Trait 扩展与宿主
+同进程权限，**Trait 不是沙箱**；不可信扩展必须放入 Tool Host/Sandbox 的权限域。

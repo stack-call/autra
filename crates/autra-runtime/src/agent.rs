@@ -4,13 +4,13 @@ use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use autra_core::AgentStepper;
 use autra_core::{
-    AcceptedEvent, AgentPhase, AgentState, BudgetSnapshot, CancelFlag, Disposition, EffectIntent,
-    EventKind, HistoryItem, RunId, SessionId, StepError, ToolCallRequest, ToolOutcome, TurnId,
+    AcceptedEvent, AgentPhase, AgentState, AgentStepper, BudgetSnapshot, CancelFlag, Disposition,
+    EffectIntent, EventKind, HistoryItem, RunId, SessionId, StepError, ToolCallRequest,
+    ToolOutcome, TurnId,
 };
 use autra_harness::{
-    LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
+    ContextBuilder, LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
     SimpleContextBuilder, Skill, SkillRegistry, Tool, ToolRegistry, UpdatePlanTool,
 };
 use futures_util::FutureExt;
@@ -180,6 +180,8 @@ pub struct Agent {
     skills: SkillRegistry,
     context_budget_chars: Option<usize>,
     plan: Option<SharedPlan>,
+    context_builder: Option<Arc<dyn ContextBuilder>>,
+    stepper: Option<Arc<dyn AgentStepper>>,
 }
 
 impl Agent {
@@ -234,12 +236,25 @@ impl Agent {
         state.history = history.to_vec();
         state.session_id = options.session_id.clone();
         state.turn_id = options.turn_id.clone();
-        let mut context_builder = SimpleContextBuilder::new(self.skills.index());
-        if let Some(max_chars) = self.context_budget_chars {
-            context_builder = context_builder.with_max_chars(max_chars);
-        }
-        let stepper = ReActStepper::new(self.instructions.clone(), self.tools.specs())
-            .with_context_builder(context_builder);
+        let stepper: Arc<dyn AgentStepper> = match &self.stepper {
+            Some(stepper) => stepper.clone(),
+            None => {
+                let context_builder: Arc<dyn ContextBuilder> = match &self.context_builder {
+                    Some(builder) => builder.clone(),
+                    None => {
+                        let mut builder = SimpleContextBuilder::new(self.skills.index());
+                        if let Some(max_chars) = self.context_budget_chars {
+                            builder = builder.with_max_chars(max_chars);
+                        }
+                        Arc::new(builder)
+                    }
+                };
+                Arc::new(
+                    ReActStepper::new(self.instructions.clone(), self.tools.specs())
+                        .with_shared_context_builder(context_builder),
+                )
+            }
+        };
         let effect_timeout = options.effect_timeout.or(self.effect_timeout);
         let parallel_limit = options
             .max_parallel_tool_calls
@@ -516,6 +531,8 @@ pub struct AgentBuilder {
     context_budget_chars: Option<usize>,
     planning: bool,
     subagents: SubagentRegistry,
+    context_builder: Option<Arc<dyn ContextBuilder>>,
+    stepper: Option<Arc<dyn AgentStepper>>,
 }
 
 impl AgentBuilder {
@@ -534,6 +551,8 @@ impl AgentBuilder {
             context_budget_chars: None,
             planning: false,
             subagents: SubagentRegistry::new(),
+            context_builder: None,
+            stepper: None,
         }
     }
 
@@ -602,6 +621,19 @@ impl AgentBuilder {
         self
     }
 
+    /// Use a custom ContextBuilder. The builder owns skills and budget composition.
+    pub fn context_builder(mut self, builder: impl ContextBuilder + 'static) -> Self {
+        self.context_builder = Some(Arc::new(builder));
+        self
+    }
+
+    /// Replace the ReAct Stepper. The custom engine owns its decisions; the
+    /// coordinator still dispatches emitted intents and enforces budgets.
+    pub fn stepper(mut self, stepper: impl AgentStepper + 'static) -> Self {
+        self.stepper = Some(Arc::new(stepper));
+        self
+    }
+
     pub fn context_budget_chars(mut self, max_chars: usize) -> Self {
         self.context_budget_chars = Some(max_chars);
         self
@@ -646,6 +678,8 @@ Maintain a short plan with `update_plan` and keep it current."
             skills: self.skills,
             context_budget_chars: self.context_budget_chars,
             plan,
+            context_builder: self.context_builder,
+            stepper: self.stepper,
         })
     }
 }

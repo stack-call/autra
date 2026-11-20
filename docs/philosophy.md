@@ -32,7 +32,8 @@ The four product principles plus three constraints:
 | Capability-Oriented Design | Compose through capabilities and contracts, not infrastructure in Core |
 | Progressive Complexity | Simple cases stay simple; advanced capabilities are explicit and incremental |
 
-The five goals below turn these principles into tests.
+The five goals below turn these principles into tests. See
+[`extensions.md`](extensions.md) for how they become extension contracts.
 
 ## Five architecture goals
 
