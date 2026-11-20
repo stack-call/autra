@@ -105,7 +105,7 @@ not a required crate location.
 
 | Concept | Domain owner | Current code |
 |---|---|---|
-| Session | Session layer | `autra-runtime` |
+| Session | Session layer | `autra`; `SessionStore` contract in `autra-execution` |
 | Turn | Session layer | `autra-runtime` |
 | Run | Core + runtime | `autra-core` state; `autra-runtime` execution |
 | ChildRun | Core + runtime | tool-backed subagent; runtime ChildRun pending |

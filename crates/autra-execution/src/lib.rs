@@ -11,6 +11,7 @@ pub mod journal;
 pub mod model;
 pub mod run;
 pub mod sandbox;
+pub mod session;
 pub mod tool;
 
 pub use approval::{
@@ -28,6 +29,7 @@ pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
     SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus,
 };
+pub use session::{SessionRecord, SessionStore, SessionStoreError, TurnRecord, TurnStatus};
 pub use tool::{
     TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor, ToolError, ToolInput,
     ToolOutput, ToolRegistry,

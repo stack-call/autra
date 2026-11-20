@@ -1,12 +1,13 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
+use std::sync::Arc;
 
-use autra_core::RunId;
-use autra_durable_sqlite::SqliteEffectJournal;
+use autra_core::{RunId, SessionId};
+use autra_durable_sqlite::{SqliteEffectJournal, SqliteSessionStore};
 
 use autra::{
     Agent, ApprovalDecision, ApprovalRequest, Approver, RunError, RunEvent, RunOptions, RunOutcome,
-    Session,
+    Session, SessionStore,
 };
 use autra_harness::{
     EchoModel, EchoTool, EditFileTool, FakeModel, GitDiffTool, GitStatusTool, HistoryItem,
@@ -44,6 +45,7 @@ struct Flags {
     auto_approve: bool,
     read_only: bool,
     journal: Option<String>,
+    session: Option<String>,
     rest: Vec<String>,
 }
 
@@ -108,7 +110,35 @@ async fn chat_command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut session = Session::new(agent);
+    if flags.session.is_some() && flags.journal.is_none() {
+        eprintln!("--session requires --journal <path>");
+        return ExitCode::FAILURE;
+    }
+    let mut session = match &flags.journal {
+        Some(path) => {
+            let store: Arc<dyn SessionStore> = match SqliteSessionStore::open(path) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let session_id = flags
+                .session
+                .as_ref()
+                .map(SessionId::new)
+                .unwrap_or_else(SessionId::fresh);
+            eprintln!("[session] {session_id}");
+            match Session::open(agent, store, session_id) {
+                Ok(session) => session,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        None => Session::new(agent),
+    };
     let options = options_for_model(flags.model.as_deref());
     let stdin = std::io::stdin();
     let mut line = String::new();
@@ -244,6 +274,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         auto_approve: false,
         read_only: false,
         journal: None,
+        session: None,
         rest: Vec::new(),
     };
     let mut parsing_flags = true;
@@ -274,6 +305,13 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
             },
             "--journal" | "-j" => match iter.next() {
                 Some(path) if !path.is_empty() => flags.journal = Some(path.clone()),
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--session" => match iter.next() {
+                Some(id) if !id.is_empty() => flags.session = Some(id.clone()),
                 _ => {
                     usage();
                     return Err(());

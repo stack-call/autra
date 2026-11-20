@@ -15,9 +15,9 @@ pub use autra_execution::{
     LOCAL_POLICY_REVISION, MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider,
     ObserverHook, OutboxEntry, RunError, RunEvent, RunOptions, RunOutcome, RunStatus,
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
-    SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus, TOOL_PROTOCOL_VERSION, Tool,
-    ToolContext, ToolContract, ToolDescriptor, ToolError, ToolInput, ToolOutput, ToolRegistry,
-    digest_arguments,
+    SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus, SessionRecord, SessionStore,
+    SessionStoreError, TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor,
+    ToolError, ToolInput, ToolOutput, ToolRegistry, TurnRecord, TurnStatus, digest_arguments,
 };
 pub use autra_harness::{react_engine_state, react_history, react_pending_tool_calls};
 pub use autra_runtime::{

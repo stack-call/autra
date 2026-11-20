@@ -10,6 +10,10 @@ use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus
 use autra_execution::{
     DEFAULT_CLAIM_LEASE, DurableTransitionStore, EffectJournal, JournalError, OutboxEntry,
 };
+pub mod session;
+
+pub use session::SqliteSessionStore;
+
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub struct SqliteEffectJournal {

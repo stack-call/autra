@@ -47,8 +47,7 @@ adapters. Memory, MCP and full Planning/Workflow remain future work.
   multi-session service or plugin manager.
 - No OS sandbox. `run_command` runs an unsandboxed local shell in the workspace root; `LocalWorkspace` is path validation only.
 - Sessions and plans are in memory; approvals have no expiry or actor identity.
-- Runs carry optional Session/Turn ids; SessionManager, TurnRecord and a
-  SessionStore are not implemented.
+- Runs carry optional Session/Turn ids; `SessionStore` and `TurnRecord` are implemented (in-memory and SQLite), but `SessionManager` and a multi-client snapshot protocol are not.
 - Subagents do not propagate cancellation or share a budget slice.
 - The CLI's `run`/`chat` commands register the workspace tools and require
   approval for `write_file` and `run_command` unless `--yes` is passed.

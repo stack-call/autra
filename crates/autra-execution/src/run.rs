@@ -24,6 +24,8 @@ pub enum RunError {
     Protocol(String),
     #[error("journal error: {0}")]
     Journal(String),
+    #[error("session store error: {0}")]
+    Session(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

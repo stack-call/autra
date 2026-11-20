@@ -233,3 +233,56 @@ fn outbox_requires_a_model() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("--model"));
 }
+
+#[test]
+fn chat_session_requires_a_journal() {
+    let output = autractl()
+        .args(["chat", "--session", "session-1"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--session requires --journal"));
+}
+
+#[test]
+fn chat_persists_turns_across_processes() {
+    use autra::SessionStore;
+    use autra_core::SessionId;
+    use autra_durable_sqlite::SqliteSessionStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("chat.db");
+    let run = |input: &[u8]| {
+        let mut child = autractl()
+            .args([
+                "chat",
+                "--journal",
+                db.to_str().unwrap(),
+                "--session",
+                "session-1",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+        assert!(stderr(&output).contains("[session] session-1"));
+    };
+
+    run(b"one\n");
+    run(b"two\n");
+
+    let store = SqliteSessionStore::open(&db).unwrap();
+    let record = store
+        .load_session(&SessionId::new("session-1"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.turns.len(), 2);
+    assert_eq!(record.turns[0].input, "one");
+    assert_eq!(record.turns[1].input, "two");
+    assert_eq!(record.turns[1].answer.as_deref(), Some("echo: two"));
+}

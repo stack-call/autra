@@ -93,6 +93,10 @@ Tests observe public behaviour, not private helpers.
     cancellation does not reach the parent; `WaitAll` collects every child and
     `FailFast` stops after the first error; `reserve_child` charges the parent
     budget up front.
+29. **SessionStore** (`autra`, `autra-durable-sqlite`, `autra-cli`): turns are
+    recorded as completed, cancelled or failed; history restores across
+    process exits; saved turns upsert by index; `chat --session` requires a
+    journal and persists turns across two CLI processes.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at
