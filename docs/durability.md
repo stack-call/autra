@@ -66,9 +66,11 @@ execution state is committed.
 
 ## Current limitation
 
-The MVP has no durable journal, checkpoint, recovery or reconciliation. A
-timed-out tool is marked `outcome_unknown`, but there is no later reconciliation
-pass. Do not infer durable recovery from the presence of that marker.
+`autra-durable-sqlite` v0 persists EffectRecords and loads them across reopen;
+`AgentBuilder::journal` writes the final ledger at run completion. It does not
+persist Run state, events, approvals, an outbox or checkpoints, and it cannot
+resume a crashed Run. A timed-out tool is marked `outcome_unknown`, but there is
+no reconciliation pass. Do not infer full durable recovery from the journal.
 
 See [`ADR-0003`](adr/0003-default-local-host.md) and
 [`ADR-0008`](adr/0008-native-durable-and-restate-independent.md).

@@ -17,7 +17,7 @@ adapters. It is not a dynamic plugin platform.
 |---|---|---|
 | Intelligence | `AgentStepper`, `ContextBuilder`, Planner, Memory, `SkillRegistry` | Engine, Context and Skills implemented; Planner and Memory pending |
 | Capability | `Tool`, `ModelProvider`, MCP | Tool and Provider implemented; MCP pending |
-| Execution | Execution Host, `SandboxBackend`, Workspace | `HostCapabilities` and `SandboxBackend` traits defined; Local host; no external adapter |
+| Execution | Execution Host, `SandboxBackend`, Workspace | Host/Sandbox traits defined; `SqliteEffectJournal` implements persistence; Run recovery pending |
 | Observation | Hooks, `tracing`, `autra-eval` | tracing, evaluation and `ObserverHook` implemented; Behavior/Policy hooks pending |
 
 ## Current extension points
