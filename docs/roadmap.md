@@ -12,7 +12,7 @@ The first complete harness (§0.4) is reached at a basic level; see
 | M1 Agent Core v0.1 | Stepper, ReAct, tool calling, local host, CLI, streaming events | Done |
 | M2 Structured concurrency | Batches, budgets, cancellation, ChildRun, parallel tools | Tools, bounded parallelism and tool-backed subagents done; runtime ChildRun pending |
 | M3 Full interaction | Turns, approval, commands, hooks, tool policy | Approval, guarded write_file and in-memory sessions with session and turn identity done; SessionManager and SessionStore pending |
-| M4 Native durability | SQLite journal, outbox, checkpoints, recovery, OutcomeUnknown | Partial: Run snapshot, event log, EffectRecord, outbox v0; journaled Agent runs claim and dispatch through the outbox loop, and `resume` continues AwaitingTool/AwaitingModel checkpoints. Lease retry and reconciliation pending |
+| M4 Native durability | SQLite journal, outbox, checkpoints, recovery, OutcomeUnknown | Partial: Run snapshot, event log, EffectRecord, outbox v0; journaled Agent runs claim and dispatch through the outbox loop, and `resume` continues AwaitingTool/AwaitingModel checkpoints. Lease-safe reclaim and safe-class retry done; automatic reconciliation pending |
 | M5 Rich harness | Context policy, compaction, skills, planning, memory | Partial: ContextBuilder, budget, Skills and Planning done; memory pending |
 | M6 Sandbox and evaluation | OpenShell adapter, tracing, replay, evaluation set | Tracing and basic evaluation done; OpenShell and replay pending |
 | M7 Restate PoC | Hosted execution, capability matrix, comparison | Pending |
@@ -61,7 +61,7 @@ MCP Client is an M3 experience item; MCP Gateway/Server stays in M8.
 1. Runtime ChildRun identity, cancellation and budget slicing.
 2. SessionManager, TurnRecord and a SessionStore boundary.
 3. Policy registry, hooks and an interactive approval surface.
-4. Lease-expiry retry and `OutcomeUnknown` reconciliation for the outbox claim loop.
+4. Automatic `OutcomeUnknown` reconciliation for the outbox claim loop.
 5. Memory retrieval and a richer context policy.
 6. OpenShell adapter and replay fixtures.
 

@@ -1,10 +1,44 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use async_trait::async_trait;
 use autra_core::{
-    AgentPhase, AgentState, AttemptStatus, BudgetSnapshot, EffectId, EffectIntent, EffectKind,
-    EffectRecord, EffectStatus, HistoryItem, ModelCallSpec, ModelOutput, RunId, ToolCallRequest,
-    ToolCallSpec,
+    AgentPhase, AgentState, AttemptStatus, BudgetSnapshot, EffectClass, EffectId, EffectIntent,
+    EffectKind, EffectRecord, EffectStatus, HistoryItem, ModelCallSpec, ModelOutput, RunId,
+    ToolCallRequest, ToolCallSpec,
 };
-use autra_harness::{EchoModel, EchoTool, FakeModel};
+use autra_harness::{EchoModel, EchoTool, FakeModel, Tool, ToolError};
 use autra_runtime::{Agent, EffectJournal, MemoryJournal, RunError, RunStatus};
+
+struct SensitiveTool {
+    calls: Arc<AtomicUsize>,
+}
+
+impl SensitiveTool {
+    fn new(calls: Arc<AtomicUsize>) -> Self {
+        Self { calls }
+    }
+}
+
+#[async_trait]
+impl Tool for SensitiveTool {
+    fn spec(&self) -> autra_core::ToolSpec {
+        autra_core::ToolSpec {
+            name: "sensitive".to_owned(),
+            description: "A non-idempotent test tool.".to_owned(),
+            input_schema: "{}".to_owned(),
+        }
+    }
+
+    fn effect_class(&self) -> EffectClass {
+        EffectClass::NonIdempotent
+    }
+
+    async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok("ran".to_owned())
+    }
+}
 
 fn call() -> ToolCallRequest {
     ToolCallRequest {
@@ -110,12 +144,13 @@ async fn resume_does_not_retry_a_dispatched_tool() {
     let effect = tool_effect(&call, EffectStatus::Dispatched);
     journal.record(&run_id, &effect).unwrap();
 
+    let calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))
-        .tool(EchoTool)
+        .tool(SensitiveTool::new(calls.clone()))
         .journal(journal.clone())
         .build()
         .unwrap();
@@ -123,6 +158,7 @@ async fn resume_does_not_retry_a_dispatched_tool() {
     let outcome = agent.resume(&run_id).await.unwrap();
 
     assert_eq!(outcome.status(), RunStatus::Completed);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
     let stored = journal.load(&run_id).unwrap();
     let tool = stored
         .iter()
@@ -217,4 +253,44 @@ async fn resume_requires_a_journal() {
     let error = agent.resume(&RunId::new("anything")).await.unwrap_err();
 
     assert!(matches!(error, RunError::Protocol(_)));
+}
+
+#[tokio::test]
+async fn resume_retries_a_read_only_dispatched_tool() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("run-resume-retry");
+    let call = call();
+    let mut state = base_state(&run_id, AgentPhase::AwaitingTool);
+    state.pending_tool_calls = vec![call.clone()];
+    state.history.push(HistoryItem::Assistant {
+        text: None,
+        tool_calls: vec![call.clone()],
+    });
+    journal.save_run(&state).unwrap();
+    let effect = tool_effect(&call, EffectStatus::Dispatched);
+    journal.record(&run_id, &effect).unwrap();
+
+    let agent = Agent::builder("resume")
+        .model(FakeModel::new(vec![ModelOutput {
+            text: Some("done".to_owned()),
+            tool_calls: Vec::new(),
+        }]))
+        .tool(EchoTool)
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+
+    let outcome = agent.resume(&run_id).await.unwrap();
+
+    assert_eq!(outcome.status(), RunStatus::Completed);
+    let stored = journal.load(&run_id).unwrap();
+    let tool = stored
+        .iter()
+        .find(|record| record.kind == EffectKind::ToolCall)
+        .unwrap();
+    assert_eq!(tool.status, EffectStatus::Committed);
+    assert_eq!(tool.result.as_deref(), Some("hi"));
+    assert_eq!(tool.attempts.len(), 2);
+    assert_eq!(tool.attempts[0].status, AttemptStatus::OutcomeUnknown);
+    assert_eq!(tool.attempts[1].status, AttemptStatus::Succeeded);
 }

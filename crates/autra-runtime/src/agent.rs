@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, AttemptStatus, BudgetSnapshot, CancelFlag,
-    Disposition, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, EventKind,
-    HistoryItem, ModelCallSpec, RunId, SessionId, StepError, ToolCallRequest, ToolCallSpec,
-    ToolOutcome, TransitionProposal, TurnId,
+    Disposition, EffectClass, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus,
+    EventKind, HistoryItem, ModelCallSpec, RunId, SessionId, StepError, ToolCallRequest,
+    ToolCallSpec, ToolOutcome, TransitionProposal, TurnId,
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
@@ -16,7 +16,8 @@ use tracing::Instrument;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver, digest_intent};
 use crate::dispatcher::{
-    DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, OutboxDispatcher,
+    DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
+    LocalDispatcher, OutboxDispatcher,
 };
 use crate::hooks::ObserverHook;
 use crate::journal::EffectJournal;
@@ -412,6 +413,22 @@ impl Agent {
         self.drive(setup, state, queue, effects, on_event).await
     }
 
+    /// Drain due outbox rows across all Runs, reclaiming expired leases.
+    pub async fn drain_outbox(&self, limit: usize) -> Result<Vec<DispatchResult>, RunError> {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| RunError::Protocol("outbox drain requires a journal".to_owned()))?;
+        OutboxDispatcher::run_due(
+            journal.as_ref(),
+            limit,
+            self.dispatcher.as_ref(),
+            self.effect_timeout,
+        )
+        .await
+        .map_err(|error| RunError::Journal(error.to_string()))
+    }
+
     fn retire_interrupted_models(
         &self,
         journal: &dyn EffectJournal,
@@ -514,21 +531,52 @@ impl Agent {
                         .map_err(|error| RunError::Journal(error.to_string()))?;
                 }
                 EffectStatus::Dispatched => {
-                    record.set_status(EffectStatus::OutcomeUnknown);
-                    record.record_attempt(
-                        AttemptStatus::OutcomeUnknown,
-                        None,
-                        Some(
-                            "the call was in flight when the process stopped; the outcome is unknown"
-                                .to_owned(),
-                        ),
-                    );
-                    journal
-                        .record(run_id, record)
-                        .map_err(|error| RunError::Journal(error.to_string()))?;
-                    journal
-                        .complete_outbox(&record.id)
-                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    let retryable = !record.intent_json.is_empty()
+                        && record
+                            .tool_name
+                            .as_deref()
+                            .and_then(|name| self.tools.get(name))
+                            .map(|tool| {
+                                matches!(
+                                    tool.effect_class(),
+                                    EffectClass::ReadOnly | EffectClass::Idempotent
+                                )
+                            })
+                            .unwrap_or(false);
+                    if retryable {
+                        record.set_status(EffectStatus::Authorized);
+                        record.record_attempt(
+                            AttemptStatus::OutcomeUnknown,
+                            None,
+                            Some(
+                                "retrying after an interrupted attempt; the tool is read-only or idempotent"
+                                    .to_owned(),
+                            ),
+                        );
+                        journal
+                            .record(run_id, record)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                        journal
+                            .enqueue_effect(run_id, record)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                        needs_dispatch += 1;
+                    } else {
+                        record.set_status(EffectStatus::OutcomeUnknown);
+                        record.record_attempt(
+                            AttemptStatus::OutcomeUnknown,
+                            None,
+                            Some(
+                                "the call was in flight when the process stopped; the outcome is unknown"
+                                    .to_owned(),
+                            ),
+                        );
+                        journal
+                            .record(run_id, record)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                        journal
+                            .complete_outbox(&record.id)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                    }
                 }
                 _ => {}
             }
@@ -1070,13 +1118,16 @@ impl Agent {
                     }
                 }
                 DispatchOutcome::Cancelled => cancelled = true,
-                DispatchOutcome::Model(_) => {}
+                DispatchOutcome::Model(_)
+                | DispatchOutcome::AlreadyResolved
+                | DispatchOutcome::Interrupted => {}
             };
             let options = DispatchOptions {
                 limit: approved.len(),
                 max_parallel: limit.max(1),
                 timeout: effect_timeout,
                 cancel: Some(cancel),
+                lease: DEFAULT_CLAIM_LEASE,
             };
             OutboxDispatcher::run_once_for_run_with(
                 journal,

@@ -22,7 +22,8 @@ pub use agent::{
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
 pub use command::RunCommandTool;
 pub use dispatcher::{
-    DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, OutboxDispatcher,
+    DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
+    LocalDispatcher, OutboxDispatcher,
 };
 pub use git::{GitDiffTool, GitStatusTool};
 pub use hooks::ObserverHook;

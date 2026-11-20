@@ -61,6 +61,7 @@ After building, the binary is `autractl` (or prefix with
 - `autractl run [options] <prompt>` — run one turn as a workspace agent and print its events.
 - `autractl chat [options]` — one turn per stdin line, keeping session history.
 - `autractl resume --journal <path> --model <name> <run-id>` — continue a checkpointed run.
+- `autractl outbox --journal <path> --model <name>` — drain due outbox rows, reclaiming expired leases.
 - `autractl demo` — deterministic list-files, read-README demo.
 - `autractl tools` — list the built-in tools.
 
@@ -97,9 +98,11 @@ cargo run -p autra-cli -- resume --journal .autra.db --model gpt-4o-mini <run-id
 
 `resume` requires `--journal` and an explicit `--model`: the journal stores Run
 state and effects, not provider configuration. A run interrupted while a tool
-or model call was in flight never retries that call blindly; an in-flight tool
-becomes `OutcomeUnknown`, while an interrupted model call is retired and
-re-issued.
+or model call was in flight never retries that call blindly: an in-flight
+read-only or idempotent tool is retried, any other tool becomes
+`OutcomeUnknown`, and an interrupted model call is retired and re-issued.
+`outbox` drains rows whose claim lease expired; a record that already resolved
+is only cleaned up.
 
 > `run_command` is a local unsandboxed shell, not an OS sandbox. Prefer
 > `--read-only` for inspection, and avoid `--yes` on repositories you do not

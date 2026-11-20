@@ -68,13 +68,18 @@ Tests observe public behaviour, not private helpers.
     the runtime carries the preview on `ApprovalRequest`.
 23. **Resume** (`autra-runtime`, `autra-durable-sqlite`): an `AwaitingTool`
     checkpoint re-dispatches an `Authorized` effect and continues; a
-    `Dispatched` call becomes `OutcomeUnknown`; an `AwaitingModel` checkpoint
-    retires the stale model effect and re-issues it; completed runs and
-    missing checkpoints are handled; a SQLite checkpoint survives reopen.
-24. **Workspace CLI** (`autra-cli`): `run --workspace --read-only` uses the
+    `Dispatched` read-only or idempotent tool is retried while a
+    non-idempotent one becomes `OutcomeUnknown`; an `AwaitingModel` checkpoint
+    retires the stale model effect and re-issues it; completed runs and missing
+    checkpoints are handled; a SQLite checkpoint survives reopen.
+24. **Outbox reclaim** (`autra-runtime`, `autra-durable-sqlite`): an expired
+    lease can be reclaimed; a terminal record is cleaned up without dispatch;
+    an in-flight record becomes `OutcomeUnknown`; `run_due` drains rows across
+    runs.
+25. **Workspace CLI** (`autra-cli`): `run --workspace --read-only` uses the
     selected root, `--journal` persists a run, `resume` requires its journal
-    and model, `tools` lists the workspace capabilities, and unknown options
-    fail with usage.
+    and model, `outbox` requires its journal, `tools` lists the workspace
+    capabilities, and unknown options fail with usage.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

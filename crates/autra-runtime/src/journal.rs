@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
 use thiserror::Error;
@@ -76,6 +77,27 @@ pub trait EffectJournal: Send + Sync {
     ) -> Result<Vec<OutboxEntry>, JournalError> {
         let _ = run_id;
         self.claim_due_effects(limit, claim_id)
+    }
+
+    /// Claim with an explicit lease. Hosts that track claims may reclaim a row
+    /// after the lease expires.
+    fn claim_due_effects_with_lease(
+        &self,
+        limit: usize,
+        claim_id: &str,
+        _lease: Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        self.claim_due_effects(limit, claim_id)
+    }
+
+    fn claim_due_effects_for_run_with_lease(
+        &self,
+        run_id: &RunId,
+        limit: usize,
+        claim_id: &str,
+        _lease: Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        self.claim_due_effects_for_run(run_id, limit, claim_id)
     }
 
     fn complete_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {

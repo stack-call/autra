@@ -26,6 +26,7 @@ async fn main() -> ExitCode {
         Some("run") => run_command(&args[1..]).await,
         Some("chat") => chat_command(&args[1..]).await,
         Some("resume") => resume_command(&args[1..]).await,
+        Some("outbox") => outbox_command(&args[1..]).await,
         Some("demo") => demo_command().await,
         Some("tools") => tools_command(),
         Some(other) => {
@@ -185,6 +186,46 @@ async fn resume_command(args: &[String]) -> ExitCode {
         }
         Err(error) => {
             eprintln!("resume failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn outbox_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "outbox") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if !flags.rest.is_empty() {
+        eprintln!("usage: autractl outbox --journal <path> --model <name> [--workspace <dir>]");
+        return ExitCode::FAILURE;
+    }
+    if flags.journal.is_none() {
+        eprintln!("outbox requires --journal <path>");
+        return ExitCode::FAILURE;
+    }
+    if flags.model.is_none() {
+        eprintln!("outbox requires --model <name>: model effects need the run's provider");
+        return ExitCode::FAILURE;
+    }
+    let agent = match build_agent(&flags) {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match agent.drain_outbox(100).await {
+        Ok(results) => {
+            for result in &results {
+                println!("[outbox] {} {:?}", result.effect_id, result.outcome);
+            }
+            println!("outbox: dispatched {} due effect(s)", results.len());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("outbox drain failed: {error}");
             ExitCode::FAILURE
         }
     }

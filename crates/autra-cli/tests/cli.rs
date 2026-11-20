@@ -212,3 +212,24 @@ fn resume_requires_a_journal_and_a_model() {
     assert!(!missing_model.status.success());
     assert!(stderr(&missing_model).contains("--model"));
 }
+
+#[test]
+fn outbox_requires_a_journal() {
+    let output = autractl().arg("outbox").output().unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--journal"));
+}
+
+#[test]
+fn outbox_requires_a_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("outbox.db");
+    let output = autractl()
+        .args(["outbox", "--journal", journal.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--model"));
+}

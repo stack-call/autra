@@ -4,9 +4,10 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
-use autra_runtime::{EffectJournal, JournalError, OutboxEntry};
+use autra_runtime::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
 use rusqlite::{Connection, params};
 
 pub struct SqliteEffectJournal {
@@ -52,6 +53,67 @@ impl SqliteEffectJournal {
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
+    }
+}
+
+impl SqliteEffectJournal {
+    fn claim(
+        &self,
+        limit: usize,
+        run_id: Option<&RunId>,
+        claim_id: &str,
+        lease: Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        let modifier = format!("+{} seconds", lease.as_secs());
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| JournalError::new(format!("cannot begin claim: {error}")))?;
+        let mut statement = transaction
+            .prepare(
+                "SELECT effect_id, run_id, intent_json, attempts FROM effect_outbox
+                 WHERE (claim_id IS NULL OR claim_deadline < datetime('now'))
+                   AND (?1 IS NULL OR run_id = ?1)
+                 ORDER BY created_at LIMIT ?2",
+            )
+            .map_err(|error| JournalError::new(format!("cannot claim effects: {error}")))?;
+        let rows = statement
+            .query_map(params![run_id.map(RunId::as_str), limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u32>(3)?,
+                ))
+            })
+            .map_err(|error| JournalError::new(format!("cannot claim effects: {error}")))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (effect_id, run_id, intent_json, attempts) =
+                row.map_err(|error| JournalError::new(format!("cannot claim row: {error}")))?;
+            transaction
+                .execute(
+                    "UPDATE effect_outbox SET claim_id = ?1,
+                     claim_deadline = datetime('now', ?3),
+                     attempts = attempts + 1 WHERE effect_id = ?2",
+                    params![claim_id, effect_id, modifier],
+                )
+                .map_err(|error| JournalError::new(format!("cannot claim effect: {error}")))?;
+            entries.push(OutboxEntry {
+                effect_id: EffectId::new(effect_id),
+                run_id: RunId::new(run_id),
+                intent_json,
+                attempts: attempts + 1,
+            });
+        }
+        drop(statement);
+        transaction
+            .commit()
+            .map_err(|error| JournalError::new(format!("cannot commit claim: {error}")))?;
+        Ok(entries)
     }
 }
 
@@ -244,54 +306,7 @@ impl EffectJournal for SqliteEffectJournal {
         limit: usize,
         claim_id: &str,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
-        let transaction = connection
-            .transaction()
-            .map_err(|error| JournalError::new(format!("cannot begin claim: {error}")))?;
-        let mut statement = transaction
-            .prepare(
-                "SELECT effect_id, run_id, intent_json, attempts FROM effect_outbox
-                 WHERE claim_id IS NULL OR claim_deadline < datetime('now')
-                 ORDER BY created_at LIMIT ?1",
-            )
-            .map_err(|error| JournalError::new(format!("cannot claim effects: {error}")))?;
-        let rows = statement
-            .query_map(params![limit as i64], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, u32>(3)?,
-                ))
-            })
-            .map_err(|error| JournalError::new(format!("cannot claim effects: {error}")))?;
-        let mut entries = Vec::new();
-        for row in rows {
-            let (effect_id, run_id, intent_json, attempts) =
-                row.map_err(|error| JournalError::new(format!("cannot claim row: {error}")))?;
-            transaction
-                .execute(
-                    "UPDATE effect_outbox SET claim_id = ?1,
-                     claim_deadline = datetime('now', '+30 seconds'),
-                     attempts = attempts + 1 WHERE effect_id = ?2",
-                    params![claim_id, effect_id],
-                )
-                .map_err(|error| JournalError::new(format!("cannot claim effect: {error}")))?;
-            entries.push(OutboxEntry {
-                effect_id: EffectId::new(effect_id),
-                run_id: RunId::new(run_id),
-                intent_json,
-                attempts: attempts + 1,
-            });
-        }
-        drop(statement);
-        transaction
-            .commit()
-            .map_err(|error| JournalError::new(format!("cannot commit claim: {error}")))?;
-        Ok(entries)
+        self.claim(limit, None, claim_id, DEFAULT_CLAIM_LEASE)
     }
 
     fn claim_due_effects_for_run(
@@ -300,55 +315,26 @@ impl EffectJournal for SqliteEffectJournal {
         limit: usize,
         claim_id: &str,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
-        let transaction = connection
-            .transaction()
-            .map_err(|error| JournalError::new(format!("cannot begin claim: {error}")))?;
-        let mut statement = transaction
-            .prepare(
-                "SELECT effect_id, run_id, intent_json, attempts FROM effect_outbox
-                 WHERE (claim_id IS NULL OR claim_deadline < datetime('now'))
-                   AND run_id = ?1
-                 ORDER BY created_at LIMIT ?2",
-            )
-            .map_err(|error| JournalError::new(format!("cannot claim effects: {error}")))?;
-        let rows = statement
-            .query_map(params![run_id.as_str(), limit as i64], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, u32>(3)?,
-                ))
-            })
-            .map_err(|error| JournalError::new(format!("cannot claim effects: {error}")))?;
-        let mut entries = Vec::new();
-        for row in rows {
-            let (effect_id, run_id, intent_json, attempts) =
-                row.map_err(|error| JournalError::new(format!("cannot claim row: {error}")))?;
-            transaction
-                .execute(
-                    "UPDATE effect_outbox SET claim_id = ?1,
-                     claim_deadline = datetime('now', '+30 seconds'),
-                     attempts = attempts + 1 WHERE effect_id = ?2",
-                    params![claim_id, effect_id],
-                )
-                .map_err(|error| JournalError::new(format!("cannot claim effect: {error}")))?;
-            entries.push(OutboxEntry {
-                effect_id: EffectId::new(effect_id),
-                run_id: RunId::new(run_id),
-                intent_json,
-                attempts: attempts + 1,
-            });
-        }
-        drop(statement);
-        transaction
-            .commit()
-            .map_err(|error| JournalError::new(format!("cannot commit claim: {error}")))?;
-        Ok(entries)
+        self.claim(limit, Some(run_id), claim_id, DEFAULT_CLAIM_LEASE)
+    }
+
+    fn claim_due_effects_with_lease(
+        &self,
+        limit: usize,
+        claim_id: &str,
+        lease: Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        self.claim(limit, None, claim_id, lease)
+    }
+
+    fn claim_due_effects_for_run_with_lease(
+        &self,
+        run_id: &RunId,
+        limit: usize,
+        claim_id: &str,
+        lease: Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        self.claim(limit, Some(run_id), claim_id, lease)
     }
 
     fn complete_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {

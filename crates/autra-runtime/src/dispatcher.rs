@@ -142,11 +142,18 @@ async fn execute_tool(
     }
 }
 
+/// Default lease for a claimed outbox row.
+pub const DEFAULT_CLAIM_LEASE: Duration = Duration::from_secs(30);
+
 #[derive(Debug)]
 pub enum DispatchOutcome {
     Model(Result<ModelOutput, ModelError>),
     Tool(ToolOutcome),
     Cancelled,
+    /// The effect record was already terminal; the stale outbox row was removed.
+    AlreadyResolved,
+    /// The record was in flight when its claim lease expired; it is now unknown.
+    Interrupted,
 }
 
 #[derive(Debug)]
@@ -162,6 +169,7 @@ pub struct DispatchOptions<'a> {
     pub max_parallel: usize,
     pub timeout: Option<Duration>,
     pub cancel: Option<&'a CancelFlag>,
+    pub lease: Duration,
 }
 
 /// Claim-driven outbox loop. It executes only claimed effects, records the
@@ -185,6 +193,7 @@ impl OutboxDispatcher {
                 max_parallel: 1,
                 timeout,
                 cancel: None,
+                lease: DEFAULT_CLAIM_LEASE,
             },
             dispatcher,
             |_| {},
@@ -201,34 +210,89 @@ impl OutboxDispatcher {
         run_id: &RunId,
         options: DispatchOptions<'_>,
         dispatcher: &dyn Dispatcher,
-        mut on_result: F,
+        on_result: F,
+    ) -> Result<Vec<DispatchResult>, JournalError>
+    where
+        F: FnMut(&DispatchResult),
+    {
+        let entries = journal.claim_due_effects_for_run_with_lease(
+            run_id,
+            options.limit,
+            "local-dispatcher",
+            options.lease,
+        )?;
+        dispatch_entries(journal, entries, options, dispatcher, on_result).await
+    }
+
+    /// Drain due outbox rows across all Runs. Rows whose lease expired are
+    /// reclaimed; a record that was already terminal is only cleaned up, and an
+    /// in-flight record becomes `OutcomeUnknown` instead of being retried.
+    pub async fn run_due(
+        journal: &dyn EffectJournal,
+        limit: usize,
+        dispatcher: &dyn Dispatcher,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<DispatchResult>, JournalError> {
+        Self::run_due_with(
+            journal,
+            DispatchOptions {
+                limit,
+                max_parallel: 1,
+                timeout,
+                cancel: None,
+                lease: DEFAULT_CLAIM_LEASE,
+            },
+            dispatcher,
+            |_| {},
+        )
+        .await
+    }
+
+    pub async fn run_due_with<F>(
+        journal: &dyn EffectJournal,
+        options: DispatchOptions<'_>,
+        dispatcher: &dyn Dispatcher,
+        on_result: F,
     ) -> Result<Vec<DispatchResult>, JournalError>
     where
         F: FnMut(&DispatchResult),
     {
         let entries =
-            journal.claim_due_effects_for_run(run_id, options.limit, "local-dispatcher")?;
-        let mut results = Vec::with_capacity(entries.len());
-        let mut futures = Vec::with_capacity(entries.len());
-        for entry in &entries {
-            futures.push(dispatch_entry(
-                journal,
-                run_id,
-                entry,
-                dispatcher,
-                options.timeout,
-                options.cancel,
-            ));
-        }
-        let mut stream =
-            futures_util::stream::iter(futures).buffer_unordered(options.max_parallel.max(1));
-        while let Some(result) = stream.next().await {
-            let result = result?;
-            on_result(&result);
-            results.push(result);
-        }
-        Ok(results)
+            journal.claim_due_effects_with_lease(options.limit, "outbox-drain", options.lease)?;
+        dispatch_entries(journal, entries, options, dispatcher, on_result).await
     }
+}
+
+async fn dispatch_entries<F>(
+    journal: &dyn EffectJournal,
+    entries: Vec<OutboxEntry>,
+    options: DispatchOptions<'_>,
+    dispatcher: &dyn Dispatcher,
+    mut on_result: F,
+) -> Result<Vec<DispatchResult>, JournalError>
+where
+    F: FnMut(&DispatchResult),
+{
+    let mut futures = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        futures.push(dispatch_entry(
+            journal,
+            &entry.run_id,
+            entry,
+            dispatcher,
+            options.timeout,
+            options.cancel,
+        ));
+    }
+    let mut stream =
+        futures_util::stream::iter(futures).buffer_unordered(options.max_parallel.max(1));
+    let mut results = Vec::with_capacity(entries.len());
+    while let Some(result) = stream.next().await {
+        let result = result?;
+        on_result(&result);
+        results.push(result);
+    }
+    Ok(results)
 }
 
 async fn dispatch_entry(
@@ -239,6 +303,46 @@ async fn dispatch_entry(
     timeout: Option<Duration>,
     cancel: Option<&CancelFlag>,
 ) -> Result<DispatchResult, JournalError> {
+    let mut effects = journal.load(run_id)?;
+    let Some(record) = effects
+        .iter_mut()
+        .find(|record| record.id == entry.effect_id)
+    else {
+        let _ = journal.release_outbox(&entry.effect_id);
+        return Err(JournalError::new(format!(
+            "effect record `{}` not found",
+            entry.effect_id
+        )));
+    };
+    match record.status {
+        EffectStatus::Committed
+        | EffectStatus::Failed
+        | EffectStatus::Rejected
+        | EffectStatus::OutcomeUnknown
+        | EffectStatus::CancelledBeforeDispatch => {
+            journal.complete_outbox(&entry.effect_id)?;
+            return Ok(DispatchResult {
+                effect_id: entry.effect_id.clone(),
+                outcome: DispatchOutcome::AlreadyResolved,
+            });
+        }
+        EffectStatus::Dispatched => {
+            record.set_status(EffectStatus::OutcomeUnknown);
+            record.record_attempt(
+                AttemptStatus::OutcomeUnknown,
+                None,
+                Some("the effect was in flight when its claim lease ended".to_owned()),
+            );
+            journal.record(run_id, record)?;
+            journal.complete_outbox(&entry.effect_id)?;
+            return Ok(DispatchResult {
+                effect_id: entry.effect_id.clone(),
+                outcome: DispatchOutcome::Interrupted,
+            });
+        }
+        _ => {}
+    }
+
     if cancel.map(CancelFlag::is_cancelled).unwrap_or(false) {
         return finish_entry(journal, run_id, entry, DispatchOutcome::Cancelled, true);
     }
@@ -362,5 +466,6 @@ fn apply_outcome(record: &mut EffectRecord, outcome: &DispatchOutcome, known_too
         DispatchOutcome::Cancelled => {
             record.set_status(EffectStatus::CancelledBeforeDispatch);
         }
+        DispatchOutcome::AlreadyResolved | DispatchOutcome::Interrupted => {}
     }
 }

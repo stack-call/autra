@@ -42,3 +42,31 @@ fn outbox_survives_reopen_and_supports_claims() {
     journal.complete_outbox(&effect.id).unwrap();
     assert!(journal.claim_due_effects(10, "claim-3").unwrap().is_empty());
 }
+
+#[test]
+fn an_expired_lease_can_be_reclaimed() {
+    use std::time::Duration;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("lease.db");
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    let run_id = RunId::new("run-lease");
+    let effect = authorized_effect();
+    journal.enqueue_effect(&run_id, &effect).unwrap();
+
+    let first = journal
+        .claim_due_effects_with_lease(10, "claim-1", Duration::ZERO)
+        .unwrap();
+    assert_eq!(first.len(), 1);
+    let blocked = journal
+        .claim_due_effects_with_lease(10, "claim-2", Duration::ZERO)
+        .unwrap();
+    assert!(blocked.is_empty());
+
+    std::thread::sleep(Duration::from_millis(1100));
+    let reclaimed = journal
+        .claim_due_effects_with_lease(10, "claim-3", Duration::ZERO)
+        .unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].attempts, 2);
+}
