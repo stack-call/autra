@@ -13,6 +13,10 @@ async fn a_run_persists_its_effect_records() {
     let outcome = agent.run("hello").await.unwrap();
 
     let stored = journal.load(&outcome.state().run_id).unwrap();
+    assert_eq!(
+        journal.load_run(&outcome.state().run_id).unwrap().as_ref(),
+        Some(outcome.state())
+    );
     assert_eq!(stored, outcome.effects());
     assert_eq!(stored.len(), 1);
 }

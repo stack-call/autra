@@ -378,6 +378,9 @@ impl Agent {
                         observer.on_run_finished(&run_id, &state.phase);
                     }
                     if let Some(journal) = &self.journal {
+                        journal
+                            .save_run(&state)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
                         for effect in &effects {
                             journal
                                 .record(&run_id, effect)

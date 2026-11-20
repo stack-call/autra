@@ -45,4 +45,8 @@ async fn an_agent_run_persists_effects_across_reopen() {
         reopened.load(&outcome.state().run_id).unwrap(),
         outcome.effects()
     );
+    assert_eq!(
+        reopened.load_run(&outcome.state().run_id).unwrap().as_ref(),
+        Some(outcome.state())
+    );
 }

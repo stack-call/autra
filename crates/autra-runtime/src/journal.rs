@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use autra_core::{EffectRecord, RunId};
+use autra_core::{AgentState, EffectRecord, RunId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -21,12 +21,21 @@ impl JournalError {
 pub trait EffectJournal: Send + Sync {
     fn record(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError>;
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError>;
+
+    fn save_run(&self, _state: &AgentState) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn load_run(&self, _run_id: &RunId) -> Result<Option<AgentState>, JournalError> {
+        Ok(None)
+    }
 }
 
 /// In-process journal for tests and local runs.
 #[derive(Clone, Default)]
 pub struct MemoryJournal {
     records: Arc<Mutex<BTreeMap<RunId, Vec<EffectRecord>>>>,
+    runs: Arc<Mutex<BTreeMap<RunId, AgentState>>>,
 }
 
 impl MemoryJournal {
@@ -45,6 +54,23 @@ impl EffectJournal for MemoryJournal {
             entry.push(effect.clone());
         }
         Ok(())
+    }
+
+    fn save_run(&self, state: &AgentState) -> Result<(), JournalError> {
+        self.runs
+            .lock()
+            .expect("journal lock poisoned")
+            .insert(state.run_id.clone(), state.clone());
+        Ok(())
+    }
+
+    fn load_run(&self, run_id: &RunId) -> Result<Option<AgentState>, JournalError> {
+        Ok(self
+            .runs
+            .lock()
+            .expect("journal lock poisoned")
+            .get(run_id)
+            .cloned())
     }
 
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError> {

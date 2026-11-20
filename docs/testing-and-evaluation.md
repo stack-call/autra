@@ -44,8 +44,8 @@ Tests observe public behaviour, not private helpers.
     effect and finish stages.
 15. **Effect ledger** (`autra-runtime`): model/tool records, committed, failed,
     rejected and outcome-unknown attempts.
-16. **SQLite journal** (`autra-durable-sqlite`): EffectRecords survive reopen and
-    an Agent run persists its ledger through `AgentBuilder::journal`.
+16. **SQLite journal** (`autra-durable-sqlite`): the Run snapshot and EffectRecords
+    survive reopen and persist through `AgentBuilder::journal`.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

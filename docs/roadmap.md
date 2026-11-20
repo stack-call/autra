@@ -12,7 +12,7 @@ The first complete harness (§0.4) is reached at a basic level; see
 | M1 Agent Core v0.1 | Stepper, ReAct, tool calling, local host, CLI, streaming events | Done |
 | M2 Structured concurrency | Batches, budgets, cancellation, ChildRun, parallel tools | Tools, bounded parallelism and tool-backed subagents done; runtime ChildRun pending |
 | M3 Full interaction | Turns, approval, commands, hooks, tool policy | Approval, guarded write_file and in-memory sessions with session and turn identity done; SessionManager and SessionStore pending |
-| M4 Native durability | SQLite journal, outbox, checkpoints, recovery, OutcomeUnknown | Partial: SQLite EffectRecord journal v0; Run state, outbox and recovery pending |
+| M4 Native durability | SQLite journal, outbox, checkpoints, recovery, OutcomeUnknown | Partial: SQLite Run snapshot and EffectRecord journal v0; run_events, outbox and recovery pending |
 | M5 Rich harness | Context policy, compaction, skills, planning, memory | Partial: ContextBuilder, budget, Skills and Planning done; memory pending |
 | M6 Sandbox and evaluation | OpenShell adapter, tracing, replay, evaluation set | Tracing and basic evaluation done; OpenShell and replay pending |
 | M7 Restate PoC | Hosted execution, capability matrix, comparison | Pending |

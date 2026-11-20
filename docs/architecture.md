@@ -75,7 +75,7 @@ core has no Tokio, database or sandbox dependency.
 | `autra-openai` | OpenAI-compatible chat completions provider | Implemented, non-streaming |
 | `autra-eval` | Task-level outcome evaluation | Implemented |
 | `autra-testkit` | Shared protocol contract checks | Implemented |
-| `autra-durable-sqlite` | SQLite EffectRecord journal v0 | Implemented |
+| `autra-durable-sqlite` | SQLite Run / Effect journal v0 | Implemented |
 
 ## Domain ownership vs code location
 
