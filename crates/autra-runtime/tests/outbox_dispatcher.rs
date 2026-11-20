@@ -221,6 +221,7 @@ async fn cancellation_before_dispatch_removes_the_outbox_row() {
             lease: DEFAULT_CLAIM_LEASE,
             budget: None,
             child_execution: None,
+            delta: None,
         },
         &dispatcher,
         |_| {},

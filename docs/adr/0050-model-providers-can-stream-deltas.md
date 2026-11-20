@@ -21,10 +21,16 @@ implementation: it requests `stream: true`, parses `data:` chunks, emits content
 deltas and accumulates fragmented tool calls into the final `ModelOutput`.
 `capabilities().streaming` is true.
 
-Consequences: CLI and other clients can render tokens as they arrive. The
-journaled/outbox model path still emits only the final `ModelResult`; adding a
-delta channel there needs a separate design. Streaming is observational: the
-accepted `ModelOutput` (and the Effect record) is still the authoritative fact.
+The journaled path uses the same channel. `DispatchOptions` carries an optional
+`DeltaSink`; when it is set, the outbox dispatcher calls
+`call_model_streaming` and the engine drains the sink with the same
+`tokio::select` loop it uses for the direct path. Without a sink the outbox
+still calls `call_model` once. A background `outbox` drain has no event
+consumer, so it leaves the sink unset.
+
+Consequences: CLI and other clients can render tokens as they arrive, whether
+or not the Run is journaled. Streaming is observational: the accepted
+`ModelOutput` (and the Effect record) is still the authoritative fact.
 A stream that fails mid-way returns a model error and no partial result is
 treated as accepted.
 

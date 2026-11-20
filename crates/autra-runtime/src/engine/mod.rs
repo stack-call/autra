@@ -8,6 +8,7 @@ mod policy;
 mod recovery;
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,7 +27,7 @@ use tracing::Instrument;
 use crate::approval::{ApprovalDecision, digest_intent};
 use crate::child::{ChildHandle, ChildSpec};
 use crate::dispatcher::{
-    DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
+    DEFAULT_CLAIM_LEASE, DeltaSink, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
     OutboxDispatcher,
 };
 use crate::hub::RunHub;
@@ -488,17 +489,29 @@ impl LocalEngine {
                 let model_span =
                     tracing::info_span!("gen_ai.model.call", turn = state.budget.turns_used);
                 let output_result = async {
+                    let (delta, mut deltas) = delta_channel();
                     match &self.journal {
                         Some(journal) => {
-                            let results = OutboxDispatcher::run_once_for_run(
+                            let options = DispatchOptions {
+                                limit: 1,
+                                max_parallel: 1,
+                                timeout: effect_timeout,
+                                cancel: None,
+                                lease: DEFAULT_CLAIM_LEASE,
+                                budget: None,
+                                child_execution: None,
+                                delta: Some(delta),
+                            };
+                            let dispatch = OutboxDispatcher::run_once_for_run_with(
                                 journal.as_ref(),
                                 &run_id,
-                                1,
+                                options,
                                 self.dispatcher.as_ref(),
-                                effect_timeout,
-                            )
-                            .await
-                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                                |_| {},
+                            );
+                            let results = await_with_deltas(dispatch, &mut deltas, &mut on_event)
+                                .await
+                                .map_err(|error| RunError::Journal(error.to_string()))?;
                             sync_effects(journal.as_ref(), &run_id, &mut effects)?;
                             let result = results
                                 .into_iter()
@@ -518,29 +531,15 @@ impl LocalEngine {
                         None => {
                             effect_mut(&mut effects, &effect_id)
                                 .set_status(EffectStatus::Dispatched);
-                            let (sender, mut receiver) =
-                                tokio::sync::mpsc::unbounded_channel::<String>();
-                            let mut on_delta = move |text: String| {
-                                let _ = sender.send(text);
-                            };
+                            let mut emit = move |text: String| delta(text);
                             let call = self.dispatcher.call_model_streaming(
                                 &request,
                                 effect_timeout,
-                                &mut on_delta,
+                                &mut emit,
                             );
-                            tokio::pin!(call);
-                            let result = loop {
-                                tokio::select! {
-                                    result = &mut call => break result,
-                                    Some(text) = receiver.recv() => {
-                                        on_event(&RunEvent::ModelDelta { text });
-                                    }
-                                }
-                            };
-                            while let Ok(text) = receiver.try_recv() {
-                                on_event(&RunEvent::ModelDelta { text });
-                            }
-                            result.map_err(RunError::Model)
+                            await_with_deltas(call, &mut deltas, &mut on_event)
+                                .await
+                                .map_err(RunError::Model)
                         }
                     }
                 }
@@ -835,6 +834,7 @@ impl LocalEngine {
                     journal: self.journal.clone(),
                     approver: self.approver.clone(),
                 }),
+                delta: None,
             };
             OutboxDispatcher::run_once_for_run_with(
                 journal,
@@ -983,6 +983,36 @@ fn queue_cancel(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, cancel_queue
         enqueue(queue, seq, EventKind::CancelRequested);
         *cancel_queued = true;
     }
+}
+
+fn delta_channel() -> (DeltaSink, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let sink: DeltaSink = Arc::new(move |text: String| {
+        let _ = sender.send(text);
+    });
+    (sink, receiver)
+}
+
+async fn await_with_deltas<Fut, T, F>(
+    future: Fut,
+    deltas: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    on_event: &mut F,
+) -> T
+where
+    Fut: Future<Output = T>,
+    F: FnMut(&RunEvent),
+{
+    tokio::pin!(future);
+    let result = loop {
+        tokio::select! {
+            result = &mut future => break result,
+            Some(text) = deltas.recv() => on_event(&RunEvent::ModelDelta { text }),
+        }
+    };
+    while let Ok(text) = deltas.try_recv() {
+        on_event(&RunEvent::ModelDelta { text });
+    }
+    result
 }
 
 fn emit_tool_result<F: FnMut(&RunEvent)>(on_event: &mut F, outcome: &ToolOutcome) {

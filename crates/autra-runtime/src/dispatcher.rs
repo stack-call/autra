@@ -214,6 +214,10 @@ pub struct DispatchResult {
     pub outcome: DispatchOutcome,
 }
 
+/// Receives streamed model text as it arrives. A sink is shared so a caller can
+/// keep one consumer while several claimed effects run concurrently.
+pub type DeltaSink = Arc<dyn Fn(String) + Send + Sync>;
+
 /// Knobs for one outbox pass.
 #[derive(Clone)]
 pub struct DispatchOptions<'a> {
@@ -224,6 +228,8 @@ pub struct DispatchOptions<'a> {
     pub lease: Duration,
     pub budget: Option<BudgetHandle>,
     pub child_execution: Option<ChildExecutionContext>,
+    /// When set, model effects stream their text through this sink.
+    pub delta: Option<DeltaSink>,
 }
 
 /// Claim-driven outbox loop. It executes only claimed effects, records the
@@ -250,6 +256,7 @@ impl OutboxDispatcher {
                 lease: DEFAULT_CLAIM_LEASE,
                 budget: None,
                 child_execution: None,
+                delta: None,
             },
             dispatcher,
             |_| {},
@@ -299,6 +306,7 @@ impl OutboxDispatcher {
                 lease: DEFAULT_CLAIM_LEASE,
                 budget: None,
                 child_execution: None,
+                delta: None,
             },
             dispatcher,
             |_| {},
@@ -422,7 +430,16 @@ async fn dispatch_entry(
     mark_dispatched(journal, run_id, entry)?;
     let outcome = match &intent {
         EffectIntent::CallModel(spec) => {
-            DispatchOutcome::Model(dispatcher.call_model(spec, options.timeout).await)
+            let result = match options.delta.clone() {
+                Some(sink) => {
+                    let mut on_delta = move |text: String| sink(text);
+                    dispatcher
+                        .call_model_streaming(spec, options.timeout, &mut on_delta)
+                        .await
+                }
+                None => dispatcher.call_model(spec, options.timeout).await,
+            };
+            DispatchOutcome::Model(result)
         }
         EffectIntent::CallTool(spec) => {
             let context = ToolContext {
