@@ -499,42 +499,9 @@ fn finish_entry(
 
 fn apply_outcome(record: &mut EffectRecord, outcome: &DispatchOutcome, known_tool: bool) {
     match outcome {
-        DispatchOutcome::Model(Ok(output)) => {
-            record.set_status(EffectStatus::Committed);
-            record.record_attempt(AttemptStatus::Succeeded, output.text.clone(), None);
-        }
-        DispatchOutcome::Model(Err(error)) => {
-            record.set_status(EffectStatus::Failed);
-            record.record_attempt(AttemptStatus::Failed, None, Some(error.to_string()));
-        }
-        DispatchOutcome::Tool(outcome) if outcome.outcome_unknown => {
-            record.set_status(EffectStatus::OutcomeUnknown);
-            record.record_attempt(
-                AttemptStatus::OutcomeUnknown,
-                Some(outcome.content.clone()),
-                None,
-            );
-        }
-        DispatchOutcome::Tool(outcome) if !known_tool => {
-            record.set_status(EffectStatus::Failed);
-            record.record_attempt(AttemptStatus::Failed, None, Some(outcome.content.clone()));
-        }
-        DispatchOutcome::Tool(outcome) if outcome.is_error => {
-            record.set_status(EffectStatus::Committed);
-            record.record_attempt(
-                AttemptStatus::Succeeded,
-                Some(outcome.content.clone()),
-                Some(outcome.content.clone()),
-            );
-        }
-        DispatchOutcome::Tool(outcome) => {
-            record.set_status(EffectStatus::Committed);
-            record.record_attempt(
-                AttemptStatus::Succeeded,
-                Some(outcome.content.clone()),
-                None,
-            );
-        }
+        DispatchOutcome::Model(Ok(output)) => record.apply_model_success(output.text.clone()),
+        DispatchOutcome::Model(Err(error)) => record.apply_model_failure(error.to_string()),
+        DispatchOutcome::Tool(outcome) => record.apply_tool_outcome(outcome, known_tool),
         DispatchOutcome::Cancelled => {
             record.set_status(EffectStatus::CancelledBeforeDispatch);
         }

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ids::EffectId;
-use crate::message::{HistoryItem, ToolCallRequest, ToolSpec};
+use crate::message::{HistoryItem, ToolCallRequest, ToolOutcome, ToolSpec};
 
 /// An execution intent produced by the stepper and executed by the host.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +135,43 @@ impl EffectRecord {
 
     pub fn note_reconciliation(&mut self, reason: impl Into<String>) {
         self.reconciliations.push(reason.into());
+    }
+
+    /// Apply a tool outcome using the shared status/attempt rules.
+    pub fn apply_tool_outcome(&mut self, outcome: &ToolOutcome, known_tool: bool) {
+        if outcome.outcome_unknown {
+            self.set_status(EffectStatus::OutcomeUnknown);
+            self.record_attempt(
+                AttemptStatus::OutcomeUnknown,
+                Some(outcome.content.clone()),
+                None,
+            );
+        } else if !known_tool {
+            self.set_status(EffectStatus::Failed);
+            self.record_attempt(AttemptStatus::Failed, None, Some(outcome.content.clone()));
+        } else {
+            let error = if outcome.is_error {
+                Some(outcome.content.clone())
+            } else {
+                None
+            };
+            self.set_status(EffectStatus::Committed);
+            self.record_attempt(
+                AttemptStatus::Succeeded,
+                Some(outcome.content.clone()),
+                error,
+            );
+        }
+    }
+
+    pub fn apply_model_success(&mut self, text: Option<String>) {
+        self.set_status(EffectStatus::Committed);
+        self.record_attempt(AttemptStatus::Succeeded, text, None);
+    }
+
+    pub fn apply_model_failure(&mut self, message: impl Into<String>) {
+        self.set_status(EffectStatus::Failed);
+        self.record_attempt(AttemptStatus::Failed, None, Some(message.into()));
     }
 
     pub fn record_attempt(
