@@ -150,6 +150,16 @@ let run = runtime.start(agent, task).await?;
 > **Unified at the semantic level, modular at the implementation level.**  
 > 语义层统一，实现层模块化。
 
+在这两个总纲之下，五个可检验的架构目标是：
+
+| 目标 | 含义 | 当前证据与约束 |
+|---|---|---|
+| 语义统一 | ReAct、Planning、Workflow、Subagent 共享同一套 Run、Scope、Event 与 Effect 执行协议 | 一个 `AgentStepper`/`Transition` 协议（拟议改名为 `TransitionProposal`）、一个 runtime coordinator；Workflow 尚未实现 |
+| 能力可组合 | Context、Memory、Skills、Tools、Sandbox、Durability 独立组合，不改变彼此的基本语义 | ContextBuilder、SkillRegistry、ToolRegistry、Provider seam；Memory/Sandbox 仍为可选后续 |
+| 执行可验证 | 取消、并发、审批、副作用、恢复都有明确契约与测试 | INV-01..10、Agent/Stepper/Tool seam、确定性测试；durable fault matrix 待做 |
+| 基础设施可选 | 默认 Tokio 本地运行；恢复、隔离、分布式执行按需启用 | `LocalEphemeral` 默认；SQLite/Restate/OpenShell 可选（ADR-0003/0008/0009） |
+| 简单入口、强大内核 | 普通开发者不必理解 Stepper/Journal/Effect Ledger；高级能力显式开启 | `Agent::builder(...).run()`；`RunOptions`、Approver、Session、Context 为显式高级入口 |
+
 ### 3.2 九条设计原则
 
 | 原则 | 具体设计约束 | 可验证方式 |

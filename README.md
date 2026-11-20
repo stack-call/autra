@@ -86,3 +86,13 @@ history live in `autra-runtime`; context construction lives in
 `autra-harness`. See
 [ADR-0022](docs/adr/0022-session-and-turn-are-domain-concepts.md) and
 [docs/architecture.md](docs/architecture.md).
+
+## Goals
+
+1. **Semantic consistency** — one execution protocol for every engine.
+2. **Composability** — Context, Skills, Tools and infrastructure combine independently.
+3. **Verifiable execution** — contracts and tests for cancellation, concurrency, approval and effects.
+4. **Optional infrastructure** — local by default; durability, sandbox and remote execution are opt-in.
+5. **Simple API, powerful runtime** — a small builder for common work, explicit controls for advanced use.
+
+See [docs/philosophy.md](docs/philosophy.md) for the evidence and current gaps.

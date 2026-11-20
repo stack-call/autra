@@ -18,6 +18,33 @@ Autra is not an Agent hosting platform. It does not implement a general
 Durable Workflow engine, an OS sandbox, a task scheduler or a distributed
 actor placement system.
 
+## Five architecture goals
+
+These goals are the test for whether a design change belongs in Autra.
+
+1. **Semantic consistency**: ReAct, Planning and future Workflow/Subagent engines
+   share the same Run, Scope, Event and Effect execution protocol. No engine
+   reimplements the executor.
+2. **Composability**: Context, Memory, Skills, Tools, Sandbox and Durability
+   combine independently without changing each other's basic semantics.
+3. **Verifiable execution**: cancellation, concurrency, approval, side effects and
+   recovery have explicit contracts and tests, not only prose.
+4. **Optional infrastructure**: local Tokio is enough; recovery, isolation and
+   distributed execution are opt-in.
+5. **Simple API, powerful runtime**: a developer can build an Agent without
+   knowing Stepper, Journal or Effect Ledger; advanced users can control the
+   details.
+
+Current evidence and honest gaps:
+
+| Goal | Evidence | Gap |
+|---|---|---|
+| Semantic consistency | One AgentStepper protocol and one coordinator | Workflow engine not implemented |
+| Composability | Context, Skills, Tools and provider seams | Memory and Sandbox are future adapters |
+| Verifiable execution | Invariants and deterministic tests at Agent/Stepper/Tool seams | Durable fault matrix pending |
+| Optional infrastructure | Local default; provider and host seams | SQLite/Restate/OpenShell not implemented |
+| Simple API | Builder, run, sessions, explicit advanced options | Effect ledger is not exposed yet |
+
 ## Nine principles
 
 | Principle | Constraint |
