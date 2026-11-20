@@ -22,7 +22,12 @@ fn state_serializes_to_a_stable_snapshot() {
                 "tool_calls_used": 0
             },
             "final_answer": null,
-            "last_error": null
+            "last_error": null,
+            "engine_state": {
+                "engine_id": "react",
+                "schema_revision": 1,
+                "data": null
+            }
         })
     );
 }

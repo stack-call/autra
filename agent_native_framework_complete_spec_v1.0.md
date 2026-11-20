@@ -550,6 +550,31 @@ Intent 可分为 External（`CallModel`、`CallTool`）与 Control（`SpawnChild
 
 ---
 
+### 6.7 RunState 的 Core / Engine 边界
+
+`AgentState` 是 RunState 的当前实现。Core 统一拥有：
+
+- `run_id`、`session_id`、`turn_id`
+- `phase`、`budget`、`final_answer`、`last_error`
+
+Engine 拥有：
+
+- `engine_state { engine_id, schema_revision, data }`
+- 当前 ReAct 实现的 `history` 与 `pending_tool_calls` 属于 ReAct-specific 状态；自定义
+  Engine 可以忽略它们，把自己的状态放入 `engine_state.data`。
+
+规则：
+
+- Core 只透明存储/序列化 Engine state，不解释其字段。
+- Engine 必须提供 `engine_id` 与 `schema_revision`，用于迁移与恢复校验。
+- 更换 Engine 不得改变 Host 的恢复保证；旧 Engine state 不得被静默当作新格式。
+- Engine 不能借 `engine_state` 绕过 Span/Event 的执行协议。
+
+当前实现：`AgentState::new` 默认 `react/1`；自定义 Stepper 可在首次转换时写入自己的
+`EngineState`，Coordinator 与 Host 只负责持久化/传递。
+
+---
+
 ## 7. Rich Harness：可组合智能行为
 
 ### 7.1 第一层“直接可用”能力

@@ -42,6 +42,13 @@ The current implementation has intents and outcomes but no EffectRecord/Attempt
 ledger. Timeout is already `outcome_unknown`; a durable host will add stable ids,
 reconciliation and attempt history. See §6.6 of the design spec.
 
+## RunState ownership
+
+Core owns run id, session/turn references, phase, budget, final answer and last
+error. `engine_state { engine_id, schema_revision, data }` is opaque to Core; the
+current ReAct fields `history` and `pending_tool_calls` are engine-specific. A
+custom Stepper may use `engine_state` and ignore the ReAct fields.
+
 ## Current ReAct state machine
 
 `autra-harness::ReActStepper` implements:

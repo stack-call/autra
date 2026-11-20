@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use autra_core::{
-    AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EventKind, HistoryItem,
-    ModelCallSpec, ModelOutput, StepError, Transition,
+    AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EngineState, EventKind,
+    HistoryItem, ModelCallSpec, ModelOutput, StepError, Transition,
 };
 use autra_harness::{
     ContextBuilder, ContextError, ContextRequest, EchoModel, ModelError, ModelProvider,
@@ -69,6 +69,8 @@ impl AgentStepper for OneShotStepper {
                 next.history.push(HistoryItem::User(input.clone()));
                 next.phase = AgentPhase::Completed;
                 next.final_answer = Some("custom stepper".to_owned());
+                next.engine_state = EngineState::new("one-shot", 1)
+                    .with_data(serde_json::json!({ "stage": "done" }));
                 Ok(Transition {
                     next,
                     intents: Vec::new(),
@@ -91,4 +93,9 @@ async fn custom_stepper_is_used() {
     let outcome = agent.run("hello").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("custom stepper"));
+    assert_eq!(outcome.state().engine_state.engine_id, "one-shot");
+    assert_eq!(
+        outcome.state().engine_state.data,
+        serde_json::json!({ "stage": "done" })
+    );
 }
