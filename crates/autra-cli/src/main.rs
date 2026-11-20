@@ -9,6 +9,7 @@ use autra_runtime::{Agent, RunError, RunEvent, RunOptions, RunOutcome, Session};
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    init_tracing();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None | Some("-h" | "--help" | "help") => {
@@ -331,6 +332,12 @@ fn preview(text: &str) -> String {
 
 fn usage() -> &'static str {
     "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run [--model <name>] <prompt>\n  autractl chat [--model <name>]\n  autractl demo\n  autractl tools\n  autractl --help"
+}
+
+fn init_tracing() {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ Status reflects the repository, not the ambition of the design proposal.
 | M3 Full interaction | Turns, approval, commands, hooks, tool policy | Approval, guarded write_file and in-memory sessions done; hooks and policy registry pending |
 | M4 Native durability | SQLite journal, outbox, checkpoints, recovery, OutcomeUnknown | Pending: a local `outcome_unknown` marker exists, no reconciliation |
 | M5 Rich harness | Context policy, compaction, skills, planning, memory | Partial: ContextBuilder, budget, Skills and Planning done; memory pending |
-| M6 Sandbox and evaluation | OpenShell adapter, tracing, replay, evaluation set | Pending |
+| M6 Sandbox and evaluation | OpenShell adapter, tracing, replay, evaluation set | Tracing done; OpenShell, replay and evaluation pending |
 | M7 Restate PoC | Hosted execution, capability matrix, comparison | Pending |
 | M8 Demand-driven expansion | MCP, Python SDK, API server, remote workers | Pending |
 
@@ -26,6 +26,7 @@ Status reflects the repository, not the ambition of the design proposal.
 - ContextBuilder seam with a character budget and on-demand Skills.
 - Tool-backed in-memory planning via `update_plan` and `Agent::plan()`.
 - Restricted subagents as named child Agents behind `spawn_subagent`.
+- `tracing` spans for Sessions, Runs, model calls and tool calls.
 - Budgets, cooperative cancellation, optional Effect timeouts.
 - Deterministic tests at the Agent, Stepper, Tool and snapshot seams.
 - An OpenAI-compatible non-streaming provider crate.

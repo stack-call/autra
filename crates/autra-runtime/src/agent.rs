@@ -14,6 +14,7 @@ use autra_harness::{
     SimpleContextBuilder, Skill, SkillRegistry, Tool, ToolRegistry, UpdatePlanTool,
 };
 use futures_util::FutureExt;
+use tracing::Instrument;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
 use crate::subagent::{SubagentRegistry, SubagentTool};
@@ -211,6 +212,7 @@ impl Agent {
         self.run_with_history(&[], input, options, on_event).await
     }
 
+    #[tracing::instrument(skip_all, fields(agent = %self.name))]
     pub async fn run_with_history<F>(
         &self,
         history: &[HistoryItem],
@@ -222,6 +224,7 @@ impl Agent {
         F: FnMut(&RunEvent),
     {
         let run_id = RunId::fresh();
+        tracing::info!(run_id = %run_id, "agent run started");
         let mut state = AgentState::new(
             run_id.clone(),
             BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
@@ -292,6 +295,7 @@ impl Agent {
                             answer: state.final_answer.clone(),
                         });
                     }
+                    tracing::info!(phase = ?state.phase, "agent run finished");
                     return Ok(RunOutcome { state });
                 }
                 Disposition::Failed => {
@@ -302,6 +306,7 @@ impl Agent {
                     on_event(&RunEvent::RunFailed {
                         message: message.clone(),
                     });
+                    tracing::warn!(message = %message, "agent run failed");
                     return Err(RunError::Failed(message));
                 }
                 Disposition::Continue => {}
@@ -348,8 +353,13 @@ impl Agent {
                 on_event(&RunEvent::ModelCallStarted {
                     turn: state.budget.turns_used,
                 });
+                let model_span =
+                    tracing::info_span!("gen_ai.model.call", turn = state.budget.turns_used);
                 let output_result =
-                    match with_timeout(effect_timeout, self.model.complete(&request)).await {
+                    match with_timeout(effect_timeout, self.model.complete(&request))
+                        .instrument(model_span)
+                        .await
+                    {
                         Ok(result) => result,
                         Err(()) => Err(ModelError::new(
                             "model call exceeded the configured timeout",
@@ -665,8 +675,13 @@ async fn execute_tool(
 ) -> ToolOutcome {
     let result: Result<String, (String, bool)> = match tools.get(&call.name) {
         Some(tool) => {
+            let span = tracing::info_span!(
+                "agent.tool.execute",
+                tool = %call.name,
+                call_id = %call.call_id
+            );
             let future = AssertUnwindSafe(with_timeout(timeout, tool.call(&call.arguments)));
-            match future.catch_unwind().await {
+            match future.catch_unwind().instrument(span).await {
                 Ok(Ok(Ok(content))) => Ok(content),
                 Ok(Ok(Err(error))) => Err((error.to_string(), false)),
                 Ok(Err(())) => Err((

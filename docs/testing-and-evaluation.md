@@ -34,6 +34,8 @@ Tests observe public behaviour, not private helpers.
    `Agent::plan()` after a Run.
 10. **Subagents** (`autra-runtime`): a named child answer, unknown child and
     child failure as an error outcome.
+11. **Tracing** (`autra-runtime`): the run-start event is captured with
+    `tracing-test`.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

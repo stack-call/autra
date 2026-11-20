@@ -14,6 +14,7 @@ autra-harness = { path = "../autra-harness" }
 autra-openai = { path = "../autra-openai" }
 autra-runtime = { path = "../autra-runtime" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"

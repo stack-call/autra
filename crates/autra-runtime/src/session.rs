@@ -45,6 +45,7 @@ impl Session {
             .await
     }
 
+    #[tracing::instrument(skip_all, fields(session_id = %self.session_id, turn = self.turn_index + 1))]
     pub async fn run_turn_with_options<F>(
         &mut self,
         input: &str,
