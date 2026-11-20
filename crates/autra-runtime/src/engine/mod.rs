@@ -6,9 +6,9 @@
 mod approval;
 mod policy;
 mod recovery;
+mod streaming;
 
 use std::collections::VecDeque;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,10 +27,11 @@ use tracing::Instrument;
 use crate::approval::{ApprovalDecision, digest_intent};
 use crate::child::{ChildHandle, ChildSpec};
 use crate::dispatcher::{
-    DEFAULT_CLAIM_LEASE, DeltaSink, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
+    DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
     OutboxDispatcher,
 };
 use crate::hub::RunHub;
+use streaming::{await_with_deltas, delta_channel};
 
 /// Drives one Run: accepts events, commits transitions, executes effects and
 /// resumes committed checkpoints.
@@ -983,36 +984,6 @@ fn queue_cancel(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, cancel_queue
         enqueue(queue, seq, EventKind::CancelRequested);
         *cancel_queued = true;
     }
-}
-
-fn delta_channel() -> (DeltaSink, tokio::sync::mpsc::UnboundedReceiver<String>) {
-    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-    let sink: DeltaSink = Arc::new(move |text: String| {
-        let _ = sender.send(text);
-    });
-    (sink, receiver)
-}
-
-async fn await_with_deltas<Fut, T, F>(
-    future: Fut,
-    deltas: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
-    on_event: &mut F,
-) -> T
-where
-    Fut: Future<Output = T>,
-    F: FnMut(&RunEvent),
-{
-    tokio::pin!(future);
-    let result = loop {
-        tokio::select! {
-            result = &mut future => break result,
-            Some(text) = deltas.recv() => on_event(&RunEvent::ModelDelta { text }),
-        }
-    };
-    while let Ok(text) = deltas.try_recv() {
-        on_event(&RunEvent::ModelDelta { text });
-    }
-    result
 }
 
 fn emit_tool_result<F: FnMut(&RunEvent)>(on_event: &mut F, outcome: &ToolOutcome) {
