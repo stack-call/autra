@@ -553,14 +553,14 @@ fn policy_allow_tools_is_rejected() {
 }
 
 #[test]
-fn tui_rejects_unsupported_flags_before_opening_the_terminal() {
+fn tui_validates_flags_before_opening_the_terminal() {
     let output = autractl()
         .args(["tui", "--session", "session-1"])
         .output()
         .unwrap();
 
     assert!(!output.status.success());
-    assert!(stderr(&output).contains("does not support --session"));
+    assert!(stderr(&output).contains("--session requires --journal"));
 
     let output = autractl().args(["tui", "prompt"]).output().unwrap();
     assert!(!output.status.success());

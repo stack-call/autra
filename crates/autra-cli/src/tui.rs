@@ -6,8 +6,10 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use autra::{Agent, ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions};
-use autra_core::{CancelFlag, HistoryItem};
+use autra::{
+    ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions, Session, SessionStore,
+};
+use autra_core::{CancelFlag, HistoryItem, SessionId};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -26,12 +28,24 @@ pub struct TuiConfig {
     pub model: String,
     pub read_only: bool,
     pub auto_approve: bool,
+    /// When set, the TUI opens this persisted session and saves every turn.
+    pub session: Option<SessionBinding>,
+}
+
+/// A persisted session the TUI should restore and continue.
+#[derive(Clone)]
+pub struct SessionBinding {
+    pub store: Arc<dyn SessionStore>,
+    pub session_id: SessionId,
 }
 
 pub enum UiMessage {
     Event(RunEvent),
     Approval(ApprovalRequest, Sender<ApprovalDecision>),
-    Finished(Result<Vec<HistoryItem>, String>),
+    Finished {
+        session: Box<Session>,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Clone)]
@@ -68,7 +82,9 @@ struct ChatLine {
 }
 
 struct State {
-    agent: Arc<Agent>,
+    session: Option<Session>,
+    session_label: Option<String>,
+    turn_index: u32,
     config: TuiConfig,
     sender: Sender<UiMessage>,
     lines: Vec<ChatLine>,
@@ -80,16 +96,30 @@ struct State {
     approval: Option<(ApprovalRequest, Sender<ApprovalDecision>)>,
     should_quit: bool,
     cancel: Option<CancelFlag>,
-    history: Vec<HistoryItem>,
 }
 
 impl State {
-    fn new(agent: Arc<Agent>, config: TuiConfig, sender: Sender<UiMessage>) -> Self {
+    fn new(session: Session, config: TuiConfig, sender: Sender<UiMessage>) -> Self {
+        let history = session.history().to_vec();
+        let session_label = config
+            .session
+            .as_ref()
+            .map(|binding| binding.session_id.to_string());
+        let turn_index = session.turn_index();
+        let mut lines = history_lines(&history);
+        if !lines.is_empty() {
+            lines.push(ChatLine {
+                style: Style::default().fg(Color::DarkGray),
+                text: format!("[session] restored {turn_index} turn(s)"),
+            });
+        }
         Self {
-            agent,
+            session: Some(session),
+            session_label,
+            turn_index,
             config,
             sender,
-            lines: Vec::new(),
+            lines,
             streaming: None,
             input: String::new(),
             status: "idle".to_owned(),
@@ -98,7 +128,6 @@ impl State {
             approval: None,
             should_quit: false,
             cancel: None,
-            history: Vec::new(),
         }
     }
 
@@ -117,16 +146,17 @@ impl State {
                 self.approval = Some((request, sender));
                 self.status = "awaiting approval".to_owned();
             }
-            UiMessage::Finished(result) => {
+            UiMessage::Finished { session, result } => {
                 self.running = false;
                 self.cancel = None;
+                self.turn_index = session.turn_index();
+                self.session = Some(*session);
                 self.status = "idle".to_owned();
-                match result {
-                    Ok(history) => self.history = history,
-                    Err(error) => self.push(
+                if let Err(error) = result {
+                    self.push(
                         Style::default().fg(Color::Red),
                         format!("run failed: {error}"),
-                    ),
+                    );
                 }
             }
         }
@@ -302,6 +332,10 @@ impl State {
         if prompt.is_empty() {
             return;
         }
+        let Some(mut session) = self.session.take() else {
+            self.status = "session busy".to_owned();
+            return;
+        };
         self.input.clear();
         self.push(Style::default().fg(Color::Cyan), format!("> {prompt}"));
         self.running = true;
@@ -319,9 +353,7 @@ impl State {
             effect_timeout: timeout,
             ..RunOptions::default()
         };
-        let agent = self.agent.clone();
         let sender = self.sender.clone();
-        let history = self.history.clone();
         std::thread::spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -329,24 +361,26 @@ impl State {
             {
                 Ok(runtime) => runtime,
                 Err(error) => {
-                    let _ = sender.send(UiMessage::Finished(Err(format!(
-                        "cannot start runtime: {error}"
-                    ))));
+                    let _ = sender.send(UiMessage::Finished {
+                        session: Box::new(session),
+                        result: Err(format!("cannot start runtime: {error}")),
+                    });
                     return;
                 }
             };
             runtime.block_on(async move {
                 let event_sender = sender.clone();
-                let result = agent
-                    .run_with_history(&history, &prompt, options, move |event| {
+                let result = session
+                    .run_turn_with_options(&prompt, options, move |event| {
                         let _ = event_sender.send(UiMessage::Event(event.clone()));
                     })
-                    .await;
-                let message = match result {
-                    Ok(outcome) => UiMessage::Finished(Ok(autra::react_history(outcome.state()))),
-                    Err(error) => UiMessage::Finished(Err(error.to_string())),
-                };
-                let _ = sender.send(message);
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+                let _ = sender.send(UiMessage::Finished {
+                    session: Box::new(session),
+                    result,
+                });
             });
         });
     }
@@ -392,6 +426,48 @@ fn build_lines(state: &State, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+fn history_lines(history: &[HistoryItem]) -> Vec<ChatLine> {
+    let mut lines = Vec::new();
+    for item in history {
+        match item {
+            HistoryItem::User(text) => lines.push(ChatLine {
+                style: Style::default().fg(Color::Cyan),
+                text: format!("> {text}"),
+            }),
+            HistoryItem::Assistant { text, tool_calls } => {
+                if let Some(text) = text {
+                    if !text.is_empty() {
+                        lines.push(ChatLine {
+                            style: Style::default().fg(Color::Green),
+                            text: text.clone(),
+                        });
+                    }
+                }
+                for call in tool_calls {
+                    lines.push(ChatLine {
+                        style: Style::default().fg(Color::Yellow),
+                        text: format!("[tool] requested {} ({})", call.name, call.call_id),
+                    });
+                }
+            }
+            HistoryItem::Tool(outcome) => {
+                let (style, status) = if outcome.outcome_unknown {
+                    (Style::default().fg(Color::Magenta), "unknown")
+                } else if outcome.is_error {
+                    (Style::default().fg(Color::Red), "error")
+                } else {
+                    (Style::default().fg(Color::Yellow), "ok")
+                };
+                lines.push(ChatLine {
+                    style,
+                    text: format!("[tool] {} {status}: {}", outcome.name, outcome.content),
+                });
+            }
+        }
+    }
+    lines
+}
+
 fn truncate(text: &str, max: usize) -> String {
     let mut shortened: String = text.chars().take(max).collect();
     if text.chars().count() > max {
@@ -419,10 +495,14 @@ impl State {
         } else {
             "approvals"
         };
-        let header = format!(
-            " Autra | {} | {} | {} ",
+        let mut header = format!(
+            " Autra | {} | {} | {}",
             self.config.workspace, self.config.model, modes
         );
+        if let Some(label) = &self.session_label {
+            header.push_str(&format!(" | {label} turn {}", self.turn_index));
+        }
+        header.push(' ');
         frame.render_widget(
             Paragraph::new(header).style(
                 Style::default()
@@ -486,18 +566,23 @@ impl State {
 }
 
 pub fn run(
-    agent: Arc<Agent>,
+    agent: autra::Agent,
     config: TuiConfig,
     sender: Sender<UiMessage>,
     receiver: Receiver<UiMessage>,
 ) -> io::Result<()> {
+    let session = match &config.session {
+        Some(binding) => Session::open(agent, binding.store.clone(), binding.session_id.clone())
+            .map_err(|error| io::Error::other(error.to_string()))?,
+        None => Session::new(agent),
+    };
+    let mut state = State::new(session, config, sender);
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    let mut state = State::new(agent, config, sender);
     let result = event_loop(&mut terminal, &mut state, receiver);
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -530,19 +615,21 @@ fn event_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use autra_core::{EffectId, RunId, ToolCallRequest};
+    use autra::Agent;
+    use autra_core::{EffectId, RunId, ToolCallRequest, ToolOutcome};
     use autra_harness::EchoModel;
 
     fn state() -> State {
         let agent = Agent::builder("tui").model(EchoModel).build().unwrap();
         let (sender, _receiver) = std::sync::mpsc::channel();
         State::new(
-            Arc::new(agent),
+            Session::new(agent),
             TuiConfig {
                 workspace: ".".to_owned(),
                 model: "local echo".to_owned(),
                 read_only: false,
                 auto_approve: false,
+                session: None,
             },
             sender,
         )
@@ -600,5 +687,43 @@ mod tests {
 
         assert_eq!(receiver.recv().unwrap(), ApprovalDecision::Approved);
         assert!(state.approval.is_none());
+    }
+
+    #[test]
+    fn restored_history_renders_each_item_kind() {
+        let history = vec![
+            HistoryItem::User("hi".to_owned()),
+            HistoryItem::Assistant {
+                text: Some("hello".to_owned()),
+                tool_calls: vec![ToolCallRequest {
+                    call_id: "call-1".to_owned(),
+                    name: "echo".to_owned(),
+                    arguments: "{}".to_owned(),
+                }],
+            },
+            HistoryItem::Tool(ToolOutcome {
+                call_id: "call-1".to_owned(),
+                name: "echo".to_owned(),
+                content: "hi".to_owned(),
+                is_error: false,
+                outcome_unknown: false,
+            }),
+        ];
+
+        let lines = history_lines(&history);
+
+        assert_eq!(lines[0].text, "> hi");
+        assert_eq!(lines[1].text, "hello");
+        assert_eq!(lines[2].text, "[tool] requested echo (call-1)");
+        assert_eq!(lines[3].text, "[tool] echo ok: hi");
+    }
+
+    #[test]
+    fn an_empty_session_starts_without_restored_lines() {
+        let state = state();
+
+        assert!(state.lines.is_empty());
+        assert_eq!(state.turn_index, 0);
+        assert!(state.session.is_some());
     }
 }

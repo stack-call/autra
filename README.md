@@ -98,13 +98,17 @@ turn (or quits when idle), Ctrl+C quits, PgUp/PgDn scroll, and a pending
 approval shows the tool and preview and waits for `y`/`n`. Use `--yes` for
 auto-approval and `--local` for a deterministic echo session.
 
+With `--journal <path> --session <id>`, the TUI restores that session's turns
+on startup, shows the session id and turn count in the header, and saves every
+turn. `--journal` without `--session` creates a fresh persisted session.
+
 | Flag | Meaning |
 |---|---|
 | `--workspace <dir>`, `-C <dir>` | workspace root (default `.`); file tools stay inside it |
 | `--model <name>`, `-m <name>` | OpenAI-compatible model; omit for the local echo model |
 | `--local` | use the built-in echo model explicitly (needed for `resume`/`outbox` without a provider) |
 | `--journal <path>`, `-j <path>` | persist run state, events and effects to a SQLite journal |
-| `--session <id>` | restore or create a named chat session (requires `--journal`) |
+| `--session <id>` | restore or create a named chat or TUI session (requires `--journal`) |
 | `--policy <path>` | JSON tool/command policy (`ask_tools`, `deny_tools`, `deny_commands`; Allow is the default) |
 | `--actor <name>` | operator identity recorded on approval requests |
 | `--yes`, `-y` | approve `write_file`, `edit_file` and `run_command` without prompting |

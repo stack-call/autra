@@ -104,8 +104,9 @@ Tests observe public behaviour, not private helpers.
     `run_command`; approval requests carry revision, actor and expiry; the CLI
     loads a JSON policy file.
 31. **Streaming** (`autra`, `autra-openai`): deltas arrive before the final
-    model result; a non-streaming provider emits one delta; the OpenAI adapter
-    parses SSE content and tool-call fragments.
+    model result on both the direct and journaled paths; a non-streaming
+    provider emits one delta; the OpenAI adapter parses SSE content and
+    tool-call fragments.
 32. **Snapshots** (`autra-runtime`, `autra-cli`): a hub records a final
     snapshot for new, resumed and failed Runs; subscriptions receive events and
     end at finish; an early model/tool error still closes the channel;
@@ -122,6 +123,10 @@ Tests observe public behaviour, not private helpers.
     idempotent write without a valid approval stays unresolved; model retries
     can be disabled; a current policy `Deny` prevents retry; `effects --unknown`
     lists pending effects and `reconcile` reports retried and unresolved ids.
+35. **TUI sessions** (`autra-cli`): restored user, assistant and tool history
+    renders as chat lines; an empty session starts clean; each turn runs
+    through `Session` so the turn index and stored history advance; `tui
+    --session` without `--journal` fails before the terminal opens.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

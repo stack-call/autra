@@ -16,7 +16,9 @@ The session contract now lives in `autra-execution`:
 `autra-durable-sqlite` implements `SqliteSessionStore` with `sessions` and
 `session_turns` tables. `Session::open` restores a named session; `Session`
 saves Completed, Cancelled and Failed turns after each run. `chat --journal
---session <id>` restores or creates that session and prints its id.
+--session <id>` restores or creates that session and prints its id. `autractl
+tui --journal --session <id>` uses the same store: the TUI opens the session,
+renders its restored history and runs each turn through `Session`.
 
 Consequences: session history survives process exits and is independent of Run
 recovery. The two stores may share a SQLite file but never share a state

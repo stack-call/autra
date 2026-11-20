@@ -290,12 +290,12 @@ fn tui_command(args: &[String]) -> ExitCode {
     };
     if !flags.rest.is_empty() {
         eprintln!(
-            "usage: autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--policy <path>] [--actor <name>] [--yes] [--read-only]"
+            "usage: autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]"
         );
         return ExitCode::FAILURE;
     }
-    if flags.session.is_some() {
-        eprintln!("tui does not support --session yet");
+    if flags.session.is_some() && flags.journal.is_none() {
+        eprintln!("--session requires --journal <path>");
         return ExitCode::FAILURE;
     }
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -311,6 +311,25 @@ fn tui_command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let session = match &flags.journal {
+        Some(path) => {
+            let store: Arc<dyn SessionStore> = match SqliteSessionStore::open(path) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let session_id = flags
+                .session
+                .as_ref()
+                .map(SessionId::new)
+                .unwrap_or_else(SessionId::fresh);
+            eprintln!("[session] {session_id}");
+            Some(tui::SessionBinding { store, session_id })
+        }
+        None => None,
+    };
     let config = tui::TuiConfig {
         workspace: flags.workspace.clone().unwrap_or_else(|| ".".to_owned()),
         model: flags
@@ -319,8 +338,9 @@ fn tui_command(args: &[String]) -> ExitCode {
             .unwrap_or_else(|| "local echo".to_owned()),
         read_only: flags.read_only,
         auto_approve: flags.auto_approve,
+        session,
     };
-    match tui::run(Arc::new(agent), config, sender, receiver) {
+    match tui::run(agent, config, sender, receiver) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("tui failed: {error}");
@@ -1002,7 +1022,7 @@ USAGE:
   autractl reconcile --journal <path> [--model <name>] [--workspace <dir>] [--policy <path>] <run-id>
   autractl approve|reject --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>
   autractl demo
-  autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
+  autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
   autractl tools
   autractl --help
 
@@ -1011,7 +1031,7 @@ OPTIONS:
   --model <name>     OpenAI-compatible model; omit for the local echo model
   --local            use the built-in local echo model explicitly
   --journal <path>   persist runs, events, effects, approvals and sessions to SQLite
-  --session <id>     named chat session (requires --journal)
+  --session <id>     named chat or TUI session (requires --journal)
   --policy <path>    JSON tool/command policy
   --actor <name>     operator identity recorded on approvals
   --yes              auto-approve gated tools
