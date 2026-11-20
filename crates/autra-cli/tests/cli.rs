@@ -426,3 +426,71 @@ fn approve_and_reject_write_an_approval_record() {
         ApprovalDecision::Rejected
     );
 }
+
+#[test]
+fn effects_and_reconcile_handle_an_unknown_read_only_tool() {
+    use autra::EffectJournal;
+    use autra_core::{
+        EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, RunId, ToolCallRequest,
+        ToolCallSpec,
+    };
+    use autra_durable_sqlite::SqliteEffectJournal;
+
+    let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(workspace.path().join("note.txt"), "hello").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("reconcile.db");
+    let run_id = RunId::new("run-reconcile");
+    let effect_id = EffectId::fresh();
+    {
+        let journal = SqliteEffectJournal::open(&db).unwrap();
+        let call = ToolCallRequest {
+            call_id: "call-1".to_owned(),
+            name: "read_file".to_owned(),
+            arguments: r#"{"path":"note.txt"}"#.to_owned(),
+        };
+        let intent = EffectIntent::CallTool(ToolCallSpec { call });
+        let mut effect = EffectRecord::new(
+            effect_id.clone(),
+            EffectKind::ToolCall,
+            Some("read_file".to_owned()),
+            Some("call-1".to_owned()),
+            "digest".to_owned(),
+        )
+        .with_intent_json(serde_json::to_string(&intent).unwrap());
+        effect.set_status(EffectStatus::OutcomeUnknown);
+        journal.record(&run_id, &effect).unwrap();
+    }
+
+    let effects = autractl()
+        .args([
+            "effects",
+            "--journal",
+            db.to_str().unwrap(),
+            "--unknown",
+            run_id.as_str(),
+        ])
+        .output()
+        .unwrap();
+    assert!(effects.status.success(), "stderr: {}", stderr(&effects));
+    assert!(stdout(&effects).contains(effect_id.as_str()));
+
+    let reconcile = autractl()
+        .args([
+            "reconcile",
+            "--journal",
+            db.to_str().unwrap(),
+            "--workspace",
+            workspace.path().to_str().unwrap(),
+            run_id.as_str(),
+        ])
+        .output()
+        .unwrap();
+    assert!(reconcile.status.success(), "stderr: {}", stderr(&reconcile));
+    assert!(stdout(&reconcile).contains("retried 1"));
+
+    let journal = SqliteEffectJournal::open(&db).unwrap();
+    let stored = journal.load(&run_id).unwrap();
+    assert_eq!(stored[0].status, EffectStatus::Committed);
+    assert_eq!(stored[0].result.as_deref(), Some("hello"));
+}

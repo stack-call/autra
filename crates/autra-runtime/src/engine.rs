@@ -15,8 +15,9 @@ use autra_core::{
 };
 use autra_execution::{
     ApprovalRecord, Approver, ChildExecutionContext, DEFAULT_APPROVAL_TTL, DurableTransitionStore,
-    EffectJournal, ObserverHook, PolicyChain, PolicyDecision, PolicyRequest, RunError, RunEvent,
-    RunOptions, RunOutcome, RunSnapshot, ToolContext, ToolPolicy, ToolRegistry, now_unix_ms,
+    EffectJournal, ObserverHook, PolicyChain, PolicyDecision, PolicyRequest, ReconciliationReport,
+    RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot, ToolContext, ToolPolicy, ToolRegistry,
+    UnresolvedEffect, now_unix_ms,
 };
 use tracing::Instrument;
 
@@ -478,6 +479,139 @@ impl LocalEngine {
 
         self.drive(stepper, state, queue, effects, options, on_event)
             .await
+    }
+
+    /// Retry effects whose outcome is unknown when their effect class makes a
+    /// retry safe. Reconcile only updates the effect ledger; it does not
+    /// rewrite Run history.
+    pub async fn reconcile(&self, run_id: &RunId) -> Result<ReconciliationReport, RunError> {
+        self.reconcile_with(run_id, true).await
+    }
+
+    /// `retry_models = false` leaves model effects unresolved, for hosts that
+    /// only want to reconcile tool work.
+    pub async fn reconcile_with(
+        &self,
+        run_id: &RunId,
+        retry_models: bool,
+    ) -> Result<ReconciliationReport, RunError> {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| RunError::Protocol("reconciliation requires a journal".to_owned()))?;
+        let mut effects = journal
+            .load(run_id)
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        let mut retried = Vec::new();
+        let mut unresolved = Vec::new();
+
+        for record in effects
+            .iter_mut()
+            .filter(|record| record.status == EffectStatus::OutcomeUnknown)
+        {
+            let mut reason = None;
+            let safe = match record.kind {
+                EffectKind::ModelCall => {
+                    if retry_models {
+                        true
+                    } else {
+                        reason = Some("model reconciliation requires a model".to_owned());
+                        false
+                    }
+                }
+                EffectKind::ToolCall => match record
+                    .tool_name
+                    .as_deref()
+                    .and_then(|name| self.tools.get(name))
+                {
+                    None => {
+                        reason = Some("tool is no longer registered".to_owned());
+                        false
+                    }
+                    Some(tool) => {
+                        let class = tool.effect_class();
+                        let class_safe =
+                            matches!(class, EffectClass::ReadOnly | EffectClass::Idempotent);
+                        if !class_safe {
+                            reason = Some(match class {
+                                EffectClass::Reconcileable => {
+                                    "tool is Reconcileable; automatic retry is not defined"
+                                        .to_owned()
+                                }
+                                _ => "tool is not safe to retry automatically".to_owned(),
+                            });
+                        }
+                        if class_safe
+                            && tool.contract().requires_approval
+                            && !self.has_valid_approval(&record.id)
+                        {
+                            reason = Some("approval is no longer valid for this effect".to_owned());
+                            false
+                        } else {
+                            class_safe
+                        }
+                    }
+                },
+            };
+
+            if safe && record.intent_json.is_empty() {
+                reason = Some("effect has no recorded intent".to_owned());
+            }
+            let safe = safe && reason.is_none();
+
+            if safe {
+                record.note_reconciliation(match record.kind {
+                    EffectKind::ModelCall => "reconciliation: re-issuing the model call",
+                    EffectKind::ToolCall => "reconciliation: retrying a safe tool effect",
+                });
+                record.set_status(EffectStatus::Authorized);
+                journal
+                    .record(run_id, record)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                journal
+                    .enqueue_effect(run_id, record)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                retried.push(record.id.clone());
+            } else {
+                unresolved.push(UnresolvedEffect {
+                    effect_id: record.id.clone(),
+                    reason: reason.unwrap_or_else(|| "not retried".to_owned()),
+                });
+            }
+        }
+
+        if !retried.is_empty() {
+            OutboxDispatcher::run_once_for_run(
+                journal.journal(),
+                run_id,
+                retried.len(),
+                self.dispatcher.as_ref(),
+                self.effect_timeout,
+            )
+            .await
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        }
+
+        Ok(ReconciliationReport {
+            run_id: run_id.clone(),
+            retried,
+            unresolved,
+        })
+    }
+
+    fn has_valid_approval(&self, effect_id: &EffectId) -> bool {
+        let Some(journal) = &self.journal else {
+            return false;
+        };
+        match journal.approval_store().load_approval(effect_id) {
+            Ok(Some(record)) => {
+                record.decision == ApprovalDecision::Approved
+                    && record
+                        .expires_at_unix_ms
+                        .is_none_or(|expires| now_unix_ms() <= expires)
+            }
+            _ => false,
+        }
     }
 
     /// Drain due outbox rows across all Runs, reclaiming expired leases.

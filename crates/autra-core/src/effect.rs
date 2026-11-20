@@ -80,6 +80,9 @@ pub struct EffectRecord {
     pub attempts: Vec<EffectAttempt>,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// Reconciliation notes, kept separate from attempt errors.
+    #[serde(default)]
+    pub reconciliations: Vec<String>,
 }
 
 impl EffectRecord {
@@ -101,6 +104,7 @@ impl EffectRecord {
             attempts: Vec::new(),
             result: None,
             error: None,
+            reconciliations: Vec::new(),
         }
     }
 
@@ -111,6 +115,10 @@ impl EffectRecord {
 
     pub fn set_status(&mut self, status: EffectStatus) {
         self.status = status;
+    }
+
+    pub fn note_reconciliation(&mut self, reason: impl Into<String>) {
+        self.reconciliations.push(reason.into());
     }
 
     pub fn record_attempt(

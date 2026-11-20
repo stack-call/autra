@@ -6,7 +6,7 @@ use std::time::Duration;
 use autra_core::{AgentStepper, BudgetSnapshot, CancelFlag, HistoryItem, RunId};
 use autra_execution::{
     Approver, ChildExecutionContext, DurableTransitionStore, ModelProvider, ObserverHook,
-    PolicyChain, Tool, ToolPolicy, ToolRegistry,
+    PolicyChain, ReconciliationReport, Tool, ToolPolicy, ToolRegistry,
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, MiddlewareStepper, ModelMiddleware, ModelRequestTransform,
@@ -179,6 +179,19 @@ impl Agent {
         )
         .join()
         .await
+    }
+
+    /// Retry OutcomeUnknown effects whose class makes a retry safe.
+    pub async fn reconcile(&self, run_id: &RunId) -> Result<ReconciliationReport, RunError> {
+        self.engine.reconcile(run_id).await
+    }
+
+    pub async fn reconcile_with(
+        &self,
+        run_id: &RunId,
+        retry_models: bool,
+    ) -> Result<ReconciliationReport, RunError> {
+        self.engine.reconcile_with(run_id, retry_models).await
     }
 
     /// Drain due outbox rows across all Runs, reclaiming expired leases.

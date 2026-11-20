@@ -10,6 +10,7 @@ pub mod host;
 pub mod journal;
 pub mod model;
 pub mod policy;
+pub mod reconcile;
 pub mod run;
 pub mod sandbox;
 pub mod session;
@@ -26,6 +27,7 @@ pub use journal::{
 };
 pub use model::{MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider};
 pub use policy::{PolicyChain, PolicyDecision, PolicyRequest, ToolPolicy, baseline_decision};
+pub use reconcile::{ReconciliationReport, UnresolvedEffect};
 pub use run::{RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot, RunStatus};
 pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,

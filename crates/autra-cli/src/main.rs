@@ -31,6 +31,8 @@ async fn main() -> ExitCode {
         Some("resume") => resume_command(&args[1..]).await,
         Some("outbox") => outbox_command(&args[1..]).await,
         Some("snapshot") => snapshot_command(&args[1..]),
+        Some("effects") => effects_command(&args[1..]),
+        Some("reconcile") => reconcile_command(&args[1..]).await,
         Some("approve") => approval_command(&args[1..], ApprovalDecision::Approved),
         Some("reject") => approval_command(&args[1..], ApprovalDecision::Rejected),
         Some("demo") => demo_command().await,
@@ -52,6 +54,7 @@ struct Flags {
     session: Option<String>,
     policy: Option<String>,
     actor: Option<String>,
+    unknown_only: bool,
     rest: Vec<String>,
 }
 
@@ -304,6 +307,113 @@ fn string_list(value: &serde_json::Value, key: &str) -> Result<Vec<String>, Stri
     }
 }
 
+fn effects_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "effects") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    let Some(run_id) = flags.rest.first() else {
+        eprintln!("usage: autractl effects --journal <path> [--unknown] <run-id>");
+        return ExitCode::FAILURE;
+    };
+    let Some(path) = flags.journal.as_ref() else {
+        eprintln!("effects requires --journal <path>");
+        return ExitCode::FAILURE;
+    };
+    let journal = match SqliteEffectJournal::open(path) {
+        Ok(journal) => journal,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let run_id = RunId::new(run_id.clone());
+    let mut effects = match journal.load(&run_id) {
+        Ok(effects) => effects,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if flags.unknown_only {
+        effects.retain(|effect| effect.status == autra_core::EffectStatus::OutcomeUnknown);
+    }
+    if effects.is_empty() {
+        println!("no effects");
+        return ExitCode::SUCCESS;
+    }
+    for effect in effects {
+        let tool = effect.tool_name.as_deref().unwrap_or("-");
+        let error = effect
+            .error
+            .as_deref()
+            .map(|error| format!(" error={error}"))
+            .unwrap_or_default();
+        let reconciled = if effect.reconciliations.is_empty() {
+            String::new()
+        } else {
+            format!(" reconciled={}", effect.reconciliations.len())
+        };
+        println!(
+            "{} {:?} {} {:?} attempts={}{}{}",
+            effect.id,
+            effect.kind,
+            tool,
+            effect.status,
+            effect.attempts.len(),
+            error,
+            reconciled
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+async fn reconcile_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "reconcile") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    let Some(run_id) = flags.rest.first() else {
+        eprintln!(
+            "usage: autractl reconcile --journal <path> [--model <name>] [--workspace <dir>] <run-id>"
+        );
+        return ExitCode::FAILURE;
+    };
+    if flags.journal.is_none() {
+        eprintln!("reconcile requires --journal <path>");
+        return ExitCode::FAILURE;
+    }
+    let agent = match build_agent(&flags) {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let run_id = RunId::new(run_id.clone());
+    let retry_models = flags.model.is_some();
+    match agent.reconcile_with(&run_id, retry_models).await {
+        Ok(report) => {
+            println!(
+                "reconcile: retried {} effect(s), unresolved {}",
+                report.retried.len(),
+                report.unresolved.len()
+            );
+            for unresolved in &report.unresolved {
+                println!(
+                    "[unresolved] {}: {}",
+                    unresolved.effect_id, unresolved.reason
+                );
+            }
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("reconcile failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {
     let command = match decision {
         ApprovalDecision::Approved => "approve",
@@ -438,6 +548,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         session: None,
         policy: None,
         actor: None,
+        unknown_only: false,
         rest: Vec::new(),
     };
     let mut parsing_flags = true;
@@ -494,6 +605,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
                     return Err(());
                 }
             },
+            "--unknown" => flags.unknown_only = true,
             "--yes" | "-y" => flags.auto_approve = true,
             "--read-only" => flags.read_only = true,
             other => {
