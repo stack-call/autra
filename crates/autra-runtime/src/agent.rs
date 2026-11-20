@@ -20,6 +20,7 @@ use tracing::Instrument;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver, digest_intent};
 use crate::hooks::ObserverHook;
+use crate::journal::EffectJournal;
 use crate::subagent::{SubagentRegistry, SubagentTool};
 use thiserror::Error;
 
@@ -39,6 +40,8 @@ pub enum RunError {
     Failed(String),
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("journal error: {0}")]
+    Journal(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,6 +236,7 @@ pub struct Agent {
     context_builder: Option<Arc<dyn ContextBuilder>>,
     stepper: Option<Arc<dyn AgentStepper>>,
     observer: Option<Arc<dyn ObserverHook>>,
+    journal: Option<Arc<dyn EffectJournal>>,
 }
 
 impl Agent {
@@ -372,6 +376,13 @@ impl Agent {
                     tracing::info!(phase = ?state.phase, "agent run finished");
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
+                    }
+                    if let Some(journal) = &self.journal {
+                        for effect in &effects {
+                            journal
+                                .record(&run_id, effect)
+                                .map_err(|error| RunError::Journal(error.to_string()))?;
+                        }
                     }
                     return Ok(RunOutcome { state, effects });
                 }
@@ -670,6 +681,7 @@ pub struct AgentBuilder {
     context_builder: Option<Arc<dyn ContextBuilder>>,
     stepper: Option<Arc<dyn AgentStepper>>,
     observer: Option<Arc<dyn ObserverHook>>,
+    journal: Option<Arc<dyn EffectJournal>>,
 }
 
 impl AgentBuilder {
@@ -691,6 +703,7 @@ impl AgentBuilder {
             context_builder: None,
             stepper: None,
             observer: None,
+            journal: None,
         }
     }
 
@@ -777,6 +790,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn journal(mut self, journal: impl EffectJournal + 'static) -> Self {
+        self.journal = Some(Arc::new(journal));
+        self
+    }
+
     pub fn context_budget_chars(mut self, max_chars: usize) -> Self {
         self.context_budget_chars = Some(max_chars);
         self
@@ -824,6 +842,7 @@ Maintain a short plan with `update_plan` and keep it current."
             context_builder: self.context_builder,
             stepper: self.stepper,
             observer: self.observer,
+            journal: self.journal,
         })
     }
 }

@@ -1,0 +1,17 @@
+[package]
+name = "autra-durable-sqlite"
+description = "SQLite effect journal for Autra"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+autra-core = { path = "../autra-core" }
+autra-runtime = { path = "../autra-runtime" }
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde_json = "1"
+
+[dev-dependencies]
+autra-harness = { path = "../autra-harness" }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }

@@ -8,6 +8,7 @@ members = [
     "crates/autra-openai",
     "crates/autra-eval",
     "crates/autra-testkit",
+    "crates/autra-durable-sqlite",
 ]
 
 [workspace.package]
