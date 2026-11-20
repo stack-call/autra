@@ -7,6 +7,7 @@ members = [
     "crates/autra-cli",
     "crates/autra-openai",
     "crates/autra-eval",
+    "crates/autra-testkit",
 ]
 
 [workspace.package]

@@ -78,4 +78,4 @@ Every extension group should declare:
 | Sandbox adapter and lifecycle binding | The trait exists, but no backend is wired into execution |
 | Dependency and close ordering | Builder composition has no explicit lifecycle manager |
 | Protocol version negotiation | Extensions cannot yet declare compatibility with stored Runs |
-| Shared contract-test suite | Each extension is tested ad hoc |
+| Per-adapter behavioural tests | `autra-testkit` checks protocol basics; host/sandbox behaviour needs its own suite |

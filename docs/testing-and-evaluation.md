@@ -38,6 +38,8 @@ Tests observe public behaviour, not private helpers.
 11. **Tracing** (`autra-runtime`): the run-start event is captured with
     `tracing-test`.
 12. **Evaluation** (`autra-eval`): pass, fail and run-error reports.
+13. **Contract checks** (`autra-testkit`): built-in Tool, Model, Stepper and Host
+    pass protocol checks.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

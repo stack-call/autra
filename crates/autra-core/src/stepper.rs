@@ -4,6 +4,8 @@ use crate::effect::EffectIntent;
 use crate::event::AcceptedEvent;
 use crate::state::AgentState;
 
+pub const STEPPER_PROTOCOL_VERSION: u32 = 1;
+
 /// Sans-I/O state machine for one agent behaviour.
 pub trait AgentStepper: Send + Sync {
     fn transition(
@@ -11,6 +13,10 @@ pub trait AgentStepper: Send + Sync {
         state: &AgentState,
         event: &AcceptedEvent,
     ) -> Result<Transition, StepError>;
+
+    fn protocol_version(&self) -> u32 {
+        STEPPER_PROTOCOL_VERSION
+    }
 }
 
 #[derive(Clone, Debug)]

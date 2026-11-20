@@ -1,0 +1,11 @@
+[package]
+name = "autra-testkit"
+description = "Shared contract checks for Autra extensions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+autra-core = { path = "../autra-core" }
+autra-harness = { path = "../autra-harness" }
+autra-runtime = { path = "../autra-runtime" }

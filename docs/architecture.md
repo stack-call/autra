@@ -74,6 +74,7 @@ core has no Tokio, database or sandbox dependency.
 | `autra-cli` | `autractl run`, `demo`, `tools`, help | MVP |
 | `autra-openai` | OpenAI-compatible chat completions provider | Implemented, non-streaming |
 | `autra-eval` | Task-level outcome evaluation | Implemented |
+| `autra-testkit` | Shared protocol contract checks | Implemented |
 
 ## Domain ownership vs code location
 

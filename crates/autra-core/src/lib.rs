@@ -18,4 +18,4 @@ pub use ids::{EffectId, RunId, SessionId, TurnId};
 pub use message::{HistoryItem, ModelOutput, ToolCallRequest, ToolOutcome, ToolSpec};
 pub use scope::{BudgetSnapshot, CancelFlag, ExecutionScope};
 pub use state::{AgentPhase, AgentState, EngineState};
-pub use stepper::{AgentStepper, Disposition, StepError, Transition};
+pub use stepper::{AgentStepper, Disposition, STEPPER_PROTOCOL_VERSION, StepError, Transition};
