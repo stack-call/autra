@@ -21,7 +21,7 @@ explicit effects, optional infrastructure.
 | `crates/autra-openai` | OpenAI-compatible model provider, non-streaming | — |
 | `crates/autra-eval` | Task-level outcome evaluation | §17.4 |
 | `crates/autra-testkit` | Shared protocol contract checks | §31.4 |
-| `crates/autra-durable-sqlite` | SQLite Run / Effect journal v0 | §15 |
+| `crates/autra-durable-sqlite` | SQLite Run / Event / Effect journal v0 | §15 |
 
 Dependency direction is enforced by Cargo: `autra-core` must not depend on
 Tokio, a database, a sandbox backend, or any harness/runtime crate.

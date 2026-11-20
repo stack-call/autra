@@ -356,6 +356,11 @@ impl Agent {
                 }
             };
             let (intents, disposition) = accept_local(&mut state, transition);
+            if let Some(journal) = &self.journal {
+                journal
+                    .commit_event(&run_id, &event, &state, &effects)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+            }
 
             if let EventKind::ModelResult(output) = &event.kind {
                 on_event(&RunEvent::ModelResult {

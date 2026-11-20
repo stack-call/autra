@@ -1,3 +1,4 @@
+use autra_core::EventKind;
 use autra_harness::EchoModel;
 use autra_runtime::{Agent, EffectJournal, MemoryJournal};
 
@@ -19,4 +20,7 @@ async fn a_run_persists_its_effect_records() {
     );
     assert_eq!(stored, outcome.effects());
     assert_eq!(stored.len(), 1);
+    let events = journal.load_events(&outcome.state().run_id).unwrap();
+    assert!(!events.is_empty());
+    assert!(matches!(events[0].kind, EventKind::RunStarted { .. }));
 }

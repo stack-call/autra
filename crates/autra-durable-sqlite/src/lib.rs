@@ -1,10 +1,10 @@
-//! SQLite-backed EffectJournal. This v0 persists EffectRecords only; Run
-//! state, run events, the outbox and recovery are future work.
+//! SQLite-backed EffectJournal. This v0 persists Run snapshots, EffectRecords
+//! and accepted events; outbox dispatch, resume and reconciliation are future work.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use autra_core::{AgentState, EffectRecord, RunId};
+use autra_core::{AcceptedEvent, AgentState, EffectRecord, RunId};
 use autra_runtime::{EffectJournal, JournalError};
 use rusqlite::{Connection, params};
 
@@ -29,6 +29,13 @@ impl SqliteEffectJournal {
                     run_id TEXT PRIMARY KEY,
                     state_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS run_events (
+                    run_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    event_json TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (run_id, seq)
                 );",
             )
             .map_err(|error| JournalError::new(format!("cannot migrate journal: {error}")))?;
@@ -125,5 +132,82 @@ impl EffectJournal for SqliteEffectJournal {
             effects.push(effect);
         }
         Ok(effects)
+    }
+
+    fn commit_event(
+        &self,
+        run_id: &RunId,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        effects: &[EffectRecord],
+    ) -> Result<(), JournalError> {
+        let event_payload = serde_json::to_string(event)
+            .map_err(|error| JournalError::new(format!("cannot serialize event: {error}")))?;
+        let state_payload = serde_json::to_string(state)
+            .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let transaction = connection.transaction().map_err(|error| {
+            JournalError::new(format!("cannot begin journal transaction: {error}"))
+        })?;
+        transaction
+            .execute(
+                "INSERT INTO runs (run_id, state_json) VALUES (?1, ?2)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                   state_json = excluded.state_json,
+                   updated_at = CURRENT_TIMESTAMP",
+                params![state.run_id.as_str(), state_payload],
+            )
+            .map_err(|error| JournalError::new(format!("cannot save run: {error}")))?;
+        transaction
+            .execute(
+                "INSERT OR REPLACE INTO run_events (run_id, seq, event_json)
+                 VALUES (?1, ?2, ?3)",
+                params![run_id.as_str(), event.seq as i64, event_payload],
+            )
+            .map_err(|error| JournalError::new(format!("cannot record event: {error}")))?;
+        for effect in effects {
+            let payload = serde_json::to_string(effect)
+                .map_err(|error| JournalError::new(format!("cannot serialize effect: {error}")))?;
+            transaction
+                .execute(
+                    "INSERT INTO effects (effect_id, run_id, payload_json)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(effect_id) DO UPDATE SET
+                       run_id = excluded.run_id,
+                       payload_json = excluded.payload_json,
+                       updated_at = CURRENT_TIMESTAMP",
+                    params![effect.id.as_str(), run_id.as_str(), payload],
+                )
+                .map_err(|error| JournalError::new(format!("cannot record effect: {error}")))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| JournalError::new(format!("cannot commit journal: {error}")))?;
+        Ok(())
+    }
+
+    fn load_events(&self, run_id: &RunId) -> Result<Vec<AcceptedEvent>, JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let mut statement = connection
+            .prepare("SELECT event_json FROM run_events WHERE run_id = ?1 ORDER BY seq")
+            .map_err(|error| JournalError::new(format!("cannot read events: {error}")))?;
+        let rows = statement
+            .query_map(params![run_id.as_str()], |row| row.get::<_, String>(0))
+            .map_err(|error| JournalError::new(format!("cannot read events: {error}")))?;
+        let mut events = Vec::new();
+        for row in rows {
+            let payload =
+                row.map_err(|error| JournalError::new(format!("cannot read event: {error}")))?;
+            let event = serde_json::from_str(&payload)
+                .map_err(|error| JournalError::new(format!("cannot deserialize event: {error}")))?;
+            events.push(event);
+        }
+        Ok(events)
     }
 }

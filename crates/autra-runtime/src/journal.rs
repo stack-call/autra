@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use autra_core::{AgentState, EffectRecord, RunId};
+use autra_core::{AcceptedEvent, AgentState, EffectRecord, RunId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -29,6 +29,24 @@ pub trait EffectJournal: Send + Sync {
     fn load_run(&self, _run_id: &RunId) -> Result<Option<AgentState>, JournalError> {
         Ok(None)
     }
+
+    fn commit_event(
+        &self,
+        run_id: &RunId,
+        _event: &AcceptedEvent,
+        state: &AgentState,
+        effects: &[EffectRecord],
+    ) -> Result<(), JournalError> {
+        self.save_run(state)?;
+        for effect in effects {
+            self.record(run_id, effect)?;
+        }
+        Ok(())
+    }
+
+    fn load_events(&self, _run_id: &RunId) -> Result<Vec<AcceptedEvent>, JournalError> {
+        Ok(Vec::new())
+    }
 }
 
 /// In-process journal for tests and local runs.
@@ -36,6 +54,7 @@ pub trait EffectJournal: Send + Sync {
 pub struct MemoryJournal {
     records: Arc<Mutex<BTreeMap<RunId, Vec<EffectRecord>>>>,
     runs: Arc<Mutex<BTreeMap<RunId, AgentState>>>,
+    events: Arc<Mutex<BTreeMap<RunId, Vec<AcceptedEvent>>>>,
 }
 
 impl MemoryJournal {
@@ -71,6 +90,35 @@ impl EffectJournal for MemoryJournal {
             .expect("journal lock poisoned")
             .get(run_id)
             .cloned())
+    }
+
+    fn commit_event(
+        &self,
+        run_id: &RunId,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        effects: &[EffectRecord],
+    ) -> Result<(), JournalError> {
+        self.save_run(state)?;
+        for effect in effects {
+            self.record(run_id, effect)?;
+        }
+        let mut events = self.events.lock().expect("journal lock poisoned");
+        let entry = events.entry(run_id.clone()).or_default();
+        if !entry.iter().any(|accepted| accepted.seq == event.seq) {
+            entry.push(event.clone());
+        }
+        Ok(())
+    }
+
+    fn load_events(&self, run_id: &RunId) -> Result<Vec<AcceptedEvent>, JournalError> {
+        Ok(self
+            .events
+            .lock()
+            .expect("journal lock poisoned")
+            .get(run_id)
+            .cloned()
+            .unwrap_or_default())
     }
 
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError> {

@@ -1,4 +1,4 @@
-use autra_core::{EffectId, EffectKind, EffectRecord, RunId};
+use autra_core::{EffectId, EffectKind, EffectRecord, EventKind, RunId};
 use autra_durable_sqlite::SqliteEffectJournal;
 use autra_harness::EchoModel;
 use autra_runtime::{Agent, EffectJournal};
@@ -49,4 +49,7 @@ async fn an_agent_run_persists_effects_across_reopen() {
         reopened.load_run(&outcome.state().run_id).unwrap().as_ref(),
         Some(outcome.state())
     );
+    let events = reopened.load_events(&outcome.state().run_id).unwrap();
+    assert!(!events.is_empty());
+    assert!(matches!(events[0].kind, EventKind::RunStarted { .. }));
 }

@@ -66,10 +66,10 @@ execution state is committed.
 
 ## Current limitation
 
-`autra-durable-sqlite` v0 persists the final Run snapshot and its EffectRecords and
-loads both across reopen; `AgentBuilder::journal` writes them at run completion. It
-does not persist run events, approvals, an outbox or checkpoints, and it cannot
-resume a crashed Run. A timed-out tool is marked `outcome_unknown`, but there is
+`autra-durable-sqlite` v0 persists the Run snapshot, EffectRecords and accepted
+events; each accepted event commits state, event and effects in one journal
+transaction. It does not persist approvals, an outbox or checkpoints beyond the
+snapshot, and it cannot resume a crashed Run. A timed-out tool is marked `outcome_unknown`, but there is
 no reconciliation pass. Do not infer full durable recovery from the journal.
 
 See [`ADR-0003`](adr/0003-default-local-host.md) and
