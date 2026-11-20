@@ -545,6 +545,10 @@ Effect 生命周期分为三层：
 
 Intent 可分为 External（`CallModel`、`CallTool`）与 Control（`SpawnChild`、`WaitForSignal`）。
 当前实现只有 `CallModel`/`CallTool`；Control 分类在 runtime ChildRun/Wait 出现时再引入。
+
+当前实现：Local coordinator 在每个 Run 内维护内存 `EffectRecord`/`EffectAttempt` ledger；
+`RunOutcome::effects()` 暴露稳定 `EffectId`、状态、`intent_digest` 与 attempts；审批绑定
+`effect_id`。Durable journal、恢复与 reconciliation 仍待实现。
 审批是 Coordinator 依据 Tool Contract/Policy 做出的执行策略，不是模型主动请求；
 模型只能提出 `CallTool`，不能自我授权。
 

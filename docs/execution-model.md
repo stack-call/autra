@@ -38,9 +38,10 @@ A trace or token stream cannot rebuild business state.
 | `EffectRecord` | The logical operation the host accepted, with a stable id |
 | `EffectAttempt` | One physical attempt to execute the operation |
 
-The current implementation has intents and outcomes but no EffectRecord/Attempt
-ledger. Timeout is already `outcome_unknown`; a durable host will add stable ids,
-reconciliation and attempt history. See §6.6 of the design spec.
+LocalEphemeral now records an in-memory EffectRecord/EffectAttempt ledger per Run:
+stable `EffectId`, status lifecycle, intent digest and attempts. `RunOutcome::effects()`
+exposes it. The ledger is not durable; a durable host will persist it and add
+reconciliation. See §6.6 of the design spec.
 
 ## RunState ownership
 

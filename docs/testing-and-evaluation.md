@@ -42,6 +42,8 @@ Tests observe public behaviour, not private helpers.
     pass protocol checks.
 14. **Observer hooks** (`autra-runtime`): a recording hook sees run, model,
     effect and finish stages.
+15. **Effect ledger** (`autra-runtime`): model/tool records, committed, failed,
+    rejected and outcome-unknown attempts.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

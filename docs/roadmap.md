@@ -48,6 +48,7 @@ MCP Client is an M3 experience item; MCP Gateway/Server stays in M8.
 - Restricted subagents as named child Agents behind `spawn_subagent`.
 - `tracing` spans for Sessions, Runs, model calls and tool calls.
 - Basic outcome evaluation in `autra-eval`.
+- In-memory EffectRecord/EffectAttempt ledger with stable EffectId and approval binding.
 - Budgets, cooperative cancellation, optional Effect timeouts.
 - Deterministic tests at the Agent, Stepper, Tool and snapshot seams.
 - An OpenAI-compatible non-streaming provider crate.

@@ -1,11 +1,12 @@
 use async_trait::async_trait;
-use autra_core::{RunId, ToolCallRequest};
+use autra_core::{EffectId, EffectIntent, RunId, ToolCallRequest};
 use sha2::{Digest, Sha256};
 
 pub const LOCAL_POLICY_REVISION: &str = "local-v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalRequest {
+    pub effect_id: EffectId,
     pub run_id: String,
     pub call_id: String,
     pub tool_name: String,
@@ -15,8 +16,9 @@ pub struct ApprovalRequest {
 }
 
 impl ApprovalRequest {
-    pub fn new(run_id: &RunId, call: &ToolCallRequest) -> Self {
+    pub fn new(run_id: &RunId, effect_id: &EffectId, call: &ToolCallRequest) -> Self {
         Self {
+            effect_id: effect_id.clone(),
             run_id: run_id.to_string(),
             call_id: call.call_id.clone(),
             tool_name: call.name.clone(),
@@ -48,6 +50,12 @@ pub trait Approver: Send + Sync {
 pub enum ApprovalDecision {
     Approved,
     Rejected,
+}
+
+pub(crate) fn digest_intent(intent: &EffectIntent) -> String {
+    let bytes = serde_json::to_vec(intent).unwrap_or_default();
+    let digest = Sha256::digest(&bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]

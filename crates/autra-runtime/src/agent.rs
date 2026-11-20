@@ -5,9 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use autra_core::{
-    AcceptedEvent, AgentPhase, AgentState, AgentStepper, BudgetSnapshot, CancelFlag, Disposition,
-    EffectIntent, EventKind, HistoryItem, RunId, SessionId, StepError, ToolCallRequest,
-    ToolOutcome, TurnId,
+    AcceptedEvent, AgentPhase, AgentState, AgentStepper, AttemptStatus, BudgetSnapshot, CancelFlag,
+    Disposition, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, EventKind,
+    HistoryItem, ModelCallSpec, RunId, SessionId, StepError, ToolCallRequest, ToolOutcome, TurnId,
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
@@ -17,7 +17,7 @@ use autra_harness::{
 use futures_util::FutureExt;
 use tracing::Instrument;
 
-use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
+use crate::approval::{ApprovalDecision, ApprovalRequest, Approver, digest_intent};
 use crate::hooks::ObserverHook;
 use crate::subagent::{SubagentRegistry, SubagentTool};
 use thiserror::Error;
@@ -100,11 +100,16 @@ pub enum RunEvent {
 #[derive(Clone, Debug)]
 pub struct RunOutcome {
     state: AgentState,
+    effects: Vec<EffectRecord>,
 }
 
 impl RunOutcome {
     pub fn state(&self) -> &AgentState {
         &self.state
+    }
+
+    pub fn effects(&self) -> &[EffectRecord] {
+        &self.effects
     }
 
     pub fn answer(&self) -> Option<&str> {
@@ -135,6 +140,7 @@ struct BatchSink<'a, F> {
     cancel_queued: &'a mut bool,
     run_id: &'a RunId,
     approver: Option<&'a Arc<dyn Approver>>,
+    effects: &'a mut Vec<EffectRecord>,
 }
 
 impl<'a, F> BatchSink<'a, F>
@@ -166,6 +172,47 @@ where
 
     fn cancel(&mut self) {
         queue_cancel(&mut *self.queue, &mut *self.seq, &mut *self.cancel_queued);
+    }
+
+    fn effect_mut(&mut self, effect_id: &EffectId) -> &mut EffectRecord {
+        self.effects
+            .iter_mut()
+            .find(|record| &record.id == effect_id)
+            .expect("effect record must exist")
+    }
+
+    fn record_tool_outcome(
+        &mut self,
+        effect_id: &EffectId,
+        known_tool: bool,
+        outcome: &ToolOutcome,
+    ) {
+        if outcome.outcome_unknown {
+            let record = self.effect_mut(effect_id);
+            record.set_status(EffectStatus::OutcomeUnknown);
+            record.record_attempt(
+                AttemptStatus::OutcomeUnknown,
+                Some(outcome.content.clone()),
+                None,
+            );
+        } else if !known_tool {
+            let record = self.effect_mut(effect_id);
+            record.set_status(EffectStatus::Failed);
+            record.record_attempt(AttemptStatus::Failed, None, Some(outcome.content.clone()));
+        } else {
+            let error = if outcome.is_error {
+                Some(outcome.content.clone())
+            } else {
+                None
+            };
+            let record = self.effect_mut(effect_id);
+            record.set_status(EffectStatus::Committed);
+            record.record_attempt(
+                AttemptStatus::Succeeded,
+                Some(outcome.content.clone()),
+                error,
+            );
+        }
     }
 }
 
@@ -242,6 +289,7 @@ impl Agent {
         state.history = history.to_vec();
         state.session_id = options.session_id.clone();
         state.turn_id = options.turn_id.clone();
+        let mut effects: Vec<EffectRecord> = Vec::new();
         let stepper: Arc<dyn AgentStepper> = match &self.stepper {
             Some(stepper) => stepper.clone(),
             None => {
@@ -324,7 +372,7 @@ impl Agent {
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
                     }
-                    return Ok(RunOutcome { state });
+                    return Ok(RunOutcome { state, effects });
                 }
                 Disposition::Failed => {
                     let message = state
@@ -353,12 +401,31 @@ impl Agent {
                     observer.on_effect_accepted(&run_id, intent);
                 }
             }
-            let mut tool_calls = Vec::new();
-            let mut model_requests = Vec::new();
+            let mut tool_calls: Vec<(EffectId, ToolCallRequest)> = Vec::new();
+            let mut model_requests: Vec<(EffectId, ModelCallSpec)> = Vec::new();
             for intent in transition.intents {
+                let effect_id = EffectId::fresh();
+                let digest = digest_intent(&intent);
+                let record = match &intent {
+                    EffectIntent::CallModel(_) => EffectRecord::new(
+                        effect_id.clone(),
+                        EffectKind::ModelCall,
+                        None,
+                        None,
+                        digest,
+                    ),
+                    EffectIntent::CallTool(spec) => EffectRecord::new(
+                        effect_id.clone(),
+                        EffectKind::ToolCall,
+                        Some(spec.call.name.clone()),
+                        Some(spec.call.call_id.clone()),
+                        digest,
+                    ),
+                };
+                effects.push(record);
                 match intent {
-                    EffectIntent::CallTool(spec) => tool_calls.push(spec.call),
-                    EffectIntent::CallModel(request) => model_requests.push(request),
+                    EffectIntent::CallTool(spec) => tool_calls.push((effect_id, spec.call)),
+                    EffectIntent::CallModel(request) => model_requests.push((effect_id, request)),
                 }
             }
 
@@ -370,6 +437,7 @@ impl Agent {
                     cancel_queued: &mut cancel_queued,
                     run_id: &run_id,
                     approver: approver.as_ref(),
+                    effects: &mut effects,
                 };
                 self.execute_tool_batch(
                     tool_calls,
@@ -381,11 +449,15 @@ impl Agent {
                 .await?;
             }
 
-            for request in model_requests {
+            for (effect_id, request) in model_requests {
                 if options.cancel.is_cancelled() {
+                    effect_mut(&mut effects, &effect_id)
+                        .set_status(EffectStatus::CancelledBeforeDispatch);
                     queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
                     break;
                 }
+                effect_mut(&mut effects, &effect_id).set_status(EffectStatus::Authorized);
+                effect_mut(&mut effects, &effect_id).set_status(EffectStatus::Dispatched);
                 on_event(&RunEvent::ModelCallStarted {
                     turn: state.budget.turns_used,
                 });
@@ -405,9 +477,17 @@ impl Agent {
                         )),
                     };
                 let output = match output_result {
-                    Ok(output) => output,
+                    Ok(output) => {
+                        let record = effect_mut(&mut effects, &effect_id);
+                        record.set_status(EffectStatus::Committed);
+                        record.record_attempt(AttemptStatus::Succeeded, output.text.clone(), None);
+                        output
+                    }
                     Err(error) => {
                         let message = error.to_string();
+                        let record = effect_mut(&mut effects, &effect_id);
+                        record.set_status(EffectStatus::Failed);
+                        record.record_attempt(AttemptStatus::Failed, None, Some(message.clone()));
                         state.phase = AgentPhase::Failed;
                         state.last_error = Some(message.clone());
                         on_event(&RunEvent::RunFailed {
@@ -425,7 +505,7 @@ impl Agent {
     }
     async fn execute_tool_batch<F>(
         &self,
-        calls: Vec<ToolCallRequest>,
+        calls: Vec<(EffectId, ToolCallRequest)>,
         limit: u32,
         effect_timeout: Option<Duration>,
         cancel: &CancelFlag,
@@ -436,10 +516,10 @@ impl Agent {
     {
         let limit = limit.max(1) as usize;
         let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
-        let mut approved: Vec<Option<ToolCallRequest>> = vec![None; calls.len()];
+        let mut approved: Vec<Option<(EffectId, ToolCallRequest)>> = vec![None; calls.len()];
         let mut cancelled = false;
 
-        for (index, call) in calls.iter().enumerate() {
+        for (index, (effect_id, call)) in calls.iter().enumerate() {
             if cancel.is_cancelled() {
                 cancelled = true;
                 break;
@@ -450,7 +530,9 @@ impl Agent {
                 .map(|tool| tool.contract().requires_approval)
                 .unwrap_or(false);
             if requires_approval {
-                let request = ApprovalRequest::new(sink.run_id, call);
+                sink.effect_mut(effect_id)
+                    .set_status(EffectStatus::AwaitingApproval);
+                let request = ApprovalRequest::new(sink.run_id, effect_id, call);
                 sink.emit_stream(&RunEvent::ApprovalRequested {
                     call_id: request.call_id.clone(),
                     tool_name: request.tool_name.clone(),
@@ -467,21 +549,27 @@ impl Agent {
                 });
                 if !is_approved {
                     let outcome = rejected_outcome(call);
+                    let record = sink.effect_mut(effect_id);
+                    record.set_status(EffectStatus::Rejected);
+                    record.error = Some(outcome.content.clone());
                     sink.emit_tool_result(&outcome);
                     outcomes[index] = Some(outcome);
                     continue;
                 }
             }
-            approved[index] = Some(call.clone());
+            sink.effect_mut(effect_id)
+                .set_status(EffectStatus::Authorized);
+            approved[index] = Some((effect_id.clone(), call.clone()));
         }
 
-        let approved_calls: Vec<(usize, ToolCallRequest)> = approved
+        let approved_calls: Vec<(usize, EffectId, ToolCallRequest)> = approved
             .into_iter()
             .enumerate()
-            .filter_map(|(index, call)| call.map(|call| (index, call)))
+            .filter_map(|(index, call)| call.map(|(effect_id, call)| (index, effect_id, call)))
             .collect();
 
         if cancelled {
+            mark_cancelled_before_dispatch(sink);
             for outcome in outcomes.into_iter().flatten() {
                 sink.accept_outcome(outcome);
             }
@@ -490,11 +578,14 @@ impl Agent {
         }
 
         if limit == 1 || approved_calls.len() == 1 {
-            for (index, call) in approved_calls {
+            for (index, effect_id, call) in approved_calls {
                 if cancel.is_cancelled() {
                     cancelled = true;
                     break;
                 }
+                let known_tool = self.tools.get(&call.name).is_some();
+                sink.effect_mut(&effect_id)
+                    .set_status(EffectStatus::Dispatched);
                 sink.start_tool(&call);
                 let outcome = execute_tool(
                     self.tools.clone(),
@@ -503,33 +594,41 @@ impl Agent {
                     sink.run_id.clone(),
                 )
                 .await;
+                sink.record_tool_outcome(&effect_id, known_tool, &outcome);
                 sink.emit_tool_result(&outcome);
                 outcomes[index] = Some(outcome);
             }
         } else {
             for chunk in approved_calls.chunks(limit) {
                 let mut tasks = tokio::task::JoinSet::new();
-                for (index, call) in chunk {
+                for (index, effect_id, call) in chunk {
                     if cancel.is_cancelled() {
                         cancelled = true;
                         break;
                     }
+                    let known_tool = self.tools.get(&call.name).is_some();
+                    sink.effect_mut(effect_id)
+                        .set_status(EffectStatus::Dispatched);
                     sink.start_tool(call);
                     let index = *index;
+                    let effect_id = effect_id.clone();
                     let tools = self.tools.clone();
                     let call = call.clone();
                     let run_id = sink.run_id.clone();
                     tasks.spawn(async move {
                         (
                             index,
+                            effect_id,
+                            known_tool,
                             execute_tool(tools, call, effect_timeout, run_id).await,
                         )
                     });
                 }
                 while let Some(result) = tasks.join_next().await {
-                    let (index, outcome) = result.map_err(|error| {
+                    let (index, effect_id, known_tool, outcome) = result.map_err(|error| {
                         RunError::Protocol(format!("tool task failed: {error}"))
                     })?;
+                    sink.record_tool_outcome(&effect_id, known_tool, &outcome);
                     sink.emit_tool_result(&outcome);
                     outcomes[index] = Some(outcome);
                 }
@@ -540,6 +639,9 @@ impl Agent {
             }
         }
 
+        if cancelled || cancel.is_cancelled() {
+            mark_cancelled_before_dispatch(sink);
+        }
         for outcome in outcomes.into_iter().flatten() {
             sink.accept_outcome(outcome);
         }
@@ -819,5 +921,23 @@ fn rejected_outcome(call: &ToolCallRequest) -> ToolOutcome {
         content: "approval rejected; the tool was not executed".to_owned(),
         is_error: true,
         outcome_unknown: false,
+    }
+}
+
+fn effect_mut<'a>(effects: &'a mut [EffectRecord], effect_id: &EffectId) -> &'a mut EffectRecord {
+    effects
+        .iter_mut()
+        .find(|record| &record.id == effect_id)
+        .expect("effect record must exist")
+}
+
+fn mark_cancelled_before_dispatch<F: FnMut(&RunEvent)>(sink: &mut BatchSink<'_, F>) {
+    for record in sink.effects.iter_mut() {
+        if matches!(
+            record.status,
+            EffectStatus::Recorded | EffectStatus::AwaitingApproval | EffectStatus::Authorized
+        ) {
+            record.set_status(EffectStatus::CancelledBeforeDispatch);
+        }
     }
 }

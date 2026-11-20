@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::ids::EffectId;
 use crate::message::{HistoryItem, ToolCallRequest, ToolSpec};
 
 /// An execution intent produced by the stepper and executed by the host.
@@ -29,4 +30,100 @@ pub enum EffectClass {
     Reconcileable,
     NonIdempotent,
     Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectKind {
+    ModelCall,
+    ToolCall,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectStatus {
+    Recorded,
+    AwaitingApproval,
+    Authorized,
+    Dispatched,
+    Committed,
+    Failed,
+    Rejected,
+    OutcomeUnknown,
+    CancelledBeforeDispatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttemptStatus {
+    Succeeded,
+    Failed,
+    OutcomeUnknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectAttempt {
+    pub attempt: u32,
+    pub status: AttemptStatus,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Host-owned record of one accepted logical effect.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectRecord {
+    pub id: EffectId,
+    pub kind: EffectKind,
+    pub tool_name: Option<String>,
+    pub call_id: Option<String>,
+    pub status: EffectStatus,
+    pub intent_digest: String,
+    pub attempts: Vec<EffectAttempt>,
+    pub result: Option<String>,
+    pub error: Option<String>,
+}
+
+impl EffectRecord {
+    pub fn new(
+        id: EffectId,
+        kind: EffectKind,
+        tool_name: Option<String>,
+        call_id: Option<String>,
+        intent_digest: String,
+    ) -> Self {
+        Self {
+            id,
+            kind,
+            tool_name,
+            call_id,
+            status: EffectStatus::Recorded,
+            intent_digest,
+            attempts: Vec::new(),
+            result: None,
+            error: None,
+        }
+    }
+
+    pub fn set_status(&mut self, status: EffectStatus) {
+        self.status = status;
+    }
+
+    pub fn record_attempt(
+        &mut self,
+        status: AttemptStatus,
+        result: Option<String>,
+        error: Option<String>,
+    ) -> u32 {
+        let attempt = self.attempts.len() as u32 + 1;
+        if result.is_some() {
+            self.result = result.clone();
+        }
+        if error.is_some() {
+            self.error = error.clone();
+        }
+        self.attempts.push(EffectAttempt {
+            attempt,
+            status,
+            result,
+            error,
+        });
+        attempt
+    }
 }

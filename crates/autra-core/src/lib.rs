@@ -12,7 +12,10 @@ pub mod scope;
 pub mod state;
 pub mod stepper;
 
-pub use effect::{EffectClass, EffectIntent, ModelCallSpec, ToolCallSpec};
+pub use effect::{
+    AttemptStatus, EffectAttempt, EffectClass, EffectIntent, EffectKind, EffectRecord,
+    EffectStatus, ModelCallSpec, ToolCallSpec,
+};
 pub use event::{AcceptedEvent, EventKind};
 pub use ids::{EffectId, RunId, SessionId, TurnId};
 pub use message::{HistoryItem, ModelOutput, ToolCallRequest, ToolOutcome, ToolSpec};
