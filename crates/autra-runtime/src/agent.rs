@@ -9,7 +9,10 @@ use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, BudgetSnapshot, CancelFlag, Disposition, EffectIntent,
     EventKind, HistoryItem, RunId, StepError, ToolCallRequest, ToolOutcome,
 };
-use autra_harness::{ModelError, ModelProvider, ReActStepper, Tool, ToolRegistry};
+use autra_harness::{
+    LoadSkillTool, ModelError, ModelProvider, ReActStepper, SimpleContextBuilder, Skill,
+    SkillRegistry, Tool, ToolRegistry,
+};
 use futures_util::FutureExt;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
@@ -170,6 +173,8 @@ pub struct Agent {
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
     approver: Option<Arc<dyn Approver>>,
+    skills: SkillRegistry,
+    context_budget_chars: Option<usize>,
 }
 
 impl Agent {
@@ -214,7 +219,12 @@ impl Agent {
             BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
         );
         state.history = history.to_vec();
-        let stepper = ReActStepper::new(self.instructions.clone(), self.tools.specs());
+        let mut context_builder = SimpleContextBuilder::new(self.skills.index());
+        if let Some(max_chars) = self.context_budget_chars {
+            context_builder = context_builder.with_max_chars(max_chars);
+        }
+        let stepper = ReActStepper::new(self.instructions.clone(), self.tools.specs())
+            .with_context_builder(context_builder);
         let effect_timeout = options.effect_timeout.or(self.effect_timeout);
         let parallel_limit = options
             .max_parallel_tool_calls
@@ -480,6 +490,8 @@ pub struct AgentBuilder {
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
     approver: Option<Arc<dyn Approver>>,
+    skills: SkillRegistry,
+    context_budget_chars: Option<usize>,
 }
 
 impl AgentBuilder {
@@ -494,6 +506,8 @@ impl AgentBuilder {
             max_tool_calls: 8,
             max_parallel_tool_calls: 1,
             approver: None,
+            skills: SkillRegistry::new(),
+            context_budget_chars: None,
         }
     }
 
@@ -542,20 +556,36 @@ impl AgentBuilder {
         self
     }
 
+    pub fn skill(mut self, skill: Skill) -> Self {
+        self.skills.register(skill);
+        self
+    }
+
+    pub fn context_budget_chars(mut self, max_chars: usize) -> Self {
+        self.context_budget_chars = Some(max_chars);
+        self
+    }
+
     pub fn build(self) -> Result<Agent, BuildError> {
         let model = self.model.ok_or_else(|| BuildError::MissingModel {
             name: self.name.clone(),
         })?;
+        let mut tools = self.tools;
+        if !self.skills.is_empty() {
+            tools.register(LoadSkillTool::new(Arc::new(self.skills.clone())));
+        }
         Ok(Agent {
             name: self.name,
             instructions: self.instructions,
             model,
-            tools: self.tools,
+            tools,
             effect_timeout: self.effect_timeout,
             max_turns: self.max_turns,
             max_tool_calls: self.max_tool_calls,
             max_parallel_tool_calls: self.max_parallel_tool_calls,
             approver: self.approver,
+            skills: self.skills,
+            context_budget_chars: self.context_budget_chars,
         })
     }
 }

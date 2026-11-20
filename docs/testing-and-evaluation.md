@@ -28,6 +28,8 @@ Tests observe public behaviour, not private helpers.
    mixed-batch cases, plus the argument-digest unit test.
 7. **Session** (`autra-runtime`): history seeding into turn two, distinct
    session ids, cancelled-turn history and failed-turn isolation.
+8. **Context and Skills** (`autra-harness`): context assembly, budget
+   truncation with preserved items and an end-to-end `load_skill` call.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

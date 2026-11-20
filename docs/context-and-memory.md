@@ -12,15 +12,19 @@ The Context View is not a journal. Compacting it never changes execution facts.
 
 ## Current Context View
 
-`ReActStepper` builds a `ModelCallSpec` from:
+`ReActStepper` delegates to a `ContextBuilder`. The default
+`SimpleContextBuilder` assembles:
 
-- the Agent's system instructions;
+- the Agent system instructions and available skill index;
 - the accepted history: user, assistant (text and tool calls) and tool
   outcomes;
 - the registered tool specs.
 
-There is no compaction, retrieval, skill loading or long-term memory yet. That
-is honest for MVP v1: the history is the context.
+A character budget (`context_budget_chars`) truncates oversized Tool and
+Assistant content with a marker. It never removes an item, a tool call id or a
+tool outcome; it is a character proxy, not a tokenizer. Skills are loaded
+through `load_skill`, which does not grant permissions. There is no retrieval
+memory yet.
 
 ## Planned layers
 

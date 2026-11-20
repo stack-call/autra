@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EffectIntent, EventKind,
@@ -6,10 +7,13 @@ use autra_core::{
     Transition,
 };
 
+use crate::context::{ContextBuilder, ContextRequest, SimpleContextBuilder};
+
 /// The default ReAct engine: model call, tool batch, then final answer.
 pub struct ReActStepper {
     instructions: Option<String>,
     tools: Vec<ToolSpec>,
+    context_builder: Arc<dyn ContextBuilder>,
 }
 
 impl ReActStepper {
@@ -17,15 +21,23 @@ impl ReActStepper {
         Self {
             instructions,
             tools,
+            context_builder: Arc::new(SimpleContextBuilder::default()),
         }
     }
 
-    fn model_request(&self, state: &AgentState) -> ModelCallSpec {
-        ModelCallSpec {
-            system: self.instructions.clone(),
-            messages: state.history.clone(),
-            tools: self.tools.clone(),
-        }
+    pub fn with_context_builder(mut self, builder: impl ContextBuilder + 'static) -> Self {
+        self.context_builder = Arc::new(builder);
+        self
+    }
+
+    fn model_request(&self, state: &AgentState) -> Result<ModelCallSpec, StepError> {
+        self.context_builder
+            .build(ContextRequest {
+                instructions: self.instructions.as_deref(),
+                history: &state.history,
+                tools: &self.tools,
+            })
+            .map_err(|error| StepError::new(error.to_string()))
     }
 
     fn failed(mut state: AgentState, message: impl Into<String>) -> Transition {
@@ -147,7 +159,7 @@ impl ReActStepper {
         }
         next.budget.turns_used += 1;
         next.phase = AgentPhase::AwaitingModel;
-        let request = self.model_request(&next);
+        let request = self.model_request(&next)?;
         Ok(Transition {
             next,
             intents: vec![EffectIntent::CallModel(request)],
@@ -172,7 +184,7 @@ impl AgentStepper for ReActStepper {
                 }
                 next.budget.turns_used += 1;
                 next.phase = AgentPhase::AwaitingModel;
-                let request = self.model_request(&next);
+                let request = self.model_request(&next)?;
                 Ok(Transition {
                     next,
                     intents: vec![EffectIntent::CallModel(request)],

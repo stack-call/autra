@@ -58,6 +58,8 @@ message with its tool calls, then one Tool history item per outcome.
   emits `RunFailed` and returns a typed `RunError`.
 - **Tool call**: an unknown tool, malformed arguments or tool error becomes an
   `is_error` ToolOutcome and is fed back to the model.
+- **Context**: a `ContextBuilder` assembles instructions, history, tools and
+  the skill index. An optional character budget truncates content only.
 - **Sessions**: an in-memory `Session` seeds accepted history into each turn
   and runs turns sequentially with `&mut self`. Each turn is a fresh Run.
 - **Approval**: a tool may declare `requires_approval`; the coordinator resolves
