@@ -68,6 +68,16 @@ pub trait EffectJournal: Send + Sync {
         Ok(Vec::new())
     }
 
+    fn claim_due_effects_for_run(
+        &self,
+        run_id: &RunId,
+        limit: usize,
+        claim_id: &str,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        let _ = run_id;
+        self.claim_due_effects(limit, claim_id)
+    }
+
     fn complete_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {
         Ok(())
     }
@@ -185,6 +195,25 @@ impl EffectJournal for MemoryJournal {
         let mut outbox = self.outbox.lock().expect("journal lock poisoned");
         let mut claimed = Vec::new();
         for entry in outbox.values_mut().take(limit) {
+            entry.attempts += 1;
+            claimed.push(entry.clone());
+        }
+        Ok(claimed)
+    }
+
+    fn claim_due_effects_for_run(
+        &self,
+        run_id: &RunId,
+        limit: usize,
+        _claim_id: &str,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        let mut outbox = self.outbox.lock().expect("journal lock poisoned");
+        let mut claimed = Vec::new();
+        for entry in outbox
+            .values_mut()
+            .filter(|entry| &entry.run_id == run_id)
+            .take(limit)
+        {
             entry.attempts += 1;
             claimed.push(entry.clone());
         }

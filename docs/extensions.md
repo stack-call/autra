@@ -17,7 +17,7 @@ adapters. It is not a dynamic plugin platform.
 |---|---|---|
 | Intelligence | `AgentStepper`, `ContextBuilder`, Planner, Memory, `SkillRegistry` | Engine, Context and Skills implemented; Planner and Memory pending |
 | Capability | `Tool`, `ModelProvider`, MCP | Tool and Provider implemented; MCP pending |
-| Execution | Execution Host, `Dispatcher`, `SandboxBackend`, Workspace | Host/Sandbox and Dispatcher contracts defined; LocalDispatcher and SQLite journal; outbox claim loop pending |
+| Execution | Execution Host, `Dispatcher`, `SandboxBackend`, Workspace | Host/Sandbox and Dispatcher contracts defined; LocalDispatcher, SQLite journal and a claim-driven outbox loop |
 | Observation | Hooks, `tracing`, `autra-eval` | tracing, evaluation and `ObserverHook` implemented; Behavior/Policy hooks pending |
 
 ## Current extension points
