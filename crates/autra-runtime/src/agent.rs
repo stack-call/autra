@@ -16,6 +16,7 @@ use autra_harness::{
 use futures_util::FutureExt;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
+use crate::subagent::{SubagentRegistry, SubagentTool};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -500,6 +501,7 @@ pub struct AgentBuilder {
     skills: SkillRegistry,
     context_budget_chars: Option<usize>,
     planning: bool,
+    subagents: SubagentRegistry,
 }
 
 impl AgentBuilder {
@@ -517,6 +519,7 @@ impl AgentBuilder {
             skills: SkillRegistry::new(),
             context_budget_chars: None,
             planning: false,
+            subagents: SubagentRegistry::new(),
         }
     }
 
@@ -570,6 +573,16 @@ impl AgentBuilder {
         self
     }
 
+    pub fn subagent(
+        mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        agent: Agent,
+    ) -> Self {
+        self.subagents.register(name, description, agent);
+        self
+    }
+
     pub fn planning(mut self) -> Self {
         self.planning = true;
         self
@@ -587,6 +600,9 @@ impl AgentBuilder {
         let mut tools = self.tools;
         if !self.skills.is_empty() {
             tools.register(LoadSkillTool::new(Arc::new(self.skills.clone())));
+        }
+        if !self.subagents.is_empty() {
+            tools.register(SubagentTool::new(self.subagents.clone()));
         }
         let (instructions, plan) = if self.planning {
             let plan: SharedPlan = Arc::new(Mutex::new(Vec::new()));

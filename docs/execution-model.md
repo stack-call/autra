@@ -60,6 +60,8 @@ message with its tool calls, then one Tool history item per outcome.
   `is_error` ToolOutcome and is fed back to the model.
 - **Context**: a `ContextBuilder` assembles instructions, history, tools and
   the skill index. An optional character budget truncates content only.
+- **Subagents**: `spawn_subagent` runs a named child Agent with its own
+  definition and budgets; this is a tool-backed child, not a runtime ChildRun.
 - **Sessions**: an in-memory `Session` seeds accepted history into each turn
   and runs turns sequentially with `&mut self`. Each turn is a fresh Run.
 - **Approval**: a tool may declare `requires_approval`; the coordinator resolves

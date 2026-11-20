@@ -7,7 +7,7 @@ Structured concurrency is a framework feature, not a distributed scheduler.
 | Level | Supported now | Core? |
 |---|---|---|
 | Parallel tools within one Run | Bounded parallel batches, default 1 | Yes |
-| ChildRun / Subagent | Not yet | Yes |
+| ChildRun / Subagent | Tool-backed restricted subagents; runtime ChildRun pending | Yes |
 | Multiple local Sessions | Independent Agents; no scheduler | Basic |
 | Actor / WorkerPool / Kubernetes | Not yet; separate future component | No |
 
@@ -50,6 +50,14 @@ Structured concurrency is a framework feature, not a distributed scheduler.
 - A cancellation check must happen before each dispatch, not once per batch.
 - `max_parallel_tool_calls`, `max_child_runs`, `max_model_inflight` and
   `max_external_processes` are separate limits, not one global count.
+
+## Subagents today
+
+`spawn_subagent` runs a named child Agent with its own model, tools, approval
+configuration, context and budgets. The child Run is fresh and returns its
+answer as a ToolOutcome. There is no parent cancellation propagation, shared
+budget slice or Join policy yet; the parent cannot end a child, and a child
+that lacks its own budget limits can run to its configured maximum.
 
 ## ChildRun requirements
 
