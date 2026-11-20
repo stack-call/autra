@@ -30,6 +30,8 @@ Tests observe public behaviour, not private helpers.
    session ids, cancelled-turn history and failed-turn isolation.
 8. **Context and Skills** (`autra-harness`): context assembly, budget
    truncation with preserved items and an end-to-end `load_skill` call.
+9. **Planning** (`autra-runtime`): the update_plan tool, rendered statuses and
+   `Agent::plan()` after a Run.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

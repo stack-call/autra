@@ -23,8 +23,8 @@ The Context View is not a journal. Compacting it never changes execution facts.
 A character budget (`context_budget_chars`) truncates oversized Tool and
 Assistant content with a marker. It never removes an item, a tool call id or a
 tool outcome; it is a character proxy, not a tokenizer. Skills are loaded
-through `load_skill`, which does not grant permissions. There is no retrieval
-memory yet.
+through `load_skill`, which does not grant permissions. Planning is a separate tool-backed checklist: `update_plan` replaces an
+in-memory plan and `Agent::plan()` exposes it. There is no retrieval memory yet.
 
 ## Planned layers
 

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use autra_core::AgentStepper;
@@ -10,8 +10,8 @@ use autra_core::{
     EventKind, HistoryItem, RunId, StepError, ToolCallRequest, ToolOutcome,
 };
 use autra_harness::{
-    LoadSkillTool, ModelError, ModelProvider, ReActStepper, SimpleContextBuilder, Skill,
-    SkillRegistry, Tool, ToolRegistry,
+    LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
+    SimpleContextBuilder, Skill, SkillRegistry, Tool, ToolRegistry, UpdatePlanTool,
 };
 use futures_util::FutureExt;
 
@@ -175,6 +175,7 @@ pub struct Agent {
     approver: Option<Arc<dyn Approver>>,
     skills: SkillRegistry,
     context_budget_chars: Option<usize>,
+    plan: Option<SharedPlan>,
 }
 
 impl Agent {
@@ -184,6 +185,12 @@ impl Agent {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn plan(&self) -> Option<Vec<PlanItem>> {
+        self.plan
+            .as_ref()
+            .map(|plan| plan.lock().expect("plan lock poisoned").clone())
     }
 
     pub async fn run(&self, input: &str) -> Result<RunOutcome, RunError> {
@@ -492,6 +499,7 @@ pub struct AgentBuilder {
     approver: Option<Arc<dyn Approver>>,
     skills: SkillRegistry,
     context_budget_chars: Option<usize>,
+    planning: bool,
 }
 
 impl AgentBuilder {
@@ -508,6 +516,7 @@ impl AgentBuilder {
             approver: None,
             skills: SkillRegistry::new(),
             context_budget_chars: None,
+            planning: false,
         }
     }
 
@@ -561,6 +570,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn planning(mut self) -> Self {
+        self.planning = true;
+        self
+    }
+
     pub fn context_budget_chars(mut self, max_chars: usize) -> Self {
         self.context_budget_chars = Some(max_chars);
         self
@@ -574,9 +588,24 @@ impl AgentBuilder {
         if !self.skills.is_empty() {
             tools.register(LoadSkillTool::new(Arc::new(self.skills.clone())));
         }
+        let (instructions, plan) = if self.planning {
+            let plan: SharedPlan = Arc::new(Mutex::new(Vec::new()));
+            tools.register(UpdatePlanTool::new(plan.clone()));
+            let instructions = match self.instructions {
+                Some(instructions) => format!(
+                    "{instructions}
+
+Maintain a short plan with `update_plan` and keep it current."
+                ),
+                None => "Maintain a short plan with `update_plan` and keep it current.".to_owned(),
+            };
+            (Some(instructions), Some(plan))
+        } else {
+            (self.instructions, None)
+        };
         Ok(Agent {
             name: self.name,
-            instructions: self.instructions,
+            instructions,
             model,
             tools,
             effect_timeout: self.effect_timeout,
@@ -586,6 +615,7 @@ impl AgentBuilder {
             approver: self.approver,
             skills: self.skills,
             context_budget_chars: self.context_budget_chars,
+            plan,
         })
     }
 }

@@ -5,6 +5,7 @@
 
 pub mod context;
 pub mod model;
+pub mod planning;
 pub mod react;
 pub mod skills;
 pub mod tools;
@@ -14,6 +15,7 @@ pub use context::{
     ContextBuilder, ContextError, ContextRequest, SimpleContextBuilder, SkillSummary,
 };
 pub use model::{EchoModel, FakeModel, ModelError, ModelProvider};
+pub use planning::{PlanItem, PlanStatus, SharedPlan, UpdatePlanTool};
 pub use react::ReActStepper;
 pub use skills::{LoadSkillTool, Skill, SkillRegistry};
 pub use tools::{
