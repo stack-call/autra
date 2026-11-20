@@ -22,8 +22,10 @@ a model Effect is recorded. The draft cannot reach `AgentState`, the journal or
 a committed Effect, and the transform runs in the same path regardless of
 whether the engine is ReAct or custom.
 
-Consequences: logging, redaction, prompt fragments, tool visibility and model
-routing can be composed without touching Runtime. Middleware still cannot
+Consequences: logging, redaction, prompt fragments and tool visibility can be
+composed without touching Runtime. Selecting a model or tuning provider
+parameters would require extending `ModelRequestDraft`; it does not carry a
+model field yet. Middleware still cannot
 perform hidden external I/O; a transform that needs retrieval must produce a
 Context View through a controlled capability first. Wrap middleware around the
 real invocation (cache, retry, transport metrics) is not implemented yet; that

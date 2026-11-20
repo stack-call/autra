@@ -92,7 +92,7 @@ core has no Tokio, database or sandbox dependency.
 | `autra-runtime` | Local engine: coordinator, dispatch, outbox, resume, ChildRun, timeouts | Implemented |
 | `autra` | Product facade: Agent, AgentBuilder, Session, Subagent | Implemented |
 | `autra-cli` | `autractl run`, `demo`, `tools`, help | MVP |
-| `autra-openai` | OpenAI-compatible chat completions provider | Implemented, non-streaming |
+| `autra-openai` | OpenAI-compatible chat completions provider | Implemented, streaming and non-streaming |
 | `autra-eval` | Task-level outcome evaluation | Implemented |
 | `autra-testkit` | Shared protocol contract checks | Implemented |
 | `autra-durable-sqlite` | SQLite Run / Event / Effect journal v0 | Implemented |
@@ -108,7 +108,7 @@ not a required crate location.
 | Session | Session layer | `autra`; `SessionStore` contract in `autra-execution` |
 | Turn | Session layer | `autra-runtime` |
 | Run | Core + runtime | `autra-core` state; `autra-runtime` execution |
-| ChildRun | Core + runtime | tool-backed subagent; runtime ChildRun pending |
+| ChildRun | Core + runtime | Runtime ChildRun with parent identity, inherited cancellation and an independent budget; automatic parent budget settlement pending |
 | Effect | Core + host | `EffectIntent` in Core, outcome in Core, dispatch in runtime |
 | Context | Harness | `autra-harness` ContextBuilder |
 | Workspace | Core reference + adapter | `LocalWorkspace` in harness; sandbox pending |

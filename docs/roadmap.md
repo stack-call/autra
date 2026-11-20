@@ -51,17 +51,17 @@ MCP Client is an M3 experience item; MCP Gateway/Server stays in M8.
 - In-memory EffectRecord/EffectAttempt ledger with stable EffectId and approval binding.
 - Budgets, cooperative cancellation, optional Effect timeouts.
 - Deterministic tests at the Agent, Stepper, Tool and snapshot seams.
-- An OpenAI-compatible non-streaming provider crate.
+- An OpenAI-compatible provider crate with SSE streaming and non-streaming completions.
 - Extension seams: custom ContextBuilder/Stepper/Dispatcher, Tool descriptor/contract/context,
   ModelCapabilities, Host/Sandbox declarations, protocol checks and ObserverHook.
 - Documentation and ADR baseline.
 
 ## Next slices
 
-1. Automatic parent budget settlement for ChildRun and child event forwarding.
-2. SessionManager, TurnRecord and a SessionStore boundary.
+1. Automatic parent budget settlement and parent event forwarding for ChildRun.
+2. SessionManager and a multi-client session/snapshot protocol.
 3. Verified actor identity and a richer policy surface.
-4. Automatic `OutcomeUnknown` reconciliation for the outbox claim loop.
+4. Background recovery: a daemon for lease retry, reconciliation and resume.
 5. Memory retrieval, a network snapshot/subscribe protocol and a richer context policy.
 6. OpenShell adapter and replay fixtures.
 

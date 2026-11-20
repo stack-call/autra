@@ -8,7 +8,9 @@ child events were invisible, and `FailFast` dropped unjoined children.
 
 Child execution now has four explicit sharing mechanisms:
 
-- **Budget** — the engine creates a `BudgetHandle` for each tool batch.
+- **Budget** — superseded by ADR-0054: child budgets are independent and
+  capped, and the parent is not charged. The original text follows. The engine
+  creates a `BudgetHandle` for each tool batch.
   Tools receive it through `ToolContext`; `spawn_subagent` reserves four turns
   and four tool calls from the parent before starting the child. The engine
   writes the updated snapshot back to Run state after the batch. The whole

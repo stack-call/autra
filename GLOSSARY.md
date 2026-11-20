@@ -26,6 +26,11 @@ _Avoid_: Worker, task
 A Run created by a parent Run, constrained by the parent's scope and budget.
 _Avoid_: Subagent, subtask
 
+**Run Snapshot**:
+A point-in-time read model of a Run (phase, budget, answer, last event,
+effect count) for clients that cannot hold the state.
+_Avoid_: State dump, status
+
 **Stepper**:
 The Sans-I/O state machine that turns accepted events into the next execution
 intent.
@@ -62,6 +67,20 @@ Authorization for one specific effect, bound to its parameters, actor, policy
 revision and expiry.
 _Avoid_: Permission, consent
 
+**Approval Record**:
+A persisted approval decision for one effect, reusable only when the argument
+digest and policy revision match and it has not expired.
+_Avoid_: Permission, token
+
+**Policy**:
+A rule set that can only narrow the host baseline for a tool call; its
+decision is Allow, Ask or Deny.
+_Avoid_: Permission system, ACL
+
+**Reconciliation**:
+Retrying `OutcomeUnknown` effects only when their class makes a retry safe.
+_Avoid_: Retry, recovery
+
 **Workspace**:
 The file environment a tool operates on, identified separately from the Run's
 execution state.
@@ -77,6 +96,16 @@ _Avoid_: Message, input
 **Durable Event**:
 An accepted event recorded by a durable host as the basis for recovery.
 _Avoid_: Log entry, trace
+
+**Session Store**:
+Persistence for session turns and conversation history, separate from the
+execution journal.
+_Avoid_: Journal, conversation log
+
+**Turn Record**:
+The stored input, status, answer, error and accepted history for one Session
+turn.
+_Avoid_: Message, transcript
 
 **Stream Event**:
 A non-authoritative real-time event, such as a token delta or progress update,

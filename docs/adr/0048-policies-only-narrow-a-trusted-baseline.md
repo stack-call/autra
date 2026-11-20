@@ -31,8 +31,9 @@ error. Approval-required tools keep the old prompt path.
 Consequences: an `Unknown` tool cannot execute silently, a workspace can deny a
 tool or command even under `--yes`, and a plugin-provided rule returning `Allow`
 cannot lower the host baseline. Deny patterns are a coarse guard, not a
-sandbox. Approval expiry is metadata for the approver; approvals are still not
-persisted, and actor identity is claimed rather than verified.
+sandbox. Approval expiry is metadata for the approver; this decision did not
+persist approvals — ADR-0052 later adds an ApprovalStore and reuse on resume.
+Actor identity remains claimed rather than verified.
 
 Alternatives considered: adding policy checks inside each Tool (untrusted and
 duplicated), a single global allow/deny list (no baseline), and making every

@@ -108,10 +108,11 @@ terminal is only cleaned up, and a reclaimed row whose record is `Dispatched`
 becomes `OutcomeUnknown` rather than executing a second time. This closes the
 crash window between recording an outcome and deleting its outbox row.
 
-There is no background retry loop, approval persistence or automatic
-`OutcomeUnknown` reconciliation, and resume assumes the same Agent
-configuration, tools and workspace as the original run. A timed-out tool is
-marked `outcome_unknown`; a human must decide whether to retry it. Do not infer
+There is no background retry loop. Approval decisions persist and
+`Agent::reconcile` retries safe `OutcomeUnknown` effects, but there is no
+automatic daemon. Resume assumes the same Agent configuration, tools and
+workspace as the original run. A timed-out tool is marked `outcome_unknown`;
+safe classes can be reconciled, and unsafe classes stay unresolved for a human. Do not infer
 full durable recovery from the journal.
 
 See [`ADR-0003`](adr/0003-default-local-host.md) and

@@ -11,7 +11,7 @@ implemented.
 | Context management | `ContextBuilder`, `SimpleContextBuilder`, character budget | Character proxy; no tokenizer or summarization |
 | Skills | `SkillRegistry`, `load_skill` | Loading does not grant permissions |
 | Planning | `update_plan`, `Agent::plan()` | In-memory per Agent; no planner engine |
-| Restricted Subagents | `spawn_subagent`, named child Agents | Runtime ChildRun identity and cancellation; automatic parent budget settlement pending |
+| Restricted Subagents | `spawn_subagent`, named child Agents | Runtime ChildRun identity, inherited cancellation and an independent budget; automatic parent budget settlement and parent event forwarding pending |
 | Workspace Tools | `read_file`, `list_files`, `search_text`, `git_status`, `git_diff`, `edit_file`, `write_file`, `run_command` | Writes and commands require approval; `run_command` is not a sandbox |
 | Tracing | `agent.session.turn`, `agent.run`, `gen_ai.model.call`, `agent.tool.execute` | No OTel exporter |
 | Basic Evaluation | `autra-eval` task report | Outcome-based; not runtime fault evidence |
@@ -37,18 +37,20 @@ adapters. Memory, MCP and full Planning/Workflow remain future work.
 - Budgets, cooperative cancellation and optional Effect timeouts.
 - Approval bound to Run, call, tool and argument digest.
 - In-memory Sessions with multiple turns.
-- OpenAI-compatible non-streaming provider.
+- OpenAI-compatible provider with SSE streaming and non-streaming completions.
 - Deterministic FakeModel/EchoModel test paths.
 
 ## Boundaries
 
 - Execution host is `LocalEphemeral` by default; with an opt-in SQLite journal, `Agent::resume` continues committed checkpoints.
-- No durable journal, SQLite, Restate, OpenShell, MCP, Python SDK, HTTP server,
-  multi-session service or plugin manager.
+- No Restate, OpenShell, MCP, Python SDK, HTTP server, multi-session service or
+  plugin manager. The SQLite journal and SessionStore are opt-in adapters.
 - No OS sandbox. `run_command` runs an unsandboxed local shell in the workspace root; `LocalWorkspace` is path validation only.
-- Sessions and plans are in memory; approvals have no expiry or actor identity.
+- Sessions and plans are in memory. Approvals persist with a policy revision, a
+  claimed actor and an expiry timestamp; actor identity is not verified.
 - Runs carry optional Session/Turn ids; `SessionStore` and `TurnRecord` are implemented (in-memory and SQLite), but `SessionManager` and a multi-client snapshot protocol are not.
-- Subagents do not propagate cancellation or share a budget slice.
+- Subagents run as ChildRuns with inherited cancellation and an independent
+  budget; parent budget settlement and parent event forwarding are not automatic.
 - The CLI's `run`/`chat` commands register the workspace tools and require
   approval for `write_file` and `run_command` unless `--yes` is passed.
 

@@ -158,7 +158,7 @@ impl ApprovalRecord {
             && self.policy_revision == request.policy_revision
             && self
                 .expires_at_unix_ms
-                .is_none_or(|expires| now_unix_ms <= expires)
+                .is_none_or(|expires| now_unix_ms < expires)
     }
 }
 

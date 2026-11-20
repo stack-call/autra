@@ -297,3 +297,38 @@ async fn resume_applies_a_deny_policy_without_asking() {
     assert_eq!(tool.status, EffectStatus::Rejected);
     assert!(tool.error.as_deref().unwrap().contains("denied by policy"));
 }
+
+#[tokio::test]
+async fn resume_authorizes_a_read_only_pending_call_without_asking() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("run-allow");
+    let call = ToolCallRequest {
+        call_id: "call-echo".to_owned(),
+        name: "echo".to_owned(),
+        arguments: r#"{"text":"hi"}"#.to_owned(),
+    };
+    checkpoint(&journal, &run_id, &call);
+    let approver = RecordingApprover::new(ApprovalDecision::Rejected);
+    let agent = Agent::builder("resume")
+        .model(FakeModel::new(vec![ModelOutput {
+            text: Some("done".to_owned()),
+            tool_calls: Vec::new(),
+        }]))
+        .tool(autra_harness::EchoTool)
+        .journal(journal.clone())
+        .approver(approver.clone())
+        .build()
+        .unwrap();
+
+    let outcome = agent.resume(&run_id).await.unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    assert_eq!(approver.seen(), 0);
+    let stored = journal.load(&run_id).unwrap();
+    let tool = stored
+        .iter()
+        .find(|effect| effect.kind == EffectKind::ToolCall)
+        .unwrap();
+    assert_eq!(tool.status, EffectStatus::Committed);
+    assert_eq!(tool.result.as_deref(), Some("hi"));
+}

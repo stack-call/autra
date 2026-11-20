@@ -266,3 +266,45 @@ async fn a_deny_policy_prevents_reconciliation() {
     let stored = journal.load(&run_id).unwrap();
     assert_eq!(stored[0].status, EffectStatus::OutcomeUnknown);
 }
+
+struct ReconcileableTool;
+
+#[async_trait]
+impl Tool for ReconcileableTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "reconcileable".to_owned(),
+            description: "Needs a tool-specific reconciliation check.".to_owned(),
+            input_schema: "{}".to_owned(),
+        }
+    }
+
+    fn effect_class(&self) -> EffectClass {
+        EffectClass::Reconcileable
+    }
+
+    async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
+        Ok("ran".to_owned())
+    }
+}
+
+#[tokio::test]
+async fn a_reconcileable_tool_needs_an_explicit_check() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("run-reconcileable");
+    let effect = tool_effect(&run_id, &call("reconcileable", "{}"), EffectKind::ToolCall);
+    journal.record(&run_id, &effect).unwrap();
+    let agent = Agent::builder("reconcile")
+        .model(EchoModel)
+        .tool(ReconcileableTool)
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+
+    let report = agent.reconcile(&run_id).await.unwrap();
+
+    assert!(report.retried.is_empty());
+    assert!(report.unresolved[0].reason.contains("Reconcileable"));
+    let stored = journal.load(&run_id).unwrap();
+    assert_eq!(stored[0].status, EffectStatus::OutcomeUnknown);
+}

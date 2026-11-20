@@ -22,11 +22,11 @@ Tests observe public behaviour, not private helpers.
    temporary workspace; assert content, truncation, path rejection and errors.
 4. **`AgentState` JSON snapshot** (`autra-core`): one fixed state compared to a
    literal JSON value.
-5. **Provider mapping** (`autra-openai`): pure request/response mapping plus a
-   wiremock HTTP contract test.
-6. **Approval** (`autra-runtime`): approved, rejected, missing-approver and
+5. **Provider mapping** (`autra-openai`): pure request/response mapping plus
+   wiremock HTTP and SSE contract tests.
+6. **Approval** (`autra`): approved, rejected, missing-approver and
    mixed-batch cases, plus the argument-digest unit test.
-7. **Session** (`autra-runtime`): history seeding into turn two, distinct
+7. **Session** (`autra`): history seeding into turn two, distinct
    session ids, distinct turn ids, cancelled-turn history and failed-turn
    isolation.
 8. **Context and Skills** (`autra-harness`): context assembly, budget
@@ -92,8 +92,8 @@ Tests observe public behaviour, not private helpers.
     run id and parent link; parent cancellation reaches the child while child
     cancellation does not reach the parent; `WaitAll` collects every child and
     `FailFast` cancels and drains the rest; child Runs can share a journal and
-    approver, forward events, and be resumed; `spawn_subagent` reserves four
-    turns and four tool calls from the parent and rejects an exhausted budget.
+    approver, forward events, and be resumed; a child gets its own budget capped
+    by the parent's remaining tool calls without charging the parent.
 29. **SessionStore** (`autra`, `autra-durable-sqlite`, `autra-cli`): turns are
     recorded as completed, cancelled or failed; history restores across
     process exits; saved turns upsert by index; `chat --session` requires a
@@ -138,9 +138,10 @@ No API key is required for the default suite.
 
 ## What is not covered yet
 
-- Restart and crash recovery (no durable host).
-- Durable approval waits, expiry and identity checks (the local flow has none).
-- Parallel tool commit-order tests (parallel execution is not implemented).
+- Automatic restart recovery; `resume` and `outbox` are explicit.
+- Durable approval waits and verified actor identity. Persisted decisions,
+  expiry metadata and resume reuse exist; identity is claimed, not verified.
+- Parallel tool commit-order and crash-fault injection under a durable journal.
 - Real-provider quality and cost benchmarks.
 - Long-running memory or context-compaction quality.
 

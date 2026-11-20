@@ -7,7 +7,7 @@ Structured concurrency is a framework feature, not a distributed scheduler.
 | Level | Supported now | Core? |
 |---|---|---|
 | Parallel tools within one Run | Bounded parallel batches, default 1 | Yes |
-| ChildRun / Subagent | Tool-backed restricted subagents; runtime ChildRun pending | Yes |
+| ChildRun / Subagent | Restricted subagents run as runtime ChildRuns with inherited cancellation and an independent budget | Yes |
 | Multiple local Sessions | Independent Agents; no scheduler | Basic |
 | Actor / WorkerPool / Kubernetes | Not yet; separate future component | No |
 

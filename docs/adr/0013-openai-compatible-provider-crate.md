@@ -6,8 +6,10 @@ The framework needs a real model provider without putting HTTP, API keys or
 provider JSON into Core or making the harness depend on a network stack.
 
 We added `autra-openai`, which implements the existing `ModelProvider` seam for
-OpenAI-compatible chat completions. It is non-streaming, configured through
-`OPENAI_API_KEY` and optional `OPENAI_BASE_URL`, and never retries silently.
+OpenAI-compatible chat completions. When introduced it was non-streaming,
+configured through `OPENAI_API_KEY` and optional `OPENAI_BASE_URL`, and never
+retries silently. ADR-0050 later adds SSE streaming through
+`complete_streaming`; the non-streaming path remains.
 
 Consequences: the default framework build stays network-free; the CLI enables
 the provider only when `--model` is passed. Streaming, provider-specific fields

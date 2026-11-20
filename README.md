@@ -29,10 +29,10 @@ explicit effects, optional infrastructure.
 | `crates/autra-harness` | ReAct engine, context, skills, planning, concrete tools; optional `process` tools | §7–§9 |
 | `crates/autra-runtime` | Local engine: coordinator, effect dispatch, outbox, resume | §10–§12 |
 | `crates/autra-cli` | `autractl`: local runs, streaming, approvals | §14.4 |
-| `crates/autra-openai` | OpenAI-compatible model provider, non-streaming | — |
+| `crates/autra-openai` | OpenAI-compatible model provider, SSE streaming and non-streaming | — |
 | `crates/autra-eval` | Task-level outcome evaluation | §17.4 |
 | `crates/autra-testkit` | Shared protocol contract checks | §31.4 |
-| `crates/autra-durable-sqlite` | SQLite Run / Event / Effect journal v0 | §15 |
+| `crates/autra-durable-sqlite` | SQLite Run / Event / Effect / Approval journal and SessionStore | §15 |
 
 Dependency direction is enforced by Cargo and by
 `crates/autra-testkit/tests/architecture.rs`: `autra-core` depends on nothing

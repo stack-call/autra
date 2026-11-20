@@ -89,9 +89,10 @@ mounts, environment variables or the network.
 
 - A Rust trait, capability field or hook is not an OS security boundary.
 - A local shell mode is not equivalent to OpenShell isolation.
-- Approval is local and ephemeral: there is no expiry, actor identity or
-  policy registry yet. Shared workspace writes still need a version-check or
-  worktree policy before parallel writes are safe.
+- Approval decisions are persisted locally with a policy revision, a claimed
+  actor and an expiry timestamp. Actor identity is not verified, and there is
+  no policy registry shared across hosts. Shared workspace writes still need a
+  version-check or worktree policy before parallel writes are safe.
 
 See [`ADR-0007`](adr/0007-tool-effect-and-authority-separated.md),
 [`ADR-0009`](adr/0009-openshell-is-a-sandbox-backend.md) and
