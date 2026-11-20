@@ -551,3 +551,18 @@ fn policy_allow_tools_is_rejected() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("allow_tools"));
 }
+
+#[test]
+fn tui_rejects_unsupported_flags_before_opening_the_terminal() {
+    let output = autractl()
+        .args(["tui", "--session", "session-1"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("does not support --session"));
+
+    let output = autractl().args(["tui", "prompt"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("usage: autractl tui"));
+}

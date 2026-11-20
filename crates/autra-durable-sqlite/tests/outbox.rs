@@ -55,17 +55,18 @@ fn an_expired_lease_can_be_reclaimed() {
     journal.enqueue_effect(&run_id, &effect).unwrap();
 
     let first = journal
-        .claim_due_effects_with_lease(10, "claim-1", Duration::ZERO)
+        .claim_due_effects_with_lease(10, "claim-1", Duration::from_secs(1))
         .unwrap();
     assert_eq!(first.len(), 1);
     let blocked = journal
-        .claim_due_effects_with_lease(10, "claim-2", Duration::ZERO)
+        .claim_due_effects_with_lease(10, "claim-2", Duration::from_secs(1))
         .unwrap();
     assert!(blocked.is_empty());
 
-    std::thread::sleep(Duration::from_millis(1100));
+    // SQLite datetime has second precision; cross the next second.
+    std::thread::sleep(Duration::from_millis(2100));
     let reclaimed = journal
-        .claim_due_effects_with_lease(10, "claim-3", Duration::ZERO)
+        .claim_due_effects_with_lease(10, "claim-3", Duration::from_secs(1))
         .unwrap();
     assert_eq!(reclaimed.len(), 1);
     assert_eq!(reclaimed[0].attempts, 2);

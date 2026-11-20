@@ -316,6 +316,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn approver_arc(mut self, approver: Arc<dyn Approver>) -> Self {
+        self.approver = Some(approver);
+        self
+    }
+
     pub fn max_parallel_tool_calls(mut self, max_parallel_tool_calls: u32) -> Self {
         self.max_parallel_tool_calls = max_parallel_tool_calls.max(1);
         self

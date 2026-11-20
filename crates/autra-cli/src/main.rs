@@ -17,6 +17,8 @@ use autra_harness::{
 };
 use autra_openai::OpenAiCompatibleModel;
 
+mod tui;
+
 #[tokio::main]
 async fn main() -> ExitCode {
     init_tracing();
@@ -31,6 +33,7 @@ async fn main() -> ExitCode {
         Some("resume") => resume_command(&args[1..]).await,
         Some("outbox") => outbox_command(&args[1..]).await,
         Some("snapshot") => snapshot_command(&args[1..]),
+        Some("tui") => tui_command(&args[1..]),
         Some("effects") => effects_command(&args[1..]),
         Some("reconcile") => reconcile_command(&args[1..]).await,
         Some("approve") => approval_command(&args[1..], ApprovalDecision::Approved),
@@ -275,6 +278,52 @@ async fn outbox_command(args: &[String]) -> ExitCode {
         }
         Err(error) => {
             eprintln!("outbox drain failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn tui_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "tui") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if !flags.rest.is_empty() {
+        eprintln!(
+            "usage: autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--policy <path>] [--actor <name>] [--yes] [--read-only]"
+        );
+        return ExitCode::FAILURE;
+    }
+    if flags.session.is_some() {
+        eprintln!("tui does not support --session yet");
+        return ExitCode::FAILURE;
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let approver: Option<Arc<dyn Approver>> = if flags.auto_approve {
+        None
+    } else {
+        Some(Arc::new(tui::TuiApprover::new(sender.clone())))
+    };
+    let agent = match build_agent_with_approver(&flags, approver) {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let config = tui::TuiConfig {
+        workspace: flags.workspace.clone().unwrap_or_else(|| ".".to_owned()),
+        model: flags
+            .model
+            .clone()
+            .unwrap_or_else(|| "local echo".to_owned()),
+        read_only: flags.read_only,
+        auto_approve: flags.auto_approve,
+    };
+    match tui::run(Arc::new(agent), config, sender, receiver) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("tui failed: {error}");
             ExitCode::FAILURE
         }
     }
@@ -636,6 +685,13 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
 }
 
 fn build_agent(flags: &Flags) -> Result<Agent, String> {
+    build_agent_with_approver(flags, None)
+}
+
+fn build_agent_with_approver(
+    flags: &Flags,
+    approver: Option<Arc<dyn Approver>>,
+) -> Result<Agent, String> {
     if flags.local && flags.model.is_some() {
         return Err("--local and --model cannot be combined".to_owned());
     }
@@ -667,10 +723,10 @@ fn build_agent(flags: &Flags) -> Result<Agent, String> {
         }
         None => builder.model(EchoModel),
     };
-    let builder = if flags.auto_approve {
-        builder.approver(AutoApprove)
-    } else {
-        builder.approver(InteractiveApprover)
+    let builder = match approver {
+        Some(approver) => builder.approver_arc(approver),
+        None if flags.auto_approve => builder.approver(AutoApprove),
+        None => builder.approver(InteractiveApprover),
     };
     let builder = match &flags.policy {
         Some(path) => builder.policy(load_rule_policy(path)?),
@@ -946,6 +1002,7 @@ USAGE:
   autractl reconcile --journal <path> [--model <name>] [--workspace <dir>] [--policy <path>] <run-id>
   autractl approve|reject --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>
   autractl demo
+  autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
   autractl tools
   autractl --help
 

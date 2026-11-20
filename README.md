@@ -66,6 +66,7 @@ After building, the binary is `autractl` (or prefix with
 
 - `autractl run [options] <prompt>` — run one turn as a workspace agent and print its events.
 - `autractl chat [options]` — one turn per stdin line, keeping session history.
+- `autractl tui [options]` — full-screen chat with streaming output and in-terminal approvals.
 - `autractl resume --journal <path> --model <name> <run-id>` — continue a checkpointed run.
 - `autractl snapshot --journal <path> <run-id>` — print the current Run snapshot as JSON.
 - `autractl approve|reject --journal <path> <run-id> <effect-id>` — record an approval decision for a pending effect.
@@ -92,6 +93,11 @@ Before asking for approval, the CLI prints the tool's preview: the command, a
 unified diff for edits and overwrites, or the rejection reason for an ambiguous
 edit.
 
+`autractl tui` opens a full-screen session. Enter sends, Esc cancels a running
+turn (or quits when idle), Ctrl+C quits, PgUp/PgDn scroll, and a pending
+approval shows the tool and preview and waits for `y`/`n`. Use `--yes` for
+auto-approval and `--local` for a deterministic echo session.
+
 | Flag | Meaning |
 |---|---|
 | `--workspace <dir>`, `-C <dir>` | workspace root (default `.`); file tools stay inside it |
@@ -102,7 +108,7 @@ edit.
 | `--policy <path>` | JSON tool/command policy (`ask_tools`, `deny_tools`, `deny_commands`; Allow is the default) |
 | `--actor <name>` | operator identity recorded on approval requests |
 | `--yes`, `-y` | approve `write_file`, `edit_file` and `run_command` without prompting |
-| `--read-only` | expose only `list_files`, `read_file` and `search_text` |
+| `--read-only` | expose only read-only tools (`list_files`, `read_file`, `search_text`, `git_status`, `git_diff`) |
 
 ```powershell
 cargo run -p autra-cli -- run --workspace ..\my-project --yes --model gpt-4o-mini "Fix the failing test and run it again"
