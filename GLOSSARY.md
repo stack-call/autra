@@ -31,6 +31,11 @@ The Sans-I/O state machine that turns accepted events into the next execution
 intent.
 _Avoid_: Engine, loop
 
+**Run State**:
+The authoritative state of one Run. The current Rust type is `AgentState`; it
+carries optional Session and Turn references.
+_Avoid_: Context, history
+
 ## Effects and tools
 
 **Effect**:

@@ -2,7 +2,7 @@
 
 > **文档版本**：v1.0 — Architecture Proposal / Draft  
 > **项目名称**：Autra  
-> **增补**：§4.4 产品分层视图；项目定名 Autra（2026-11-19）  
+> **增补**：§4.4 产品分层视图；§4.5 领域归属与代码位置；项目定名 Autra（2026-11-20）  
 > **日期**：2026-11-19  
 > **项目类别**：Rust 原生 Agent Framework（非 Agent Hosting Platform）  
 > **核心定位**：Composable Intelligence · Structured Execution · Explicit Effects · Optional Infrastructure  
@@ -300,6 +300,27 @@ flowchart TD
 
 ---
 
+### 4.5 领域归属与代码位置
+
+"属于 Core"表示框架必须保证的语义，不表示必须放进 `autra-core` crate。
+
+| 概念 | 领域归属 | 当前代码位置 |
+|---|---|---|
+| Session / Turn | Session 层 | `autra-runtime` |
+| Run | Core + Runtime | `autra-core` 状态；`autra-runtime` 执行 |
+| ChildRun | Core + Runtime | tool-backed subagent；runtime ChildRun 待做 |
+| Effect | Core + Host | Core 定义 intent 与 outcome；runtime 派发 |
+| Context | Harness | `autra-harness` ContextBuilder |
+| Workspace | Core 引用 + Adapter | `LocalWorkspace` 在 harness；Sandbox 待做 |
+
+`AgentState` 是 RunState 的当前 Rust 类型，携带可选的 `session_id` 与
+`turn_id`。直接 `Agent::run` 没有 Session/Turn；`Session::run_turn` 为每轮
+生成新的 TurnId 并传入 Run。Session 的完整模型、历史与运行管理暂放在
+`autra-runtime`；出现第二种 Session 实现或持久化需求时再评估拆出
+`autra-session`。
+
+---
+
 ## 5. 领域模型：明确概念的边界
 
 ### 5.1 对象定义
@@ -320,6 +341,8 @@ flowchart TD
 | `Actor` / `Worker` | 计算执行实体及承载资源 | FUTURE Compute | 按容量调度 |
 
 **关键区分**：`Session != Run != Task != Worker`。Session 是会话，Run 是逻辑任务，Tokio Task/Worker 是一次执行方式。我们允许 Session 内多个 Turn，但默认对同一会话状态采用单写者推进策略。
+
+**领域归属与代码位置**：上表“属于 Core”表示框架保证的语义，不表示必须放在 `autra-core` crate。`SessionId`、`TurnId` 与 RunState 上的可选引用属于 Core；Session 的完整模型、历史与运行管理由 runtime 的 Session 层负责，Context 构建由 Harness 负责。详见 §4.5 与 ADR-0022。
 
 ### 5.2 父子结构示例
 
@@ -639,7 +662,7 @@ Kagent/Substrate 主要优化大量逻辑 Actor 如何映射到有限 Worker/Pod
 
 ### 11.2 `Session`、`Turn`、`Run` 的关系
 
-一轮 Turn 可创建一个 Run；一个 Run 可以因为工具审批等原因跨越用户多次交互，期间继续属于同一逻辑 Run。Session 可连续承载多个 Turn。取消当前 Run 不自动关闭 Session，也不必清除历史。
+一轮 Turn 可创建一个 Run；一个 Run 可以因为工具审批等原因跨越用户多次交互，期间继续属于同一逻辑 Run。Session 可连续承载多个 Turn。取消当前 Run 不自动关闭 Session，也不必清除历史。Session/Turn 的领域定义属于产品语义；其运行管理（SessionManager、Turn 记录、输入排队）属于 Execution Runtime，不进入 Core Stepper。
 
 ### 11.3 审批的安全约束
 
@@ -1078,6 +1101,8 @@ autra/
 
 **不要**第一天就建十多个空 Crate。上面是清晰的最初物理切分；其后根据真实修改频率和循环依赖情况逐步拆出 Context、Tool、Protocol、Provider。
 
+**Session 的物理归属**：Session/Turn 的领域定义属于产品语义；初期 `Session`、历史与运行管理都在 `autra-runtime`，Core 只保留 ID 与 RunState 上的可选引用。Context 构建在 `autra-harness`。出现第二种 Session 实现或持久化需求时，再评估拆出 `autra-session`。
+
 ### 19.2 成长后的可选 Crate
 
 ```text
@@ -1271,6 +1296,8 @@ cargo test -p autra-durable-sqlite --test crash_matrix
 | ADR-012 | API 与序列化 Schema 分别版本化 | 降低未来恢复/迁移的不兼容风险 |
 
 每个 ADR 文件后续应包含：背景、替代方案、决策、失败场景、测试证据、未来重新讨论条件。
+
+实现阶段的 ADR 位于 `docs/adr/`，编号从 0001 开始；例如 ADR-0022 记录 Session/Turn 领域归属与代码位置分离。
 
 ---
 

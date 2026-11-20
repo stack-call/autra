@@ -27,7 +27,8 @@ Tests observe public behaviour, not private helpers.
 6. **Approval** (`autra-runtime`): approved, rejected, missing-approver and
    mixed-batch cases, plus the argument-digest unit test.
 7. **Session** (`autra-runtime`): history seeding into turn two, distinct
-   session ids, cancelled-turn history and failed-turn isolation.
+   session ids, distinct turn ids, cancelled-turn history and failed-turn
+   isolation.
 8. **Context and Skills** (`autra-harness`): context assembly, budget
    truncation with preserved items and an end-to-end `load_skill` call.
 9. **Planning** (`autra-runtime`): the update_plan tool, rendered statuses and

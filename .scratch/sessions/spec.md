@@ -22,8 +22,9 @@ The CLI gains a line-oriented `autractl chat` command.
 
 - `Session` owns the Agent and `Vec<HistoryItem>`. `run_turn` takes `&mut self`,
   enforcing the spec's single-writer rule for one Session.
-- Each turn is one Run with its own `RunId`, budgets and cancellation. The
-  history is seeded into `AgentState` before RunStarted.
+- Each turn is one Run with its own `RunId`, `TurnId`, budgets and cancellation.
+  The history and optional Session/Turn ids are seeded into `AgentState` before
+  RunStarted.
 - `SessionId` is fresh per Session; `turn_index` increments before each turn.
 - On Completed or Cancelled, the Session stores the outcome history. On a
   `RunError`, the previous history is kept unchanged.

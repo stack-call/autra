@@ -77,3 +77,12 @@ Moonshot, vLLM, Ollama or LM Studio.
 - [Evaluation](docs/evaluation.md) · [Harness v1 acceptance](docs/harness.md)
 - [Roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/) · [OpenShell](docs/integrations/openshell.md) · [Restate](docs/integrations/restate.md)
+
+## Architecture boundaries
+
+Session and Turn are product-level concepts. `autra-core` carries optional
+`SessionId` and `TurnId` references on the Run state; Session lifecycle and
+history live in `autra-runtime`; context construction lives in
+`autra-harness`. See
+[ADR-0022](docs/adr/0022-session-and-turn-are-domain-concepts.md) and
+[docs/architecture.md](docs/architecture.md).
