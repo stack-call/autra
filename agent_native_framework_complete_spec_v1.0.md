@@ -2,7 +2,7 @@
 
 > **文档版本**：v1.0 — Architecture Proposal / Draft  
 > **项目名称**：Autra  
-> **增补**：§4.4 产品分层视图；§4.5 领域归属与代码位置；项目定名 Autra（2026-11-20）  
+> **增补**：§4.4 产品分层视图；§4.5 领域归属；§4.6/§5.4/§6.6/§7.4/§10.7/§12.8 V2.0 职责与协议；项目定名 Autra（2026-11-20）  
 > **日期**：2026-11-19  
 > **项目类别**：Rust 原生 Agent Framework（非 Agent Hosting Platform）  
 > **核心定位**：Composable Intelligence · Structured Execution · Explicit Effects · Optional Infrastructure  
@@ -150,7 +150,19 @@ let run = runtime.start(agent, task).await?;
 > **Unified at the semantic level, modular at the implementation level.**  
 > 语义层统一，实现层模块化。
 
-在这两个总纲之下，五个可检验的架构目标是：
+在这两个总纲之下，Autra 采用七项原则：
+
+| 原则 | 约束 |
+|---|---|
+| Composable Intelligence | 智能行为可组合，Harness 不受单一 Engine 限制 |
+| Structured Execution | 并发、子任务、预算、取消具有明确生命周期 |
+| Explicit Effects | 外部操作有明确意图、授权、结果和执行边界 |
+| Optional Infrastructure | 基础功能不强制依赖服务或数据库 |
+| Semantic Consistency | 不同 Engine/Host 共享核心语义，不假装保证完全相同 |
+| Capability-Oriented Design | 通过能力与契约组合系统，而不是把基础设施写进 Core |
+| Progressive Complexity | 简单用例默认简单，高级能力明确选择、逐步启用 |
+
+其中五个可检验的架构目标是：
 
 | 目标 | 含义 | 当前证据与约束 |
 |---|---|---|
@@ -331,6 +343,23 @@ flowchart TD
 
 ---
 
+### 4.6 三大协作体系：Harness / Session / Runtime
+
+这是逻辑职责图，不是 crate 依赖图。三者协作，但只有 Runtime 拥有执行授权与提交权。
+
+| 体系 | 回答的问题 | 包含 | 不负责 |
+|---|---|---|---|
+| Rich Harness | Agent 如何思考、如何使用能力 | Engine、Context、Capability、Subagent、Model | 不决定 Effect 授权与 Run 提交 |
+| Interactive Session | 用户如何持续交互 | Session、Turn、History、Followup、Stream、Approval/Resume | 不执行 Agent Loop，不决定 Effect 授权 |
+| Small Agent Core | 一个 Run 如何正确推进 | RunState、AcceptedEvent、Stepper、TransitionProposal、EffectIntent、Scope | 不做 I/O、不保存 Session、不创建 Tokio Task |
+| Structured Execution Runtime | 逻辑任务如何被执行、协调、取消与提交 | Coordinator、Commit、Scope/Budget、Concurrency/Join、Policy/Effect Dispatch | 不解释某个 Engine 的具体决策 |
+| Host | 执行环境能提供什么保证 | Local、SQLite Durable、Restate | 不替代 Agent 语义 |
+
+依赖方向：Developer API → Harness/Session → Core；Runtime 驱动 Core 与 Harness；
+Core 永不依赖 Runtime；Host 与 Adapter 正交。任何 Runtime/Host 特有的类型都不得进入 Core。
+
+---
+
 ## 5. 领域模型：明确概念的边界
 
 ### 5.1 对象定义
@@ -373,6 +402,31 @@ AgentDefinition: repo-assistant
 所有核心记录使用不可复用的 `session_id`、`turn_id`、`run_id`、`effect_id`；Child Run 有 `parent_run_id`；Context 构造记录使用 `context_id`、`builder_revision`、`source_refs`；若涉及 Workspace 修改，还关联 `workspace_id` 与可验证版本。不要把“相同字符串的任务描述”误认为相同执行。
 
 ---
+### 5.4 Session / Turn 的领域定义与运行管理
+
+Session/Turn 属于产品语义，但其生命周期不进入 Stepper。目标形状：
+
+```text
+SessionState { id, revision, turns: Vec<TurnRecord>, active_run: Option<RunId> }
+TurnRecord   { turn_id, run_id, status, started_at }
+```
+
+第一版的 Session 领域类型与 SessionManager 放在 `autra-runtime/session`；Core 只保留
+`SessionId`、`TurnId` 与 RunState 上的可选引用。出现第二种 Session 实现或持久化需求时，
+再评估拆出 `autra-session`。
+
+交互协议至少包括：`SubmitTurn`、`SendFollowup`、`CancelRun`、`InterruptRun`、
+`ApproveEffect`、`ResumeRun`、`GetSnapshot`、`SubscribeEvents`。
+
+**Cancel 与 Interrupt 必须分开**：Cancel 请求停止执行；Interrupt 表示交互式打断、
+等待新输入或暂停后继续，是否支持持久化暂停由 Host 决定。两者都不等于外部副作用已停止。
+
+SessionManager 负责创建/关闭 Session、Turn 排队、单写者推进、Run 关联和流订阅；
+它不执行 Agent Loop，也不决定 Effect 是否获得授权。SessionStore 与 Run/Effect Journal
+是不同真相来源；即使共用 SQLite，也必须定义 `active_run` 与 Run 提交的事务边界。
+
+---
+
 ## 6. Agent Core：Sans-I/O Stepper 与决策协议
 
 ### 6.1 Core 的任务
@@ -466,6 +520,36 @@ RunStarted
 
 ---
 
+### 6.6 Proposal / Commit 与 Effect 三层
+
+`AgentStepper` 返回的是 **Proposal**，不是已提交事实。建议将当前 `Transition` 命名为
+`TransitionProposal`；Coordinator 负责校验版本、授权、预算和并发，然后提交。
+
+```text
+AcceptedEvent → Stepper → TransitionProposal → Coordinator Validate/Commit → Committed state
+```
+
+第一版保留现有 Stepper 形式，不引入 `decide()`/`apply()`、完整 Event Sourcing 或 Actor。
+是否需要拆分由 durable host 的故障测试决定。
+
+Effect 生命周期分为三层：
+
+| 层 | 类型 | 含义 |
+|---|---|---|
+| 1 | `EffectIntent` | Agent 希望发生什么；尚未获得执行授权 |
+| 2 | `EffectRecord` | Host 已接受并记录的逻辑操作；拥有稳定 `effect_id` |
+| 3 | `EffectAttempt` | 一次具体的物理执行尝试 |
+
+`EffectId` 由 Coordinator/Host 在提交边界分配；同一逻辑 Effect 的重试/恢复复用该 ID，
+只增加 Attempt；恢复不得把已提交 Effect 当作新操作。外部 Exactly-once 不作为通用承诺。
+
+Intent 可分为 External（`CallModel`、`CallTool`）与 Control（`SpawnChild`、`WaitForSignal`）。
+当前实现只有 `CallModel`/`CallTool`；Control 分类在 runtime ChildRun/Wait 出现时再引入。
+审批是 Coordinator 依据 Tool Contract/Policy 做出的执行策略，不是模型主动请求；
+模型只能提出 `CallTool`，不能自我授权。
+
+---
+
 ## 7. Rich Harness：可组合智能行为
 
 ### 7.1 第一层“直接可用”能力
@@ -481,7 +565,7 @@ RunStarted
 | `Subagents` | 创建受限 ChildRun | 不产生无主任务或无限权限 | V0.3–0.4 |
 | `ContextCompaction` | 历史压缩、Token 管理 | 不删除执行事实 | V0.4 |
 | `Memory` | 跨 Session 信息读写 | 不代替执行 Checkpoint | V0.5 |
-| `MCP` | Tool 发现和调用协议 | 不跳过本地权限/结果分类 | V0.5 |
+| `MCP` | Tool 发现和调用协议 | 不跳过本地权限/结果分类 | V0.3–0.5（基础 Client 提前；Gateway/Server 后置） |
 | `Workflow` | 明确依赖和执行顺序的流程 | 不将所有 ReAct 逻辑强转为 Graph | FUTURE |
 
 ### 7.3 扩展接口的安全级别
@@ -495,6 +579,31 @@ Hooks 默认分为：
 - **Policy Authority**：由受信任的 Host 安装，不通过普通扩展注册提升权限。
 
 考虑 DSH 的服务依赖生命周期，但第一版只要求显式构建时依赖校验和稳定的关闭顺序；不开发动态热加载和复杂全局 Service Locator。
+
+---
+
+### 7.4 Harness 五个子系统
+
+Harness 不是一组零散功能，而是五个可组合子系统：
+
+| 子系统 | 责任 | 不负责 |
+|---|---|---|
+| Agent Engine | ReAct，以及后续 Planning/Workflow 策略；输出统一 `EffectIntent` | 不执行 Effect，不提交 Run 状态 |
+| Context System | 选择、检索、压缩、预算、来源标注；组装模型输入 | 不拥有权威 Journal，不保存 Session 历史 |
+| Capability System | Tools、Skills、MCP 的发现、描述与可见性 | 不授予权限；Scope/Policy 决定能否执行 |
+| Subagent System | 子 Agent 定义、任务委派、结果整合 | 不复用第二套执行器；子任务仍走 Run/ChildRun |
+| Model System | Provider、流式、结构化输出、模型能力适配 | 不把 Provider 特有字段写进 Core |
+
+组合规则：
+
+- Engine 输出统一执行意图，Coordinator 不解释 Engine 的具体决策。
+- Context 可以读取 Session History、Workspace 和 Memory 的只读视图，但不能替代执行事实。
+- Skill 是可按需加载的指令/流程知识，不直接赋予 Tool 权限；`load_skill` 只读。
+- Subagent 拥有自己的 AgentDefinition、Context 与工具集，但必须复用 Run 语义与父子 Scope。
+- Provider 能力差异留在 Adapter，通过统一的 Model Request/Response 暴露必要能力声明。
+
+当前已实现 Engine、Context、Capability、Subagent、Model 的最小版本；Memory、MCP 以及
+完整 Planning/Workflow 仍待后续。
 
 ---
 
@@ -583,6 +692,11 @@ ToolIntent Proposed
 
 **重要**：ToolCall 被模型建议，并不意味着已经获得系统授权。审批是对**具体 Tool、具体参数摘要、具体身份和策略版本**的授权；参数变化意味着必须重新批准。
 
+执行协议上，Tool Description（模型可见）与 `EffectIntent`（Agent 希望执行）、
+`EffectRecord`（Host 已接受并记录）、`EffectAttempt`（一次物理尝试）属于不同层，见 §6.6。
+审批是 Coordinator/Policy 依据 Tool Contract 与 Scope 做出的执行策略，不是模型通过
+`EffectIntent::RequestApproval` 的自我请求；模型只能提出 `CallTool`，不能自我授权。
+
 ### 9.3 Retry 与恢复规则
 
 | Tool 类别 | 例子 | 重试原则 |
@@ -655,6 +769,26 @@ Tool 的执行完成顺序通常不确定，**状态提交顺序**与**结果向
 Kagent/Substrate 主要优化大量逻辑 Actor 如何映射到有限 Worker/Pod，以及有状态工作负载如何挂起/恢复。我们只吸收**逻辑身份不依附永久进程、容量有明确边界**这两条设计原则。首版无需 Actor、WorkerPlacement、Lease、Fencing、HPA、CRD。未来若单机/托管场景出现真实需求，再建设独立 `autra-compute` 组件；它不得改变 Agent Core 的行为语义。
 
 ---
+### 10.7 JoinPolicy 与完成条件
+
+父 Run 如何继续，不能取决于哪个 Tokio Task 先返回，而由明确的 JoinPolicy 决定：
+
+| 策略 | 行为 |
+|---|---|
+| `CollectAll` | 等待所有子任务完成并汇总 |
+| `FailFast` | 任一失败后请求取消其余任务，并按策略完成清理 |
+| `BestEffort` | 尽可能收集成功结果，同时保留失败信息 |
+| `FirstSuccess` | 首个成功结果被接受后，请求取消不再需要的任务 |
+
+必须区分三个完成条件：**语义完成**（结果已接受并合并）、**资源回收**（任务/进程/
+Workspace 已释放）与**外部副作用停止**（取消请求不保证）。父任务结束前必须说明三者状态。
+
+预算采用显式预留/结算：ChildRun 获得预算切片，未使用部分在结束时归还；不得让多个子任务
+隐式重复消耗同一份预算。当前实现只有并行 Tool 与 tool-backed subagent；runtime ChildRun
+及其 JoinPolicy 仍待实现。
+
+---
+
 ## 11. Interactive Session：用户、Agent 与实时执行的协作协议
 
 ### 11.1 支持的外部命令
@@ -770,6 +904,25 @@ Trusted Tool Host / Sandbox / External APIs
 Restate Host 要定义：`run_id ↔ workflow_id`、审批信号、版本固定、Context 构造的非确定性边界、Tool Effect Identity，以及 Workspace 引用。**不要**在 Restate Host 内同时维护一份独立控制执行顺序的 SQLite Journal。Restate 的 `ctx.run` 是可记录结果的操作，仍然存在外部副作用实际发生但结果尚未被安全保存的窗口，需要幂等与核对策略。
 
 **开发策略**：先使 Native Local/Durable 在相同场景下语义清晰，再做 Restate PoC；不能为了强行适配两个 Host 而损害 Core 的简单性。
+
+---
+
+### 12.8 Host Capabilities 与 Conformance Tests
+
+不同 Execution Host 不应被假设为等价。每个 Host 声明能力，并通过共享 conformance tests：
+
+| 能力 | Local | SQLite Durable | Restate |
+|---|---|---|---|
+| 基础执行 | 是 | 是 | 是 |
+| 并发与取消 | 本地实现 | 需定义恢复边界 | 依 Host 适配 |
+| 进程崩溃恢复 | 否 | 已提交边界 | 依 Restate 保证 |
+| Durable Approval | 否 | 目标支持 | 目标支持 |
+| Journal 所有权 | 内存状态 | Autra Native Host | Restate |
+| Sandbox | 可选 Adapter | 可选 Adapter | 可选 Adapter |
+
+能力声明应表达保证级别与限制，而不是全部压成布尔值。不支持的操作返回类型化错误，
+不得静默降级。Conformance suite 分别验证每个 Host 声明支持的功能；同一 Agent 定义可以
+适配不同 Host，但恢复、计时与投递保证不同（INV-08）。当前只有 Local Host 实现。
 
 ---
 
@@ -1246,9 +1399,24 @@ cargo test -p autra-durable-sqlite --test crash_matrix
 | **M5：Rich Harness** | Context 策略、Compaction、Skills、Planning、Memory 初版 | 通用静态 Graph Engine | 可替换策略，已有测试不回退 |
 | **M6：Sandbox + Eval** | OpenShell Adapter、Tracing、Replay、评测数据集 | 自研 MicroVM | 隔离/策略测试与质量报告可复现 |
 | **M7：Restate PoC** | Restate-hosted 执行示例、能力矩阵、对照实验 | 无损切换所有 Host 的承诺 | 相同场景测试，标明语义差异 |
-| **M8：按需求扩展** | MCP、Python SDK、API 服务；必要时远程 Worker | 默认 Kubernetes 依赖 | 真实用户需求驱动，ADR 说明收益 |
+| **M8：按需求扩展** | MCP Gateway/Server、Python SDK、API 服务；必要时远程 Worker | 默认 Kubernetes 依赖 | 真实用户需求驱动，ADR 说明收益 |
 
 以上是依赖与验收顺序，**不是固定日期承诺**。某些阶段可以小范围并行，但不能在状态/并发语义还没稳定时建立复杂分布式平台。
+
+**执行可靠性主线与 Agent 体验主线并行推进：**
+
+| 阶段 | 执行与可靠性主线 | Agent 体验主线 |
+|---|---|---|
+| M0 | Small Core + Fake Host | Agent Builder + 简单对话 |
+| M1 | Local Runtime + Tool/Effect | ReAct + Streaming + Session |
+| M2 | 并行 Tool、ChildRun、Scope | Context + Skills + Coding Tools |
+| M3 | Approval + Policy + Workspace 约束 | MCP Client + Planning + Subagents |
+| M4 | Native Durable + Recovery | 完整 Coding Agent 评测 |
+| M5 | OpenShell/Restate 适配 | 高级工具链与可靠运行案例 |
+| 后续 | Remote Worker / Compute | Python SDK / 更多 Engine |
+
+两线不必严格串行；每次底层新增一个能力，都要用真实 Agent 示例验证开发者价值。基础 MCP
+Client 放在 M3，MCP Gateway/Server 后置到 M8；这与 §7.2 的 V0.5 标签统一。
 
 ### 22.2 完成定义（Definition of Done）
 

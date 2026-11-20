@@ -12,6 +12,20 @@ Autra is described by two orthogonal views:
 The two views share the same domain objects (Session, Turn, Run, Effect) but
 answer different questions.
 
+## Three collaborating systems
+
+| System | Question | Owns | Does not own |
+|---|---|---|---|
+| Rich Harness | How does the Agent think and use capabilities? | Engine, Context, Capability, Subagent, Model | Effect authorization, Run commit |
+| Interactive Session | How does a user interact over time? | Session, Turn, history, follow-up, streams, approval/resume | Agent Loop, Effect authorization |
+| Small Agent Core | How does one Run advance? | RunState, accepted events, Stepper, transition proposal, EffectIntent, Scope | I/O, Session storage, Tokio tasks |
+| Execution Runtime | How is work authorized, committed, dispatched and cancelled? | Coordinator, commit, budgets, concurrency/join, policy | Interpreting engine-specific decisions |
+| Host | What guarantees does the environment provide? | Local, durable, hosted execution | Replacing Agent semantics |
+
+The dependency direction is API → Harness/Session → Core; Runtime drives Core and Harness.
+Core never depends on Runtime. Hosts and adapters are orthogonal. This is a logical
+responsibility view, not a crate dependency graph.
+
 ## Layers
 
 ```mermaid

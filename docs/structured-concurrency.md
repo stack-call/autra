@@ -71,6 +71,19 @@ A ChildRun must declare:
 
 A parent cannot finish while a child is silently orphaned. See the spec §10.2.
 
+## Join policies
+
+| Policy | Behaviour |
+|---|---|
+| `CollectAll` | Wait for every child and merge all results |
+| `FailFast` | On failure, request cancellation of the rest and clean up |
+| `BestEffort` | Keep successful results and preserve failure information |
+| `FirstSuccess` | Accept the first success and cancel work no longer needed |
+
+Separate semantic completion, resource reclamation and external side-effect stop.
+A cancellation request does not prove that an external action stopped. Runtime ChildRun
+and these policies are not implemented yet.
+
 ## What this is not
 
 This is not a replacement for Tokio scheduling, Kubernetes, or a distributed

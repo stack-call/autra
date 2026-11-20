@@ -16,7 +16,25 @@ The first complete harness (§0.4) is reached at a basic level; see
 | M5 Rich harness | Context policy, compaction, skills, planning, memory | Partial: ContextBuilder, budget, Skills and Planning done; memory pending |
 | M6 Sandbox and evaluation | OpenShell adapter, tracing, replay, evaluation set | Tracing and basic evaluation done; OpenShell and replay pending |
 | M7 Restate PoC | Hosted execution, capability matrix, comparison | Pending |
-| M8 Demand-driven expansion | MCP, Python SDK, API server, remote workers | Pending |
+| M8 Demand-driven expansion | MCP Gateway/Server, Python SDK, API server, remote workers | Pending |
+
+### Dual-track view
+
+Execution reliability and Agent experience advance in parallel; neither waits for
+the other to finish.
+
+| Stage | Execution and reliability | Agent experience |
+|---|---|---|
+| M0 | Small Core + Fake Host | Agent Builder + simple dialogue |
+| M1 | Local Runtime + Tool/Effect | ReAct + streaming events + Session |
+| M2 | Parallel tools, ChildRun, Scope | Context + Skills + coding tools |
+| M3 | Approval + policy + workspace constraints | MCP Client + Planning + Subagents |
+| M4 | Native Durable + recovery | Full coding-agent evaluation |
+| M5 | OpenShell and Restate adapters | Advanced toolchains and reliable cases |
+| Later | Remote Worker / Compute | Python SDK / more engines |
+
+Every new runtime capability must be validated by a real Agent example. A basic
+MCP Client is an M3 experience item; MCP Gateway/Server stays in M8.
 
 ## Delivered
 

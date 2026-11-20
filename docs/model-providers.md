@@ -49,6 +49,13 @@ OpenAI-compatible endpoints through `OPENAI_BASE_URL`.
 
 An empty assistant message is allowed and completes the Run with no answer.
 
+## Capability declaration
+
+Provider differences affect the Harness: tool calling, streaming, structured output
+and multimodal input are not uniform. A future `ModelCapabilities` declaration should
+express limits and parameters, not only booleans, and provider-specific fields must stay
+inside the adapter. The current provider implements non-streaming text and tool calls.
+
 ## What is not implemented
 
 - token streaming (`complete()` returns the whole response);

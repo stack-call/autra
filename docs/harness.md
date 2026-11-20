@@ -16,6 +16,20 @@ implemented.
 | Tracing | `agent.session.turn`, `agent.run`, `gen_ai.model.call`, `agent.tool.execute` | No OTel exporter |
 | Basic Evaluation | `autra-eval` task report | Outcome-based; not runtime fault evidence |
 
+## Five Harness subsystems
+
+| Subsystem | Responsibility |
+|---|---|
+| Agent Engine | ReAct and future Planning/Workflow strategies; emits uniform EffectIntents |
+| Context System | Selection, retrieval, compaction, budget, sources; assembles model input |
+| Capability System | Tools, Skills, MCP discovery and visibility |
+| Subagent System | Child Agent definitions, delegation, result integration |
+| Model System | Provider adapters, streaming, structured output, capability declaration |
+
+Composition rules: Skills do not grant permissions; Context reads but does not own
+the journal; Subagents reuse Run/ChildRun semantics; provider-specific fields stay in
+adapters. Memory, MCP and full Planning/Workflow remain future work.
+
 ## Additional harness capabilities
 
 - ReAct Stepper and local execution host.

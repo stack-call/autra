@@ -30,6 +30,18 @@ orders events, dispatches Effects and accepts outcomes.
 
 A trace or token stream cannot rebuild business state.
 
+## Effect layers
+
+| Layer | Meaning |
+|---|---|
+| `EffectIntent` | What the Agent wants to happen; not yet authorized |
+| `EffectRecord` | The logical operation the host accepted, with a stable id |
+| `EffectAttempt` | One physical attempt to execute the operation |
+
+The current implementation has intents and outcomes but no EffectRecord/Attempt
+ledger. Timeout is already `outcome_unknown`; a durable host will add stable ids,
+reconciliation and attempt history. See §6.6 of the design spec.
+
 ## Current ReAct state machine
 
 `autra-harness::ReActStepper` implements:

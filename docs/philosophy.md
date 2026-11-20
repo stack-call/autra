@@ -18,6 +18,22 @@ Autra is not an Agent hosting platform. It does not implement a general
 Durable Workflow engine, an OS sandbox, a task scheduler or a distributed
 actor placement system.
 
+## Seven principles
+
+The four product principles plus three constraints:
+
+| Principle | Constraint |
+|---|---|
+| Composable Intelligence | Intelligence is composed from Harness capabilities, not one engine |
+| Structured Execution | Concurrency, subtasks, budgets and cancellation have explicit lifecycles |
+| Explicit Effects | External operations have intent, authority, result and execution boundaries |
+| Optional Infrastructure | The base does not require a service or database |
+| Semantic Consistency | Engines and hosts share core semantics without pretending identical guarantees |
+| Capability-Oriented Design | Compose through capabilities and contracts, not infrastructure in Core |
+| Progressive Complexity | Simple cases stay simple; advanced capabilities are explicit and incremental |
+
+The five goals below turn these principles into tests.
+
 ## Five architecture goals
 
 These goals are the test for whether a design change belongs in Autra.
