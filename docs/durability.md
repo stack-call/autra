@@ -54,6 +54,16 @@ A conditional file write can be checked against the original version and
 target hash. A `git push`, email or payment may have no idempotency or query
 API; the system must surface an unknown state rather than invent exactly-once.
 
+## Session store vs execution journal
+
+Session persistence and Run execution persistence are different truths. A
+Session store needs conversation metadata, turn records, the run association
+and a user-visible status summary. A durable execution host needs the committed
+Run state, Effect intents, tool results, approvals and the authoritative
+journal. They may share a SQLite database, but they must not share one state
+machine or one transaction that makes a Session claim a Run exists before the
+execution state is committed.
+
 ## Current limitation
 
 The MVP has no durable journal, checkpoint, recovery or reconciliation. A

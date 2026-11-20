@@ -31,7 +31,9 @@ execution detail, never a domain identity.
 
 In the current harness, `Session` keeps the accepted `HistoryItem` list in
 memory. `run_turn` takes `&mut self`, so turns are sequential; each turn is a
-fresh Run with a fresh budget and Run id, seeded with the Session history.
+fresh Run with a fresh budget, Run id and Turn id, seeded with the Session
+history. The Run state carries the Session and Turn ids as optional references;
+a direct `Agent::run` has neither.
 
 ## Execution objects
 

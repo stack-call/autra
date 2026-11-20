@@ -33,6 +33,8 @@ implemented.
   or multi-session service.
 - No shell command tool or OS sandbox; `LocalWorkspace` is path validation only.
 - Sessions and plans are in memory; approvals have no expiry or actor identity.
+- Runs carry optional Session/Turn ids; SessionManager, TurnRecord and a
+  SessionStore are not implemented.
 - Subagents do not propagate cancellation or share a budget slice.
 - The CLI's `run`/`chat` commands do not register workspace tools; `demo` uses
   the read-only workspace tools and `tools` lists the built-in registry.

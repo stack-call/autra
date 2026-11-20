@@ -7,7 +7,7 @@ use std::time::Duration;
 use autra_core::AgentStepper;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, BudgetSnapshot, CancelFlag, Disposition, EffectIntent,
-    EventKind, HistoryItem, RunId, StepError, ToolCallRequest, ToolOutcome,
+    EventKind, HistoryItem, RunId, SessionId, StepError, ToolCallRequest, ToolOutcome, TurnId,
 };
 use autra_harness::{
     LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
@@ -50,6 +50,8 @@ pub struct RunOptions {
     pub effect_timeout: Option<Duration>,
     pub max_parallel_tool_calls: Option<u32>,
     pub approver: Option<Arc<dyn Approver>>,
+    pub session_id: Option<SessionId>,
+    pub turn_id: Option<TurnId>,
 }
 
 #[derive(Clone, Debug)]
@@ -230,6 +232,8 @@ impl Agent {
             BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
         );
         state.history = history.to_vec();
+        state.session_id = options.session_id.clone();
+        state.turn_id = options.turn_id.clone();
         let mut context_builder = SimpleContextBuilder::new(self.skills.index());
         if let Some(max_chars) = self.context_budget_chars {
             context_builder = context_builder.with_max_chars(max_chars);

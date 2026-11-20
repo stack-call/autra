@@ -51,6 +51,18 @@ async fn second_turn_sees_the_first_turn_history() {
 
     assert_eq!(first.answer(), Some("one"));
     assert_eq!(second.answer(), Some("two"));
+    assert_eq!(
+        first.state().session_id.as_ref(),
+        Some(session.session_id())
+    );
+    assert_eq!(
+        second.state().session_id.as_ref(),
+        Some(session.session_id())
+    );
+    assert!(first.state().turn_id.is_some());
+    assert!(second.state().turn_id.is_some());
+    assert_ne!(first.state().turn_id, second.state().turn_id);
+    assert_eq!(session.last_turn_id(), second.state().turn_id.as_ref());
     assert_eq!(session.turn_index(), 2);
     assert_eq!(session.history().len(), 4);
     let requests = requests.lock().unwrap();
@@ -72,6 +84,7 @@ fn sessions_have_distinct_identities() {
 
     assert_ne!(first.session_id(), second.session_id());
     assert_eq!(first.turn_index(), 0);
+    assert!(first.last_turn_id().is_none());
 }
 
 #[tokio::test]
@@ -109,4 +122,14 @@ async fn a_failed_turn_leaves_the_history_unchanged() {
     assert!(error.to_string().contains("recording model exhausted"));
     assert!(session.history().is_empty());
     assert_eq!(session.turn_index(), 1);
+}
+
+#[tokio::test]
+async fn a_direct_agent_run_has_no_session_or_turn_identity() {
+    let agent = Agent::builder("direct").model(EchoModel).build().unwrap();
+
+    let outcome = agent.run("hello").await.unwrap();
+
+    assert!(outcome.state().session_id.is_none());
+    assert!(outcome.state().turn_id.is_none());
 }

@@ -11,7 +11,7 @@ The first complete harness (§0.4) is reached at a basic level; see
 | M0 Architecture baseline | Spec, ADRs, workspace, fake model, minimal tool | Done |
 | M1 Agent Core v0.1 | Stepper, ReAct, tool calling, local host, CLI, streaming events | Done |
 | M2 Structured concurrency | Batches, budgets, cancellation, ChildRun, parallel tools | Tools, bounded parallelism and tool-backed subagents done; runtime ChildRun pending |
-| M3 Full interaction | Turns, approval, commands, hooks, tool policy | Approval, guarded write_file and in-memory sessions done; hooks and policy registry pending |
+| M3 Full interaction | Turns, approval, commands, hooks, tool policy | Approval, guarded write_file and in-memory sessions with session and turn identity done; SessionManager and SessionStore pending |
 | M4 Native durability | SQLite journal, outbox, checkpoints, recovery, OutcomeUnknown | Pending: a local `outcome_unknown` marker exists, no reconciliation |
 | M5 Rich harness | Context policy, compaction, skills, planning, memory | Partial: ContextBuilder, budget, Skills and Planning done; memory pending |
 | M6 Sandbox and evaluation | OpenShell adapter, tracing, replay, evaluation set | Tracing and basic evaluation done; OpenShell and replay pending |
@@ -24,7 +24,7 @@ The first complete harness (§0.4) is reached at a basic level; see
 - Read-only workspace tools with path confinement and bounded output.
 - Bounded parallel tool batches, opt-in and defaulting to sequential.
 - Tool approval bound to Run, call, tool and argument digest; guarded write_file.
-- In-memory Sessions with sequential turns and history seeding.
+- In-memory Sessions with sequential turns, history seeding and Run session/turn identity.
 - ContextBuilder seam with a character budget and on-demand Skills.
 - Tool-backed in-memory planning via `update_plan` and `Agent::plan()`.
 - Restricted subagents as named child Agents behind `spawn_subagent`.
@@ -38,10 +38,11 @@ The first complete harness (§0.4) is reached at a basic level; see
 ## Next slices
 
 1. Runtime ChildRun identity, cancellation and budget slicing.
-2. Policy registry, hooks and an interactive approval surface.
-3. Native durable SQLite host with a transactional outbox.
-4. Memory retrieval and a richer context policy.
-5. OpenShell adapter and replay fixtures.
+2. SessionManager, TurnRecord and a SessionStore boundary.
+3. Policy registry, hooks and an interactive approval surface.
+4. Native durable SQLite host with a transactional outbox.
+5. Memory retrieval and a richer context policy.
+6. OpenShell adapter and replay fixtures.
 
 The ordering follows the spec's dependency logic: stabilize state and
 concurrency semantics before adding durability, and add durability before

@@ -61,6 +61,25 @@ core has no Tokio, database or sandbox dependency.
 | `autra-openai` | OpenAI-compatible chat completions provider | Implemented, non-streaming |
 | `autra-eval` | Task-level outcome evaluation | Implemented |
 
+## Domain ownership vs code location
+
+A concept can be core to the product without living in `autra-core`. The
+`CORE` marker in the design spec means semantics the framework must guarantee,
+not a required crate location.
+
+| Concept | Domain owner | Current code |
+|---|---|---|
+| Session | Session layer | `autra-runtime` |
+| Turn | Session layer | `autra-runtime` |
+| Run | Core + runtime | `autra-core` state; `autra-runtime` execution |
+| ChildRun | Core + runtime | tool-backed subagent; runtime ChildRun pending |
+| Effect | Core + host | `EffectIntent` in Core, outcome in Core, dispatch in runtime |
+| Context | Harness | `autra-harness` ContextBuilder |
+| Workspace | Core reference + adapter | `LocalWorkspace` in harness; sandbox pending |
+
+`AgentState` is the Run state. It carries optional `SessionId` and `TurnId`
+references, so a Run can be correlated without Core owning Session lifecycle.
+
 ## Product stack and guarantees
 
 | Layer | Promise |

@@ -1,4 +1,4 @@
-use autra_core::{HistoryItem, SessionId};
+use autra_core::{HistoryItem, SessionId, TurnId};
 
 use crate::{Agent, RunError, RunEvent, RunOptions, RunOutcome};
 
@@ -12,6 +12,7 @@ pub struct Session {
     history: Vec<HistoryItem>,
     session_id: SessionId,
     turn_index: u32,
+    last_turn_id: Option<TurnId>,
 }
 
 impl Session {
@@ -21,6 +22,7 @@ impl Session {
             history: Vec::new(),
             session_id: SessionId::fresh(),
             turn_index: 0,
+            last_turn_id: None,
         }
     }
 
@@ -30,6 +32,10 @@ impl Session {
 
     pub fn turn_index(&self) -> u32 {
         self.turn_index
+    }
+
+    pub fn last_turn_id(&self) -> Option<&TurnId> {
+        self.last_turn_id.as_ref()
     }
 
     pub fn history(&self) -> &[HistoryItem] {
@@ -55,7 +61,12 @@ impl Session {
     where
         F: FnMut(&RunEvent),
     {
+        let turn_id = TurnId::fresh();
         self.turn_index += 1;
+        self.last_turn_id = Some(turn_id.clone());
+        let mut options = options;
+        options.session_id = Some(self.session_id.clone());
+        options.turn_id = Some(turn_id);
         let outcome = self
             .agent
             .run_with_history(&self.history, input, options, |event| on_event(event))
