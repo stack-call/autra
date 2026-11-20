@@ -8,6 +8,7 @@ pub mod command;
 pub mod context;
 #[cfg(feature = "process")]
 pub mod git;
+pub mod middleware;
 pub mod model;
 pub mod planning;
 pub mod react;
@@ -22,6 +23,10 @@ pub use context::{
 };
 #[cfg(feature = "process")]
 pub use git::{GitDiffTool, GitStatusTool};
+pub use middleware::{
+    ExtensionError, MiddlewareStepper, ModelBuildContext, ModelMiddleware, ModelRequestDraft,
+    ModelRequestTransform,
+};
 pub use model::{
     EchoModel, FakeModel, MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider,
 };

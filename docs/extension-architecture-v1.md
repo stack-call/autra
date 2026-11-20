@@ -515,7 +515,8 @@ Runtime and optional infrastructure.
 |---|---|
 | Capability registration | Implemented through Builders |
 | Typed lifecycle hooks | `ObserverHook` subset only |
-| Wrap middleware | Not implemented; a custom `Dispatcher` can wrap manually |
+| Behaviour wrap | `ModelRequestTransform` via `AgentBuilder::middleware`, before the model Effect is recorded |
+| Invocation wrap | Not implemented; a custom `Dispatcher` can wrap manually |
 | Plugin composition | Not implemented; design in [`plugins.md`](plugins.md) |
 | UI extensions | Not implemented |
 | Execution configuration / middleware versions | Not implemented |

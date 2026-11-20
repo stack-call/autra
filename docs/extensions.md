@@ -38,6 +38,7 @@ Direct Builder registration remains the supported extension path.
 | Model provider | `AgentBuilder::model` | `ModelProvider::complete`, `capabilities()` and `protocol_version()`; provider-specific fields stay in the adapter |
 | Context strategy | `AgentBuilder::context_builder` | `ContextBuilder::build`; a custom builder owns skills and budget composition |
 | Engine | `AgentBuilder::stepper` | `AgentStepper::transition` returns a proposed transition; the coordinator commits and dispatches |
+| Model request middleware | `AgentBuilder::middleware` | `ModelRequestTransform` sees a restricted `ModelRequestDraft`, never `AgentState`; transforms run in registration order before the Effect is recorded |
 | Skill | `AgentBuilder::skill` | Named instructions plus read-only `load_skill`; loading grants no permission |
 | Subagent | `AgentBuilder::subagent` | Named child Agent behind `spawn_subagent`; runs as a runtime ChildRun with parent identity and inherited cancellation |
 | Approver | `AgentBuilder::approver` | `Approver::approve`; the coordinator binds the decision to the call |
@@ -105,9 +106,10 @@ below is the short version.
 
 The current implementation covers capability registration through Builders and
 a read-only `ObserverHook`. The intended extension system has four layers.
-Only capability registration and a subset of lifecycle events exist today;
-interceptors and plugin composition are not implemented. This section records
-the target shape so new features do not invent a conflicting one.
+Capability registration, a subset of lifecycle events and typed model-request
+transforms (`AgentBuilder::middleware`) exist today. Invocation wrapping and
+plugin composition are not implemented. This section records the target shape
+so new features do not invent a conflicting one.
 
 ```text
 Autra Extension System
@@ -129,7 +131,7 @@ Autra Extension System
 |---|---|---|---|
 | Capability Registration | Declare Tools, Model Providers, Context strategies, Planners, Skills, Memory sources | Builder paths (`tool`, `model`, `context_builder`, `stepper`, `skill`) | Typed registries that a plugin or application can fill; duplicate and conflict checks |
 | Lifecycle Events | Read-only notifications at defined stages | `ObserverHook` (run start, model request, effect accepted, run finished) | A typed catalog: `before_model`, `after_model`, `before_tool`, `after_tool`, approval, effect committed, run phase changes |
-| Wrap Interceptors | Middleware around a call: inspect, transform or short-circuit | None; a custom `Dispatcher` can wrap execution manually | Ordered `model_call` / `tool_call` chains for tracing, redaction, caching, policy checks, retries |
+| Wrap Interceptors | Middleware around a call: inspect, transform or short-circuit | Behaviour wrap for model requests (`ModelRequestTransform`); no invocation wrap | Ordered `model_call` / `tool_call` chains for tracing, redaction, caching, policy checks, retries |
 | Plugin Composition | Bundle capabilities, hooks and interceptors with dependencies, init/cleanup and UI | None; design in [`plugins.md`](plugins.md) | A `Plugin` / `PluginManager` in the facade (or `autra-plugins`) that installs the other three layers |
 
 ### Layer rules

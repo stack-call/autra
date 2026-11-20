@@ -8,8 +8,8 @@ use autra_execution::{
     Approver, DurableTransitionStore, ModelProvider, ObserverHook, Tool, ToolRegistry,
 };
 use autra_harness::{
-    ContextBuilder, LoadSkillTool, PlanItem, ReActStepper, SharedPlan, SimpleContextBuilder, Skill,
-    SkillRegistry, UpdatePlanTool,
+    ContextBuilder, LoadSkillTool, MiddlewareStepper, ModelMiddleware, ModelRequestTransform,
+    PlanItem, ReActStepper, SharedPlan, SimpleContextBuilder, Skill, SkillRegistry, UpdatePlanTool,
 };
 use thiserror::Error;
 
@@ -34,6 +34,7 @@ pub struct Agent {
     plan: Option<SharedPlan>,
     context_builder: Option<Arc<dyn ContextBuilder>>,
     stepper: Option<Arc<dyn AgentStepper>>,
+    middleware: ModelMiddleware,
     engine: LocalEngine,
 }
 
@@ -140,7 +141,7 @@ impl Agent {
     }
 
     fn stepper_for_run(&self) -> Arc<dyn AgentStepper> {
-        match &self.stepper {
+        let base: Arc<dyn AgentStepper> = match &self.stepper {
             Some(stepper) => stepper.clone(),
             None => {
                 let context_builder: Arc<dyn ContextBuilder> = match &self.context_builder {
@@ -158,6 +159,11 @@ impl Agent {
                         .with_shared_context_builder(context_builder),
                 )
             }
+        };
+        if self.middleware.is_empty() {
+            base
+        } else {
+            Arc::new(MiddlewareStepper::new(base, self.middleware.clone()))
         }
     }
 }
@@ -179,6 +185,7 @@ pub struct AgentBuilder {
     subagents: SubagentRegistry,
     context_builder: Option<Arc<dyn ContextBuilder>>,
     stepper: Option<Arc<dyn AgentStepper>>,
+    middleware: ModelMiddleware,
     observer: Option<Arc<dyn ObserverHook>>,
     journal: Option<Arc<dyn DurableTransitionStore>>,
 }
@@ -202,6 +209,7 @@ impl AgentBuilder {
             subagents: SubagentRegistry::new(),
             context_builder: None,
             stepper: None,
+            middleware: ModelMiddleware::new(),
             observer: None,
             journal: None,
         }
@@ -285,6 +293,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn middleware(mut self, transform: impl ModelRequestTransform + 'static) -> Self {
+        self.middleware = self.middleware.push(transform);
+        self
+    }
+
     pub fn observer(mut self, observer: impl ObserverHook + 'static) -> Self {
         self.observer = Some(Arc::new(observer));
         self
@@ -361,6 +374,7 @@ Maintain a short plan with `update_plan` and keep it current."
             plan,
             context_builder: self.context_builder,
             stepper: self.stepper,
+            middleware: self.middleware,
             engine,
         })
     }
