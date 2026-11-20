@@ -24,7 +24,7 @@ adapters. It is not a dynamic plugin platform.
 
 | Extension | Registration | Contract today |
 |---|---|---|
-| Tool | `AgentBuilder::tool` | `spec`, `effect_class`, `requires_approval`, `call(&str)`; the coordinator owns approval and dispatch |
+| Tool | `AgentBuilder::tool` | `descriptor`, `contract`, `execute(input, context)`; `spec`/`call` remain as default adapters. The coordinator owns approval and dispatch |
 | Model provider | `AgentBuilder::model` | `ModelProvider::complete`; provider-specific fields stay in the adapter |
 | Context strategy | `AgentBuilder::context_builder` | `ContextBuilder::build`; a custom builder owns skills and budget composition |
 | Engine | `AgentBuilder::stepper` | `AgentStepper::transition` returns a proposed transition; the coordinator commits and dispatches |
@@ -72,7 +72,7 @@ Every extension group should declare:
 
 | Gap | Consequence |
 |---|---|
-| ToolDescriptor/ToolContract split | `Tool` mixes description, effect class and execution; a richer contract is future |
+| Tool protocol version negotiation | Extensions cannot yet declare compatibility with stored Runs |
 | `ModelCapabilities` | No declared streaming/structured-output/multimodal support |
 | Planner trait | Planning is currently a tool, not a replaceable behaviour |
 | `SandboxBackend`/Host traits | Adapters cannot be registered yet |

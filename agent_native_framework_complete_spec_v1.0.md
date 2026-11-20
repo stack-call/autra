@@ -1696,7 +1696,7 @@ Autra 的扩展不是动态插件平台，而是 **Rust trait + Builder 显式�
 
 | 扩展 | 注册方式 | 当前契约 |
 |---|---|---|
-| Tool | `AgentBuilder::tool` | `spec`、`effect_class`、`requires_approval`、`call(&str)`；审批与派发由 Coordinator 负责 |
+| Tool | `AgentBuilder::tool` | `descriptor`、`contract`、`execute(input, context)`；`spec`/`call` 保留为默认适配；审批与派发由 Coordinator 负责 |
 | Model Provider | `AgentBuilder::model` | `ModelProvider::complete`；Provider 特有字段留在 Adapter |
 | Context 策略 | `AgentBuilder::context_builder` | `ContextBuilder::build`；自定义 Builder 自行组合 Skills/预算 |
 | Engine | `AgentBuilder::stepper` | `AgentStepper::transition` 返回提案；Coordinator 校验、提交与派发 |

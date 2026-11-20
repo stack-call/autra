@@ -11,7 +11,8 @@ use autra_core::{
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
-    SimpleContextBuilder, Skill, SkillRegistry, Tool, ToolRegistry, UpdatePlanTool,
+    SimpleContextBuilder, Skill, SkillRegistry, Tool, ToolContext, ToolInput, ToolRegistry,
+    UpdatePlanTool,
 };
 use futures_util::FutureExt;
 use tracing::Instrument;
@@ -424,7 +425,7 @@ impl Agent {
             let requires_approval = self
                 .tools
                 .get(&call.name)
-                .map(|tool| tool.requires_approval())
+                .map(|tool| tool.contract().requires_approval)
                 .unwrap_or(false);
             if requires_approval {
                 let request = ApprovalRequest::new(sink.run_id, call);
@@ -473,7 +474,13 @@ impl Agent {
                     break;
                 }
                 sink.start_tool(&call);
-                let outcome = execute_tool(self.tools.clone(), call, effect_timeout).await;
+                let outcome = execute_tool(
+                    self.tools.clone(),
+                    call,
+                    effect_timeout,
+                    sink.run_id.clone(),
+                )
+                .await;
                 sink.emit_tool_result(&outcome);
                 outcomes[index] = Some(outcome);
             }
@@ -489,9 +496,13 @@ impl Agent {
                     let index = *index;
                     let tools = self.tools.clone();
                     let call = call.clone();
-                    tasks.spawn(
-                        async move { (index, execute_tool(tools, call, effect_timeout).await) },
-                    );
+                    let run_id = sink.run_id.clone();
+                    tasks.spawn(async move {
+                        (
+                            index,
+                            execute_tool(tools, call, effect_timeout, run_id).await,
+                        )
+                    });
                 }
                 while let Some(result) = tasks.join_next().await {
                     let (index, outcome) = result.map_err(|error| {
@@ -710,6 +721,7 @@ async fn execute_tool(
     tools: ToolRegistry,
     call: ToolCallRequest,
     timeout: Option<Duration>,
+    run_id: RunId,
 ) -> ToolOutcome {
     let result: Result<String, (String, bool)> = match tools.get(&call.name) {
         Some(tool) => {
@@ -718,9 +730,16 @@ async fn execute_tool(
                 tool = %call.name,
                 call_id = %call.call_id
             );
-            let future = AssertUnwindSafe(with_timeout(timeout, tool.call(&call.arguments)));
+            let input = ToolInput {
+                arguments: call.arguments.clone(),
+            };
+            let context = ToolContext {
+                run_id,
+                call_id: call.call_id.clone(),
+            };
+            let future = AssertUnwindSafe(with_timeout(timeout, tool.execute(input, context)));
             match future.catch_unwind().instrument(span).await {
-                Ok(Ok(Ok(content))) => Ok(content),
+                Ok(Ok(Ok(output))) => Ok(output.content),
                 Ok(Ok(Err(error))) => Err((error.to_string(), false)),
                 Ok(Err(())) => Err((
                     format!(
