@@ -66,6 +66,7 @@ dependencies = [
  "autra-durable-sqlite",
  "autra-harness",
  "autra-openai",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing-subscriber",

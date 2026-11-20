@@ -9,14 +9,15 @@ pub mod hooks;
 pub mod host;
 pub mod journal;
 pub mod model;
+pub mod policy;
 pub mod run;
 pub mod sandbox;
 pub mod session;
 pub mod tool;
 
 pub use approval::{
-    ApprovalDecision, ApprovalRequest, Approver, LOCAL_POLICY_REVISION, digest_arguments,
-    digest_intent,
+    ApprovalDecision, ApprovalRequest, Approver, DEFAULT_APPROVAL_TTL, LOCAL_POLICY_REVISION,
+    digest_arguments, digest_intent,
 };
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities};
@@ -24,6 +25,7 @@ pub use journal::{
     DEFAULT_CLAIM_LEASE, DurableTransitionStore, EffectJournal, JournalError, OutboxEntry,
 };
 pub use model::{MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider};
+pub use policy::{PolicyChain, PolicyDecision, PolicyRequest, ToolPolicy, baseline_decision};
 pub use run::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
 pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,

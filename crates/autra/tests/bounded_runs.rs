@@ -160,6 +160,10 @@ impl Tool for SlowTool {
         }
     }
 
+    fn effect_class(&self) -> autra_core::EffectClass {
+        autra_core::EffectClass::ReadOnly
+    }
+
     async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
         tokio::time::sleep(Duration::from_secs(5)).await;
         Ok("too late".to_owned())

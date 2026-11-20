@@ -1,8 +1,11 @@
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use async_trait::async_trait;
 use autra_core::{EffectId, EffectIntent, RunId, ToolCallRequest};
 use sha2::{Digest, Sha256};
 
 pub const LOCAL_POLICY_REVISION: &str = "local-v1";
+pub const DEFAULT_APPROVAL_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalRequest {
@@ -13,6 +16,10 @@ pub struct ApprovalRequest {
     pub arguments: String,
     pub argument_digest: String,
     pub policy_revision: String,
+    /// Who is asked to approve, when the host knows.
+    pub actor: Option<String>,
+    /// Unix milliseconds after which this approval is no longer valid.
+    pub expires_at_unix_ms: Option<u64>,
     /// Tool-provided description of the pending change, if the tool has one.
     pub preview: Option<String>,
 }
@@ -27,8 +34,27 @@ impl ApprovalRequest {
             arguments: call.arguments.clone(),
             argument_digest: digest_arguments(&call.name, &call.arguments),
             policy_revision: LOCAL_POLICY_REVISION.to_owned(),
+            actor: None,
+            expires_at_unix_ms: None,
             preview: None,
         }
+    }
+
+    pub fn with_policy(
+        mut self,
+        revision: impl Into<String>,
+        actor: Option<String>,
+        ttl: Option<Duration>,
+    ) -> Self {
+        self.policy_revision = revision.into();
+        self.actor = actor;
+        self.expires_at_unix_ms = ttl.map(|ttl| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|now| now.as_millis() as u64 + ttl.as_millis() as u64)
+                .unwrap_or(0)
+        });
+        self
     }
 
     pub fn with_preview(mut self, preview: Option<String>) -> Self {

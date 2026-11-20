@@ -24,6 +24,10 @@ impl Tool for DelayTool {
         }
     }
 
+    fn effect_class(&self) -> autra_core::EffectClass {
+        autra_core::EffectClass::ReadOnly
+    }
+
     async fn call(&self, arguments: &str) -> Result<String, ToolError> {
         let value: serde_json::Value = serde_json::from_str(arguments)
             .map_err(|error| ToolError::new(format!("invalid delay arguments: {error}")))?;
@@ -280,6 +284,10 @@ impl Tool for PanicTool {
             description: "Panics.".to_owned(),
             input_schema: "{}".to_owned(),
         }
+    }
+
+    fn effect_class(&self) -> autra_core::EffectClass {
+        autra_core::EffectClass::ReadOnly
     }
 
     async fn call(&self, _arguments: &str) -> Result<String, ToolError> {

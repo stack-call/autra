@@ -94,6 +94,8 @@ edit.
 | `--model <name>`, `-m <name>` | OpenAI-compatible model; omit for the local echo model |
 | `--journal <path>`, `-j <path>` | persist run state, events and effects to a SQLite journal |
 | `--session <id>` | restore or create a named chat session (requires `--journal`) |
+| `--policy <path>` | JSON tool/command policy (`allow_tools`, `ask_tools`, `deny_tools`, `deny_commands`) |
+| `--actor <name>` | operator identity recorded on approval requests |
 | `--yes`, `-y` | approve `write_file`, `edit_file` and `run_command` without prompting |
 | `--read-only` | expose only `list_files`, `read_file` and `search_text` |
 
@@ -113,7 +115,8 @@ is only cleaned up.
 
 > `run_command` is a local unsandboxed shell, not an OS sandbox. Prefer
 > `--read-only` for inspection, and avoid `--yes` on repositories you do not
-> trust. See [tool security](docs/tool-security.md).
+> trust. A policy file can deny tools or command patterns even under `--yes`;
+> see [tool security](docs/tool-security.md).
 
 ## Real model provider
 

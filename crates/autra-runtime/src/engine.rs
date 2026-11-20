@@ -14,8 +14,9 @@ use autra_core::{
     TransitionProposal,
 };
 use autra_execution::{
-    Approver, DurableTransitionStore, EffectJournal, ObserverHook, RunError, RunEvent, RunOptions,
-    RunOutcome, ToolContext, ToolRegistry,
+    Approver, DEFAULT_APPROVAL_TTL, DurableTransitionStore, EffectJournal, ObserverHook,
+    PolicyChain, PolicyDecision, PolicyRequest, RunError, RunEvent, RunOptions, RunOutcome,
+    ToolContext, ToolPolicy, ToolRegistry,
 };
 use tracing::Instrument;
 
@@ -39,6 +40,9 @@ pub struct LocalEngine {
     max_parallel_tool_calls: u32,
     effect_timeout: Option<Duration>,
     approver: Option<Arc<dyn Approver>>,
+    policy: PolicyChain,
+    actor: Option<String>,
+    approval_ttl: Option<Duration>,
 }
 
 impl LocalEngine {
@@ -53,6 +57,9 @@ impl LocalEngine {
             max_parallel_tool_calls: 1,
             effect_timeout: None,
             approver: None,
+            policy: PolicyChain::new(),
+            actor: None,
+            approval_ttl: None,
         }
     }
 
@@ -86,6 +93,47 @@ impl LocalEngine {
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
         self.approver = Some(approver);
         self
+    }
+
+    /// Add a policy. Policies only narrow the host baseline.
+    pub fn with_policy(mut self, policy: impl ToolPolicy + 'static) -> Self {
+        self.policy = self.policy.push(policy);
+        self
+    }
+
+    pub fn with_policy_chain(mut self, policy: PolicyChain) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    pub fn with_actor(mut self, actor: impl Into<String>) -> Self {
+        self.actor = Some(actor.into());
+        self
+    }
+
+    pub fn with_approval_ttl(mut self, ttl: Duration) -> Self {
+        self.approval_ttl = Some(ttl);
+        self
+    }
+
+    fn policy_decision(&self, run_id: &RunId, call: &ToolCallRequest) -> Option<PolicyDecision> {
+        self.tools.get(&call.name).map(|tool| {
+            let contract = tool.contract();
+            self.policy.decide(&PolicyRequest {
+                run_id,
+                tool_name: &call.name,
+                arguments: &call.arguments,
+                effect_class: contract.effect_class,
+                requires_approval: contract.requires_approval,
+            })
+        })
+    }
+
+    fn tool_needs_gate(&self, run_id: &RunId, call: &ToolCallRequest) -> bool {
+        matches!(
+            self.policy_decision(run_id, call),
+            Some(PolicyDecision::Ask | PolicyDecision::Deny)
+        )
     }
 
     pub fn tools(&self) -> &ToolRegistry {
@@ -542,11 +590,7 @@ impl LocalEngine {
                 let intent_json = serde_json::to_string(&intent).unwrap_or_default();
                 let requires_approval = match &intent {
                     EffectIntent::CallModel(_) => false,
-                    EffectIntent::CallTool(spec) => self
-                        .tools
-                        .get(&spec.call.name)
-                        .map(|tool| tool.contract().requires_approval)
-                        .unwrap_or(false),
+                    EffectIntent::CallTool(spec) => self.tool_needs_gate(&run_id, &spec.call),
                 };
                 let mut record = match &intent {
                     EffectIntent::CallModel(_) => EffectRecord::new(
@@ -788,20 +832,45 @@ impl LocalEngine {
                 cancelled = true;
                 break;
             }
-            let requires_approval = self
-                .tools
-                .get(&call.name)
-                .map(|tool| tool.contract().requires_approval)
-                .unwrap_or(false);
-            if requires_approval {
+            let decision = match self.policy_decision(&run_id, call) {
+                Some(decision) => decision,
+                None => {
+                    // Unknown tools are dispatched so the outcome is a normal
+                    // tool error, not an approval prompt.
+                    sink.effect_mut(effect_id)
+                        .set_status(EffectStatus::Authorized);
+                    approved[index] = Some((effect_id.clone(), call.clone()));
+                    continue;
+                }
+            };
+            if decision == PolicyDecision::Deny {
+                let outcome = policy_denied_outcome(call, &self.policy.revision());
+                let record = sink.effect_mut(effect_id);
+                record.set_status(EffectStatus::Rejected);
+                record.error = Some(outcome.content.clone());
+                if let Some(journal) = &self.journal {
+                    journal
+                        .record(&run_id, record)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                }
+                sink.emit_tool_result(&outcome);
+                outcomes[index] = Some(outcome);
+                continue;
+            }
+            if decision == PolicyDecision::Ask {
                 sink.effect_mut(effect_id)
                     .set_status(EffectStatus::AwaitingApproval);
                 let preview = self
                     .tools
                     .get(&call.name)
                     .and_then(|tool| tool.preview(&call.arguments));
-                let request =
-                    ApprovalRequest::new(sink.run_id, effect_id, call).with_preview(preview);
+                let request = ApprovalRequest::new(sink.run_id, effect_id, call)
+                    .with_policy(
+                        self.policy.revision(),
+                        self.actor.clone(),
+                        Some(self.approval_ttl.unwrap_or(DEFAULT_APPROVAL_TTL)),
+                    )
+                    .with_preview(preview);
                 sink.emit_stream(&RunEvent::ApprovalRequested {
                     call_id: request.call_id.clone(),
                     tool_name: request.tool_name.clone(),
@@ -1139,6 +1208,16 @@ fn emit_tool_result<F: FnMut(&RunEvent)>(on_event: &mut F, outcome: &ToolOutcome
         outcome_unknown: outcome.outcome_unknown,
         content: outcome.content.clone(),
     });
+}
+
+fn policy_denied_outcome(call: &ToolCallRequest, revision: &str) -> ToolOutcome {
+    ToolOutcome {
+        call_id: call.call_id.clone(),
+        name: call.name.clone(),
+        content: format!("denied by policy `{revision}`; the tool was not executed"),
+        is_error: true,
+        outcome_unknown: false,
+    }
 }
 
 fn rejected_outcome(call: &ToolCallRequest) -> ToolOutcome {

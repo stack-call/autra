@@ -97,6 +97,11 @@ Tests observe public behaviour, not private helpers.
     recorded as completed, cancelled or failed; history restores across
     process exits; saved turns upsert by index; `chat --session` requires a
     journal and persists turns across two CLI processes.
+30. **Tool policy** (`autra-execution`, `autra-runtime`, `autra`): the baseline
+    asks for `Unknown` or approval-required tools; a deny rule blocks without
+    an approver; an allow rule cannot lower the baseline; deny commands block
+    `run_command`; approval requests carry revision, actor and expiry; the CLI
+    loads a JSON policy file.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

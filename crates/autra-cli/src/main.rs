@@ -6,8 +6,8 @@ use autra_core::{RunId, SessionId};
 use autra_durable_sqlite::{SqliteEffectJournal, SqliteSessionStore};
 
 use autra::{
-    Agent, ApprovalDecision, ApprovalRequest, Approver, RunError, RunEvent, RunOptions, RunOutcome,
-    Session, SessionStore,
+    Agent, ApprovalDecision, ApprovalRequest, Approver, RulePolicy, RunError, RunEvent, RunOptions,
+    RunOutcome, Session, SessionStore,
 };
 use autra_harness::{
     EchoModel, EchoTool, EditFileTool, FakeModel, GitDiffTool, GitStatusTool, HistoryItem,
@@ -46,6 +46,8 @@ struct Flags {
     read_only: bool,
     journal: Option<String>,
     session: Option<String>,
+    policy: Option<String>,
+    actor: Option<String>,
     rest: Vec<String>,
 }
 
@@ -262,6 +264,42 @@ async fn outbox_command(args: &[String]) -> ExitCode {
     }
 }
 
+fn load_rule_policy(path: &str) -> Result<RulePolicy, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read policy `{path}`: {error}"))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("cannot parse policy `{path}`: {error}"))?;
+    let mut policy = RulePolicy::new(format!("file:{path}"));
+    for name in string_list(&value, "allow_tools")? {
+        policy = policy.allow_tool(name);
+    }
+    for name in string_list(&value, "ask_tools")? {
+        policy = policy.ask_tool(name);
+    }
+    for name in string_list(&value, "deny_tools")? {
+        policy = policy.deny_tool(name);
+    }
+    for pattern in string_list(&value, "deny_commands")? {
+        policy = policy.deny_command(pattern);
+    }
+    Ok(policy)
+}
+
+fn string_list(value: &serde_json::Value, key: &str) -> Result<Vec<String>, String> {
+    match value.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("policy `{key}` must contain strings"))
+            })
+            .collect(),
+        Some(_) => Err(format!("policy `{key}` must be an array")),
+    }
+}
+
 fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
     let usage = || {
         eprintln!(
@@ -275,6 +313,8 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         read_only: false,
         journal: None,
         session: None,
+        policy: None,
+        actor: None,
         rest: Vec::new(),
     };
     let mut parsing_flags = true;
@@ -305,6 +345,20 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
             },
             "--journal" | "-j" => match iter.next() {
                 Some(path) if !path.is_empty() => flags.journal = Some(path.clone()),
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--policy" => match iter.next() {
+                Some(path) if !path.is_empty() => flags.policy = Some(path.clone()),
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--actor" => match iter.next() {
+                Some(actor) if !actor.is_empty() => flags.actor = Some(actor.clone()),
                 _ => {
                     usage();
                     return Err(());
@@ -362,6 +416,14 @@ fn build_agent(flags: &Flags) -> Result<Agent, String> {
         builder.approver(AutoApprove)
     } else {
         builder.approver(InteractiveApprover)
+    };
+    let builder = match &flags.policy {
+        Some(path) => builder.policy(load_rule_policy(path)?),
+        None => builder,
+    };
+    let builder = match &flags.actor {
+        Some(actor) => builder.actor(actor.clone()),
+        None => builder,
     };
     let builder = match &flags.journal {
         Some(path) => {

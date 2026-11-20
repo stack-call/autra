@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use autra_core::{AgentStepper, CancelFlag, HistoryItem, RunId};
 use autra_execution::{
-    Approver, DurableTransitionStore, ModelProvider, ObserverHook, Tool, ToolRegistry,
+    Approver, DurableTransitionStore, ModelProvider, ObserverHook, PolicyChain, Tool, ToolPolicy,
+    ToolRegistry,
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, MiddlewareStepper, ModelMiddleware, ModelRequestTransform,
@@ -188,6 +189,9 @@ pub struct AgentBuilder {
     middleware: ModelMiddleware,
     observer: Option<Arc<dyn ObserverHook>>,
     journal: Option<Arc<dyn DurableTransitionStore>>,
+    policy: PolicyChain,
+    actor: Option<String>,
+    approval_ttl: Option<Duration>,
 }
 
 impl AgentBuilder {
@@ -212,6 +216,9 @@ impl AgentBuilder {
             middleware: ModelMiddleware::new(),
             observer: None,
             journal: None,
+            policy: PolicyChain::new(),
+            actor: None,
+            approval_ttl: None,
         }
     }
 
@@ -308,6 +315,21 @@ impl AgentBuilder {
         self
     }
 
+    pub fn policy(mut self, policy: impl ToolPolicy + 'static) -> Self {
+        self.policy = self.policy.push(policy);
+        self
+    }
+
+    pub fn actor(mut self, actor: impl Into<String>) -> Self {
+        self.actor = Some(actor.into());
+        self
+    }
+
+    pub fn approval_ttl(mut self, ttl: Duration) -> Self {
+        self.approval_ttl = Some(ttl);
+        self
+    }
+
     pub fn journal(mut self, journal: impl DurableTransitionStore + 'static) -> Self {
         self.journal = Some(Arc::new(journal));
         self
@@ -365,6 +387,13 @@ Maintain a short plan with `update_plan` and keep it current."
         }
         if let Some(approver) = self.approver {
             engine = engine.with_approver(approver);
+        }
+        engine = engine.with_policy_chain(self.policy);
+        if let Some(actor) = self.actor {
+            engine = engine.with_actor(actor);
+        }
+        if let Some(ttl) = self.approval_ttl {
+            engine = engine.with_approval_ttl(ttl);
         }
         Ok(Agent {
             name: self.name,

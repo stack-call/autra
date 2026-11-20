@@ -11,6 +11,7 @@ pub mod engine;
 pub mod hooks;
 pub mod host;
 pub mod journal;
+pub mod policy;
 pub mod sandbox;
 
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
@@ -24,6 +25,7 @@ pub use engine::LocalEngine;
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities, LocalHost};
 pub use journal::{EffectJournal, JournalError, MemoryJournal, OutboxEntry};
+pub use policy::RulePolicy;
 pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
     SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus,

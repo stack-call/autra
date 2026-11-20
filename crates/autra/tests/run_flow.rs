@@ -300,6 +300,10 @@ impl Tool for CancellingTool {
         }
     }
 
+    fn effect_class(&self) -> autra_core::EffectClass {
+        autra_core::EffectClass::ReadOnly
+    }
+
     async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.cancel.cancel();

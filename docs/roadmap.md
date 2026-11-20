@@ -11,7 +11,7 @@ The first complete harness (§0.4) is reached at a basic level; see
 | M0 Architecture baseline | Spec, ADRs, workspace, fake model, minimal tool | Done |
 | M1 Agent Core v0.1 | Stepper, ReAct, tool calling, local host, CLI, streaming events | Done |
 | M2 Structured concurrency | Batches, budgets, cancellation, ChildRun, parallel tools | Tools, bounded parallelism and runtime ChildRun done; automatic parent budget settlement pending |
-| M3 Full interaction | Turns, approval, commands, hooks, tool policy | Approval, guarded write_file, session/turn identity and SQLite `SessionStore` done; SessionManager pending |
+| M3 Full interaction | Turns, approval, commands, hooks, tool policy | Approval, guarded tools, policy registry, session/turn identity and SQLite `SessionStore` done; SessionManager pending |
 | M4 Native durability | SQLite journal, outbox, checkpoints, recovery, OutcomeUnknown | Partial: Run snapshot, event log, EffectRecord, outbox v0; journaled Agent runs claim and dispatch through the outbox loop, and `resume` continues AwaitingTool/AwaitingModel checkpoints. Lease-safe reclaim, safe-class retry and atomic transition commit with `state_version` CAS done; automatic reconciliation pending |
 | M5 Rich harness | Context policy, compaction, skills, planning, memory | Partial: ContextBuilder, budget, Skills and Planning done; memory pending |
 | M6 Sandbox and evaluation | OpenShell adapter, tracing, replay, evaluation set | Tracing and basic evaluation done; OpenShell and replay pending |
@@ -60,7 +60,7 @@ MCP Client is an M3 experience item; MCP Gateway/Server stays in M8.
 
 1. Automatic parent budget settlement for ChildRun and child event forwarding.
 2. SessionManager, TurnRecord and a SessionStore boundary.
-3. Policy registry, hooks and an interactive approval surface.
+3. Verified actor identity, approval persistence and a richer policy surface.
 4. Automatic `OutcomeUnknown` reconciliation for the outbox claim loop.
 5. Memory retrieval and a richer context policy.
 6. OpenShell adapter and replay fixtures.

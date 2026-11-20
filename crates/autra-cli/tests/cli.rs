@@ -286,3 +286,38 @@ fn chat_persists_turns_across_processes() {
     assert_eq!(record.turns[1].input, "two");
     assert_eq!(record.turns[1].answer.as_deref(), Some("echo: two"));
 }
+
+#[test]
+fn a_missing_policy_file_fails() {
+    let output = autractl()
+        .args(["run", "--policy", "does-not-exist.json", "hello"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("cannot read policy"));
+}
+
+#[test]
+fn a_valid_policy_file_is_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = dir.path().join("policy.json");
+    std::fs::write(
+        &policy,
+        r#"{"deny_tools":["write_file"],"deny_commands":["git push --force"]}"#,
+    )
+    .unwrap();
+    let output = autractl()
+        .args([
+            "run",
+            "--read-only",
+            "--policy",
+            policy.to_str().unwrap(),
+            "hello",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("echo: hello"));
+}

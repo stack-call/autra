@@ -8,8 +8,7 @@ where it runs, its resource limits, whether it can write external state and how
 an unknown result is handled.
 
 The current MVP implements the description plus a minimal contract
-(`effect_class`, arguments, result). Approval is implemented for
-`write_file`; credential injection and a per-tool policy registry are not.
+(`effect_class`, arguments, result). Approval is implemented for `write_file` and `run_command`; a local policy registry now handles allow/ask/deny rules. Credential injection and verified actor identity are not implemented.
 
 ## Effect classes
 
@@ -53,10 +52,19 @@ The current MVP implements the description plus a minimal contract
   to a 60-second timeout. A timed-out command is reported as `OutcomeUnknown`
   because it may already have changed the workspace. `--read-only` removes it
   and `write_file`; `--yes` skips its approval prompt.
-- Before dispatching an approval-required call, the runtime asks an `Approver`.
-  The request binds the Run id, call id, tool name, arguments and a SHA-256
-  argument digest. A rejected call or a missing approver produces an error
-  outcome and does not execute.
+- Before dispatching a gated call, the runtime evaluates `PolicyChain`:
+  a host baseline (`Ask` for `Unknown` effect class or `requires_approval`,
+  otherwise `Allow`) combined with ordered `ToolPolicy` rules by severity.
+  `Deny` wins over `Ask`, and `Ask` wins over `Allow`, so a plugin rule cannot
+  widen the baseline.
+- `RulePolicy` supports allow/ask/deny tool lists and substring deny patterns
+  for `run_command`. The CLI loads it from `--policy <path>`; deny rules also
+  apply under `--yes`. Deny patterns are a coarse guard, not a sandbox.
+- The runtime asks an `Approver` for `Ask` calls. The request binds the Run id,
+  call id, tool name, arguments, policy revision, actor and an expiry timestamp
+  (default five minutes), plus a SHA-256 argument digest. A `Deny`, a rejected
+  decision or a missing approver produces an error outcome and does not execute.
+- Unknown tools are dispatched as normal tool errors rather than gated.
 
 `LocalWorkspace` is **user-space path validation, not a sandbox**, and
 `run_command` is an unsandboxed shell convenience. Neither isolates processes,
