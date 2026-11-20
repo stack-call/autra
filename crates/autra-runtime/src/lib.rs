@@ -19,7 +19,7 @@ pub use agent::{
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities, LocalHost};
-pub use journal::{EffectJournal, JournalError, MemoryJournal};
+pub use journal::{EffectJournal, JournalError, MemoryJournal, OutboxEntry};
 pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
     SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus,

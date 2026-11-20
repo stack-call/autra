@@ -426,6 +426,7 @@ impl Agent {
             for intent in intents {
                 let effect_id = EffectId::fresh();
                 let digest = digest_intent(&intent);
+                let intent_json = serde_json::to_string(&intent).unwrap_or_default();
                 let record = match &intent {
                     EffectIntent::CallModel(_) => EffectRecord::new(
                         effect_id.clone(),
@@ -441,7 +442,8 @@ impl Agent {
                         Some(spec.call.call_id.clone()),
                         digest,
                     ),
-                };
+                }
+                .with_intent_json(intent_json);
                 effects.push(record);
                 match intent {
                     EffectIntent::CallTool(spec) => tool_calls.push((effect_id, spec.call)),

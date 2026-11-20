@@ -4,8 +4,8 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use autra_core::{AcceptedEvent, AgentState, EffectRecord, RunId};
-use autra_runtime::{EffectJournal, JournalError};
+use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
+use autra_runtime::{EffectJournal, JournalError, OutboxEntry};
 use rusqlite::{Connection, params};
 
 pub struct SqliteEffectJournal {
@@ -36,6 +36,15 @@ impl SqliteEffectJournal {
                     event_json TEXT NOT NULL,
                     recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (run_id, seq)
+                );
+                CREATE TABLE IF NOT EXISTS effect_outbox (
+                    effect_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    intent_json TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    claim_id TEXT,
+                    claim_deadline TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );",
             )
             .map_err(|error| JournalError::new(format!("cannot migrate journal: {error}")))?;
@@ -209,5 +218,107 @@ impl EffectJournal for SqliteEffectJournal {
             events.push(event);
         }
         Ok(events)
+    }
+
+    fn enqueue_effect(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError> {
+        if effect.status != EffectStatus::Authorized || effect.intent_json.is_empty() {
+            return Ok(());
+        }
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO effect_outbox (effect_id, run_id, intent_json)
+                 VALUES (?1, ?2, ?3)",
+                params![effect.id.as_str(), run_id.as_str(), effect.intent_json],
+            )
+            .map_err(|error| JournalError::new(format!("cannot enqueue effect: {error}")))?;
+        Ok(())
+    }
+
+    fn claim_due_effects(
+        &self,
+        limit: usize,
+        claim_id: &str,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| JournalError::new(format!("cannot begin claim: {error}")))?;
+        let mut statement = transaction
+            .prepare(
+                "SELECT effect_id, run_id, intent_json, attempts FROM effect_outbox
+                 WHERE claim_id IS NULL OR claim_deadline < datetime('now')
+                 ORDER BY created_at LIMIT ?1",
+            )
+            .map_err(|error| JournalError::new(format!("cannot claim effects: {error}")))?;
+        let rows = statement
+            .query_map(params![limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u32>(3)?,
+                ))
+            })
+            .map_err(|error| JournalError::new(format!("cannot claim effects: {error}")))?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let (effect_id, run_id, intent_json, attempts) =
+                row.map_err(|error| JournalError::new(format!("cannot claim row: {error}")))?;
+            transaction
+                .execute(
+                    "UPDATE effect_outbox SET claim_id = ?1,
+                     claim_deadline = datetime('now', '+30 seconds'),
+                     attempts = attempts + 1 WHERE effect_id = ?2",
+                    params![claim_id, effect_id],
+                )
+                .map_err(|error| JournalError::new(format!("cannot claim effect: {error}")))?;
+            entries.push(OutboxEntry {
+                effect_id: EffectId::new(effect_id),
+                run_id: RunId::new(run_id),
+                intent_json,
+                attempts: attempts + 1,
+            });
+        }
+        drop(statement);
+        transaction
+            .commit()
+            .map_err(|error| JournalError::new(format!("cannot commit claim: {error}")))?;
+        Ok(entries)
+    }
+
+    fn complete_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .execute(
+                "DELETE FROM effect_outbox WHERE effect_id = ?1",
+                params![effect_id.as_str()],
+            )
+            .map_err(|error| JournalError::new(format!("cannot complete effect: {error}")))?;
+        Ok(())
+    }
+
+    fn release_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .execute(
+                "UPDATE effect_outbox SET claim_id = NULL, claim_deadline = NULL
+                 WHERE effect_id = ?1",
+                params![effect_id.as_str()],
+            )
+            .map_err(|error| JournalError::new(format!("cannot release effect: {error}")))?;
+        Ok(())
     }
 }

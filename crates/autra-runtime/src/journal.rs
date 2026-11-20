@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use autra_core::{AcceptedEvent, AgentState, EffectRecord, RunId};
+use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -16,6 +16,14 @@ impl JournalError {
     pub fn new(message: impl Into<String>) -> Self {
         Self::Message(message.into())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutboxEntry {
+    pub effect_id: EffectId,
+    pub run_id: RunId,
+    pub intent_json: String,
+    pub attempts: u32,
 }
 
 pub trait EffectJournal: Send + Sync {
@@ -47,6 +55,26 @@ pub trait EffectJournal: Send + Sync {
     fn load_events(&self, _run_id: &RunId) -> Result<Vec<AcceptedEvent>, JournalError> {
         Ok(Vec::new())
     }
+
+    fn enqueue_effect(&self, _run_id: &RunId, _effect: &EffectRecord) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn claim_due_effects(
+        &self,
+        _limit: usize,
+        _claim_id: &str,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        Ok(Vec::new())
+    }
+
+    fn complete_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn release_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {
+        Ok(())
+    }
 }
 
 /// In-process journal for tests and local runs.
@@ -55,6 +83,7 @@ pub struct MemoryJournal {
     records: Arc<Mutex<BTreeMap<RunId, Vec<EffectRecord>>>>,
     runs: Arc<Mutex<BTreeMap<RunId, AgentState>>>,
     events: Arc<Mutex<BTreeMap<RunId, Vec<AcceptedEvent>>>>,
+    outbox: Arc<Mutex<BTreeMap<EffectId, OutboxEntry>>>,
 }
 
 impl MemoryJournal {
@@ -129,5 +158,48 @@ impl EffectJournal for MemoryJournal {
             .get(run_id)
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn enqueue_effect(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError> {
+        if effect.status != EffectStatus::Authorized || effect.intent_json.is_empty() {
+            return Ok(());
+        }
+        self.outbox
+            .lock()
+            .expect("journal lock poisoned")
+            .entry(effect.id.clone())
+            .or_insert_with(|| OutboxEntry {
+                effect_id: effect.id.clone(),
+                run_id: run_id.clone(),
+                intent_json: effect.intent_json.clone(),
+                attempts: 0,
+            });
+        Ok(())
+    }
+
+    fn claim_due_effects(
+        &self,
+        limit: usize,
+        _claim_id: &str,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        let mut outbox = self.outbox.lock().expect("journal lock poisoned");
+        let mut claimed = Vec::new();
+        for entry in outbox.values_mut().take(limit) {
+            entry.attempts += 1;
+            claimed.push(entry.clone());
+        }
+        Ok(claimed)
+    }
+
+    fn complete_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {
+        self.outbox
+            .lock()
+            .expect("journal lock poisoned")
+            .remove(effect_id);
+        Ok(())
+    }
+
+    fn release_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {
+        Ok(())
     }
 }

@@ -46,6 +46,8 @@ Tests observe public behaviour, not private helpers.
     rejected and outcome-unknown attempts.
 16. **SQLite journal** (`autra-durable-sqlite`): the Run snapshot, accepted
     events and EffectRecords survive reopen through `AgentBuilder::journal`.
+17. **Outbox** (`autra-durable-sqlite`): Authorized effects enqueue, claim with
+    attempts, release and complete; no dispatcher loop yet.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

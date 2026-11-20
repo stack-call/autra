@@ -75,6 +75,8 @@ pub struct EffectRecord {
     pub call_id: Option<String>,
     pub status: EffectStatus,
     pub intent_digest: String,
+    #[serde(default)]
+    pub intent_json: String,
     pub attempts: Vec<EffectAttempt>,
     pub result: Option<String>,
     pub error: Option<String>,
@@ -95,10 +97,16 @@ impl EffectRecord {
             call_id,
             status: EffectStatus::Recorded,
             intent_digest,
+            intent_json: String::new(),
             attempts: Vec::new(),
             result: None,
             error: None,
         }
+    }
+
+    pub fn with_intent_json(mut self, intent_json: impl Into<String>) -> Self {
+        self.intent_json = intent_json.into();
+        self
     }
 
     pub fn set_status(&mut self, status: EffectStatus) {
