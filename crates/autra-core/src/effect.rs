@@ -10,6 +10,22 @@ pub enum EffectIntent {
     CallTool(ToolCallSpec),
 }
 
+impl EffectIntent {
+    pub fn tool_call(&self) -> Option<&ToolCallRequest> {
+        match self {
+            EffectIntent::CallTool(spec) => Some(&spec.call),
+            EffectIntent::CallModel(_) => None,
+        }
+    }
+
+    pub fn into_tool_call(self) -> Option<ToolCallRequest> {
+        match self {
+            EffectIntent::CallTool(spec) => Some(spec.call),
+            EffectIntent::CallModel(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCallSpec {
     pub system: Option<String>,

@@ -2,19 +2,8 @@
 
 use autra_core::{HistoryItem, RunId, SessionId, TurnId};
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum SessionStoreError {
-    #[error("{0}")]
-    Message(String),
-}
-
-impl SessionStoreError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self::Message(message.into())
-    }
-}
+pub use crate::error::ContractError as SessionStoreError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TurnStatus {

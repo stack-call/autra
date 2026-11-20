@@ -33,20 +33,11 @@ impl Approver for RecordingApprover {
     }
 }
 
-#[derive(Clone)]
-struct UnknownTool {
-    calls: Arc<Mutex<usize>>,
-}
+struct UnknownTool;
 
 impl UnknownTool {
     fn new() -> Self {
-        Self {
-            calls: Arc::new(Mutex::new(0)),
-        }
-    }
-
-    fn calls(&self) -> usize {
-        *self.calls.lock().unwrap()
+        Self
     }
 }
 
@@ -61,7 +52,6 @@ impl Tool for UnknownTool {
     }
 
     async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
-        *self.calls.lock().unwrap() += 1;
         Ok("ran".to_owned())
     }
 }
@@ -149,29 +139,6 @@ async fn unknown_effect_tools_require_approval() {
             .unwrap()
             .contains("approval rejected")
     );
-}
-
-#[tokio::test]
-async fn an_allow_rule_cannot_lower_the_unknown_effect_baseline() {
-    let tool = UnknownTool::new();
-    let probe = tool.clone();
-    let approver = RecordingApprover::new(ApprovalDecision::Approved);
-    let agent = Agent::builder("policy")
-        .model(model_with_tools(vec![call(
-            "call-1",
-            "unknown_effect",
-            "{}",
-        )]))
-        .tool(tool)
-        .policy(RulePolicy::new("test-v1").allow_tool("unknown_effect"))
-        .approver(approver.clone())
-        .build()
-        .unwrap();
-
-    agent.run("go").await.unwrap();
-
-    assert_eq!(approver.seen().len(), 1);
-    assert_eq!(probe.calls(), 1);
 }
 
 #[tokio::test]

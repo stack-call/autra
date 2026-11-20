@@ -531,3 +531,23 @@ fn resume_local_returns_a_completed_run() {
     assert!(resume.status.success(), "stderr: {}", stderr(&resume));
     assert!(stdout(&resume).contains("[run] completed: echo: hello"));
 }
+
+#[test]
+fn policy_allow_tools_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = dir.path().join("policy.json");
+    std::fs::write(&policy, r#"{"allow_tools":["echo"]}"#).unwrap();
+    let output = autractl()
+        .args([
+            "run",
+            "--read-only",
+            "--policy",
+            policy.to_str().unwrap(),
+            "hello",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("allow_tools"));
+}

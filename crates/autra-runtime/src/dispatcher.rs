@@ -14,6 +14,7 @@ use autra_core::{
 };
 use autra_execution::{
     ChildExecutionContext, ModelError, ModelProvider, ToolContext, ToolInput, ToolRegistry,
+    emit_complete_text,
 };
 use futures_util::{FutureExt, StreamExt};
 
@@ -44,9 +45,7 @@ pub trait Dispatcher: Send + Sync {
         on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<ModelOutput, ModelError> {
         let output = self.call_model(request, timeout).await?;
-        if let Some(text) = output.text.clone() {
-            on_delta(text);
-        }
+        emit_complete_text(&output, on_delta);
         Ok(output)
     }
 

@@ -285,10 +285,10 @@ fn load_rule_policy(path: &str) -> Result<RulePolicy, String> {
         .map_err(|error| format!("cannot read policy `{path}`: {error}"))?;
     let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|error| format!("cannot parse policy `{path}`: {error}"))?;
-    let mut policy = RulePolicy::new(format!("file:{path}"));
-    for name in string_list(&value, "allow_tools")? {
-        policy = policy.allow_tool(name);
+    if value.get("allow_tools").is_some() {
+        return Err("policy `allow_tools` is not supported: Allow is the default".to_owned());
     }
+    let mut policy = RulePolicy::new(format!("file:{path}"));
     for name in string_list(&value, "ask_tools")? {
         policy = policy.ask_tool(name);
     }
@@ -463,7 +463,13 @@ fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {
         return ExitCode::FAILURE;
     };
     let revision = match flags.policy.as_ref() {
-        Some(policy_path) => format!("file:{policy_path}"),
+        Some(policy_path) => match load_rule_policy(policy_path) {
+            Ok(policy) => policy.revision().to_owned(),
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        },
         None => LOCAL_POLICY_REVISION.to_owned(),
     };
     let Some(record) = ApprovalRecord::from_effect(

@@ -55,17 +55,8 @@ impl PolicyChain {
         self
     }
 
-    pub fn push_shared(mut self, policy: Arc<dyn ToolPolicy>) -> Self {
-        self.policies.push(policy);
-        self
-    }
-
     pub fn is_empty(&self) -> bool {
         self.policies.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.policies.len()
     }
 
     pub fn revision(&self) -> String {

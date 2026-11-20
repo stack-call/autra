@@ -145,6 +145,25 @@ impl LocalEngine {
         )
     }
 
+    fn approval_request(
+        &self,
+        run_id: &RunId,
+        effect_id: &EffectId,
+        call: &ToolCallRequest,
+    ) -> ApprovalRequest {
+        let preview = self
+            .tools
+            .get(&call.name)
+            .and_then(|tool| tool.preview(&call.arguments));
+        ApprovalRequest::new(run_id, effect_id, call)
+            .with_policy(
+                self.policy.revision(),
+                self.actor.clone(),
+                Some(self.approval_ttl.unwrap_or(DEFAULT_APPROVAL_TTL)),
+            )
+            .with_preview(preview)
+    }
+
     /// Reuse a matching persisted decision, otherwise ask the approver and
     /// persist the new decision.
     async fn resolve_pending_approvals<F>(
@@ -174,10 +193,7 @@ impl LocalEngine {
             }
             let intent_call = serde_json::from_str::<EffectIntent>(&record.intent_json)
                 .ok()
-                .and_then(|intent| match intent {
-                    EffectIntent::CallTool(spec) => Some(spec.call),
-                    EffectIntent::CallModel(_) => None,
-                })
+                .and_then(EffectIntent::into_tool_call)
                 .unwrap_or(call);
             match self.policy_decision(&state.run_id, &intent_call) {
                 Some(PolicyDecision::Deny) => {
@@ -203,17 +219,7 @@ impl LocalEngine {
                 }
                 _ => {}
             }
-            let preview = self
-                .tools
-                .get(&intent_call.name)
-                .and_then(|tool| tool.preview(&intent_call.arguments));
-            let request = ApprovalRequest::new(&state.run_id, &record.id, &intent_call)
-                .with_policy(
-                    self.policy.revision(),
-                    self.actor.clone(),
-                    Some(self.approval_ttl.unwrap_or(DEFAULT_APPROVAL_TTL)),
-                )
-                .with_preview(preview);
+            let request = self.approval_request(&state.run_id, &record.id, &intent_call);
             on_event(&RunEvent::ApprovalRequested {
                 call_id: request.call_id.clone(),
                 tool_name: request.tool_name.clone(),
@@ -313,17 +319,27 @@ impl LocalEngine {
     /// parent link and a cancellation flag that inherits the parent's.
     pub fn spawn_child(&self, spec: ChildSpec) -> ChildHandle {
         let run_id = RunId::fresh();
-        let child_cancel = CancelFlag::child_of(&spec.cancel);
+        let ChildSpec {
+            stepper,
+            input,
+            history,
+            budget,
+            parent_run_id,
+            cancel,
+            execution,
+            forward_events,
+        } = spec;
+        let child_cancel = CancelFlag::child_of(&cancel);
         let handle_cancel = child_cancel.clone();
         let handle_run_id = run_id.clone();
         let mut engine = self.clone();
-        if let Some(journal) = spec.journal {
+        if let Some(journal) = execution.journal {
             engine = engine.with_journal(journal);
         }
-        if let Some(approver) = spec.approver {
+        if let Some(approver) = execution.approver {
             engine = engine.with_approver(approver);
         }
-        let (sender, receiver) = if spec.forward_events {
+        let (sender, receiver) = if forward_events {
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
             (Some(sender), Some(receiver))
         } else {
@@ -342,11 +358,11 @@ impl LocalEngine {
             engine
                 .run_with_identity(
                     run_id,
-                    Some(spec.parent_run_id),
-                    spec.budget,
-                    spec.stepper,
-                    spec.history,
-                    spec.input,
+                    Some(parent_run_id),
+                    budget,
+                    stepper,
+                    history,
+                    input,
                     options,
                     on_event,
                 )
@@ -570,10 +586,7 @@ impl LocalEngine {
                     Some(tool) => {
                         let intent_call = serde_json::from_str::<EffectIntent>(&record.intent_json)
                             .ok()
-                            .and_then(|intent| match intent {
-                                EffectIntent::CallTool(spec) => Some(spec.call),
-                                EffectIntent::CallModel(_) => None,
-                            });
+                            .and_then(EffectIntent::into_tool_call);
                         let denied = intent_call.as_ref().is_some_and(|call| {
                             self.policy_decision(run_id, call) == Some(PolicyDecision::Deny)
                         });
@@ -1241,17 +1254,7 @@ impl LocalEngine {
             if decision == PolicyDecision::Ask {
                 sink.effect_mut(effect_id)
                     .set_status(EffectStatus::AwaitingApproval);
-                let preview = self
-                    .tools
-                    .get(&call.name)
-                    .and_then(|tool| tool.preview(&call.arguments));
-                let request = ApprovalRequest::new(sink.run_id, effect_id, call)
-                    .with_policy(
-                        self.policy.revision(),
-                        self.actor.clone(),
-                        Some(self.approval_ttl.unwrap_or(DEFAULT_APPROVAL_TTL)),
-                    )
-                    .with_preview(preview);
+                let request = self.approval_request(sink.run_id, effect_id, call);
                 sink.emit_stream(&RunEvent::ApprovalRequested {
                     call_id: request.call_id.clone(),
                     tool_name: request.tool_name.clone(),

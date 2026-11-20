@@ -14,7 +14,6 @@ use serde_json::Value;
 #[derive(Clone, Default)]
 pub struct RulePolicy {
     revision: String,
-    allow_tools: BTreeSet<String>,
     ask_tools: BTreeSet<String>,
     deny_tools: BTreeSet<String>,
     deny_commands: Vec<String>,
@@ -26,11 +25,6 @@ impl RulePolicy {
             revision: revision.into(),
             ..Self::default()
         }
-    }
-
-    pub fn allow_tool(mut self, name: impl Into<String>) -> Self {
-        self.allow_tools.insert(name.into());
-        self
     }
 
     pub fn ask_tool(mut self, name: impl Into<String>) -> Self {
@@ -48,8 +42,8 @@ impl RulePolicy {
         self
     }
 
-    pub fn deny_commands(&self) -> &[String] {
-        &self.deny_commands
+    pub fn revision(&self) -> &str {
+        &self.revision
     }
 
     fn denied_command(&self, arguments: &str) -> bool {
@@ -82,9 +76,6 @@ impl ToolPolicy for RulePolicy {
         }
         if self.ask_tools.contains(request.tool_name) {
             return PolicyDecision::Ask;
-        }
-        if self.allow_tools.contains(request.tool_name) {
-            return PolicyDecision::Allow;
         }
         PolicyDecision::Allow
     }

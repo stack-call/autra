@@ -99,7 +99,7 @@ edit.
 | `--local` | use the built-in echo model explicitly (needed for `resume`/`outbox` without a provider) |
 | `--journal <path>`, `-j <path>` | persist run state, events and effects to a SQLite journal |
 | `--session <id>` | restore or create a named chat session (requires `--journal`) |
-| `--policy <path>` | JSON tool/command policy (`allow_tools`, `ask_tools`, `deny_tools`, `deny_commands`) |
+| `--policy <path>` | JSON tool/command policy (`ask_tools`, `deny_tools`, `deny_commands`; Allow is the default) |
 | `--actor <name>` | operator identity recorded on approval requests |
 | `--yes`, `-y` | approve `write_file`, `edit_file` and `run_command` without prompting |
 | `--read-only` | expose only `list_files`, `read_file` and `search_text` |

@@ -57,7 +57,7 @@ The current MVP implements the description plus a minimal contract
   otherwise `Allow`) combined with ordered `ToolPolicy` rules by severity.
   `Deny` wins over `Ask`, and `Ask` wins over `Allow`, so a plugin rule cannot
   widen the baseline.
-- `RulePolicy` supports allow/ask/deny tool lists and substring deny patterns
+- `RulePolicy` supports ask/deny tool lists and substring deny patterns (Allow is the default)
   for `run_command`. The CLI loads it from `--policy <path>`; deny rules also
   apply under `--yes`. Deny patterns are a coarse guard, not a sandbox.
 - Decisions are persisted in an `ApprovalStore` and reused on resume only when

@@ -9,19 +9,8 @@ use autra_core::{
     AcceptedEvent, AgentState, AgentStepper, EffectIntent, HistoryItem, ModelCallSpec, RunId,
     StepError, ToolCallRequest, ToolSpec, Transition,
 };
-use thiserror::Error;
 
-#[derive(Debug, Error)]
-pub enum ExtensionError {
-    #[error("{0}")]
-    Message(String),
-}
-
-impl ExtensionError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self::Message(message.into())
-    }
-}
+pub use autra_execution::ContractError as ExtensionError;
 
 /// Read-only facts about the request being built.
 #[derive(Clone, Debug)]
@@ -83,10 +72,6 @@ impl ModelMiddleware {
 
     pub fn is_empty(&self) -> bool {
         self.transforms.is_empty()
-    }
-
-    pub fn len(&self) -> usize {
-        self.transforms.len()
     }
 
     pub fn apply(

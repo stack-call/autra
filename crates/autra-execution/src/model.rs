@@ -13,6 +13,13 @@ pub struct ModelCapabilities {
     pub max_context_tokens: Option<u32>,
 }
 
+/// Emit a complete output as a single delta, for providers without streaming.
+pub fn emit_complete_text(output: &ModelOutput, on_delta: &mut (dyn FnMut(String) + Send)) {
+    if let Some(text) = output.text.clone() {
+        on_delta(text);
+    }
+}
+
 /// The boundary between the harness and a model provider.
 #[async_trait]
 pub trait ModelProvider: Send + Sync {
@@ -34,9 +41,7 @@ pub trait ModelProvider: Send + Sync {
         on_delta: &mut (dyn FnMut(String) + Send),
     ) -> Result<ModelOutput, ModelError> {
         let output = self.complete(request).await?;
-        if let Some(text) = output.text.clone() {
-            on_delta(text);
-        }
+        emit_complete_text(&output, on_delta);
         Ok(output)
     }
 }

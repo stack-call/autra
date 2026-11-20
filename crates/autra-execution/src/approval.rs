@@ -134,16 +134,14 @@ impl ApprovalRecord {
         ttl: Option<Duration>,
     ) -> Option<Self> {
         let intent: EffectIntent = serde_json::from_str(&effect.intent_json).ok()?;
-        let EffectIntent::CallTool(spec) = intent else {
-            return None;
-        };
+        let call = intent.into_tool_call()?;
         let now = now_unix_ms();
         Some(Self {
             effect_id: effect.id.clone(),
             run_id: run_id.clone(),
-            call_id: spec.call.call_id.clone(),
-            tool_name: spec.call.name.clone(),
-            argument_digest: digest_arguments(&spec.call.name, &spec.call.arguments),
+            call_id: call.call_id,
+            tool_name: call.name.clone(),
+            argument_digest: digest_arguments(&call.name, &call.arguments),
             policy_revision: policy_revision.into(),
             actor,
             decision,
@@ -169,17 +167,7 @@ pub fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ApprovalStoreError {
-    #[error("{0}")]
-    Message(String),
-}
-
-impl ApprovalStoreError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self::Message(message.into())
-    }
-}
+pub use crate::error::ContractError as ApprovalStoreError;
 
 /// Persistence for approval decisions. Kept separate from the effect journal
 /// so a session/interaction store can implement it independently.

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use autra_core::{AgentStepper, BudgetSnapshot, CancelFlag, HistoryItem, RunId};
-use autra_execution::{Approver, DurableTransitionStore, RunError, RunEvent, RunOutcome};
+use autra_execution::{ChildExecutionContext, RunError, RunEvent, RunOutcome};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Everything needed to start a child Run on an existing engine.
@@ -18,9 +18,8 @@ pub struct ChildSpec {
     /// The parent's cancellation flag. The child flag inherits it.
     pub cancel: CancelFlag,
     /// Optional execution facilities inherited from the parent.
-    pub journal: Option<Arc<dyn DurableTransitionStore>>,
-    pub approver: Option<Arc<dyn Approver>>,
-    /// Forward child Run events through `ChildHandle::events`.
+    pub execution: ChildExecutionContext,
+    /// Forward child Run events through `ChildHandle::take_events`.
     pub forward_events: bool,
 }
 
@@ -45,11 +44,6 @@ impl ChildHandle {
             join,
             events,
         }
-    }
-
-    /// Receive forwarded Run events when `ChildSpec::forward_events` was set.
-    pub fn events(&mut self) -> Option<&mut UnboundedReceiver<RunEvent>> {
-        self.events.as_mut()
     }
 
     /// Take the forwarded event stream, so it can be consumed concurrently

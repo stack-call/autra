@@ -144,8 +144,7 @@ impl Agent {
             budget,
             parent_run_id,
             cancel,
-            journal: execution.journal,
-            approver: execution.approver,
+            execution,
             forward_events,
         })
     }
