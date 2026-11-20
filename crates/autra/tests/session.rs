@@ -63,6 +63,7 @@ async fn second_turn_sees_the_first_turn_history() {
     assert!(second.state().turn_id.is_some());
     assert_ne!(first.state().turn_id, second.state().turn_id);
     assert_eq!(session.last_turn_id(), second.state().turn_id.as_ref());
+    assert_eq!(session.last_run_id(), Some(&second.state().run_id));
     assert_eq!(session.turn_index(), 2);
     assert_eq!(session.history().len(), 4);
     let requests = requests.lock().unwrap();

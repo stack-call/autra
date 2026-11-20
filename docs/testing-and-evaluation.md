@@ -126,7 +126,10 @@ Tests observe public behaviour, not private helpers.
 35. **TUI sessions** (`autra-cli`): restored user, assistant and tool history
     renders as chat lines; an empty session starts clean; each turn runs
     through `Session` so the turn index and stored history advance; `tui
-    --session` without `--journal` fails before the terminal opens.
+    --session` without `--journal` fails before the terminal opens; `/resume`
+    without a recorded Run explains its usage and `/session` reports the id,
+    turn count and last Run. `Session::last_run_id` survives reopen through
+    `SessionStore`.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use autra_core::{HistoryItem, SessionId, TurnId};
+use autra_core::{HistoryItem, RunId, SessionId, TurnId};
 use autra_execution::{SessionRecord, SessionStore, SessionStoreError, TurnRecord, TurnStatus};
 use autra_harness::react_history;
 
@@ -18,6 +18,7 @@ pub struct Session {
     session_id: SessionId,
     turn_index: u32,
     last_turn_id: Option<TurnId>,
+    last_run_id: Option<RunId>,
     store: Option<Arc<dyn SessionStore>>,
 }
 
@@ -29,6 +30,7 @@ impl Session {
             session_id: SessionId::fresh(),
             turn_index: 0,
             last_turn_id: None,
+            last_run_id: None,
             store: None,
         }
     }
@@ -47,12 +49,14 @@ impl Session {
         let history = record.history();
         let turn_index = record.turns.len() as u32;
         let last_turn_id = record.last_turn().map(|turn| turn.turn_id.clone());
+        let last_run_id = record.last_turn().and_then(|turn| turn.run_id.clone());
         Ok(Self {
             agent,
             history,
             session_id,
             turn_index,
             last_turn_id,
+            last_run_id,
             store: Some(store),
         })
     }
@@ -67,6 +71,11 @@ impl Session {
 
     pub fn last_turn_id(&self) -> Option<&TurnId> {
         self.last_turn_id.as_ref()
+    }
+
+    /// The journaled Run of the last completed or cancelled turn, if any.
+    pub fn last_run_id(&self) -> Option<&RunId> {
+        self.last_run_id.as_ref()
     }
 
     pub fn history(&self) -> &[HistoryItem] {
@@ -105,6 +114,7 @@ impl Session {
         match result {
             Ok(outcome) => {
                 self.history = react_history(outcome.state());
+                self.last_run_id = Some(outcome.state().run_id.clone());
                 if let Some(store) = &self.store {
                     let status = match outcome.status() {
                         RunStatus::Completed => TurnStatus::Completed,
@@ -127,6 +137,7 @@ impl Session {
                 Ok(outcome)
             }
             Err(error) => {
+                self.last_run_id = None;
                 if let Some(store) = &self.store {
                     let turn = TurnRecord {
                         turn_id,

@@ -91,6 +91,7 @@ async fn a_persisted_session_records_turns_and_restores_history() {
     let mut reopened = Session::open(echo_agent(), store.clone(), session_id.clone()).unwrap();
     assert_eq!(reopened.turn_index(), 2);
     assert_eq!(reopened.history().len(), 4);
+    assert_eq!(reopened.last_run_id(), record.turns[1].run_id.as_ref());
     reopened.run_turn("three").await.unwrap();
     assert_eq!(reopened.turn_index(), 3);
     assert_eq!(

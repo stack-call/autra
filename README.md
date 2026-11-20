@@ -102,6 +102,16 @@ With `--journal <path> --session <id>`, the TUI restores that session's turns
 on startup, shows the session id and turn count in the header, and saves every
 turn. `--journal` without `--session` creates a fresh persisted session.
 
+Inside the TUI:
+
+- `/resume [run-id]` resumes a journaled Run (the session's last Run when the
+  id is omitted) and streams its remaining events.
+- `/session` prints the session id, turn count and last Run id.
+- `/help` lists the in-TUI commands.
+
+Resuming is diagnostic: it continues the Run in the journal but does not
+append the result to the session history.
+
 | Flag | Meaning |
 |---|---|
 | `--workspace <dir>`, `-C <dir>` | workspace root (default `.`); file tools stay inside it |

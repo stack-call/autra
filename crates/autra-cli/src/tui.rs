@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use autra::{
     ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions, Session, SessionStore,
 };
-use autra_core::{CancelFlag, HistoryItem, SessionId};
+use autra_core::{CancelFlag, HistoryItem, RunId, SessionId};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -332,12 +332,74 @@ impl State {
         if prompt.is_empty() {
             return;
         }
+        self.input.clear();
+        if let Some(command) = parse_command(&prompt) {
+            self.handle_command(command);
+            return;
+        }
+        self.start_task(AgentTask::Turn(prompt));
+    }
+
+    fn handle_command(&mut self, command: TuiCommand) {
+        match command {
+            TuiCommand::Resume(run_id) => {
+                let run_id = run_id.or_else(|| {
+                    self.session
+                        .as_ref()
+                        .and_then(|session| session.last_run_id().cloned())
+                });
+                match run_id {
+                    Some(run_id) => self.start_task(AgentTask::Resume(run_id)),
+                    None => self.push(
+                        Style::default().fg(Color::Red),
+                        "usage: /resume <run-id> (this session has no recorded run)",
+                    ),
+                }
+            }
+            TuiCommand::Session => {
+                let Some(session) = &self.session else {
+                    self.status = "session busy".to_owned();
+                    return;
+                };
+                let last_run = session
+                    .last_run_id()
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "none".to_owned());
+                self.push(
+                    Style::default().fg(Color::DarkGray),
+                    format!(
+                        "[session] {} | turns {} | last run {last_run}",
+                        session.session_id(),
+                        session.turn_index()
+                    ),
+                );
+            }
+            TuiCommand::Help => self.push(
+                Style::default().fg(Color::DarkGray),
+                "commands: /resume [run-id] continue a journaled Run | /session show id and turns | /help",
+            ),
+        }
+    }
+
+    fn start_task(&mut self, task: AgentTask) {
+        if self.running || self.approval.is_some() {
+            return;
+        }
         let Some(mut session) = self.session.take() else {
             self.status = "session busy".to_owned();
             return;
         };
-        self.input.clear();
-        self.push(Style::default().fg(Color::Cyan), format!("> {prompt}"));
+        match &task {
+            AgentTask::Turn(prompt) => {
+                self.push(Style::default().fg(Color::Cyan), format!("> {prompt}"));
+            }
+            AgentTask::Resume(run_id) => {
+                self.push(
+                    Style::default().fg(Color::Cyan),
+                    format!("/resume {run_id}"),
+                );
+            }
+        }
         self.running = true;
         self.status = "running".to_owned();
         self.scroll_back = 0;
@@ -370,19 +432,48 @@ impl State {
             };
             runtime.block_on(async move {
                 let event_sender = sender.clone();
-                let result = session
-                    .run_turn_with_options(&prompt, options, move |event| {
-                        let _ = event_sender.send(UiMessage::Event(event.clone()));
-                    })
-                    .await
-                    .map(|_| ())
-                    .map_err(|error| error.to_string());
+                let mut forward = move |event: &RunEvent| {
+                    let _ = event_sender.send(UiMessage::Event(event.clone()));
+                };
+                let result = match task {
+                    AgentTask::Turn(prompt) => session
+                        .run_turn_with_options(&prompt, options, &mut forward)
+                        .await
+                        .map(|_| ()),
+                    AgentTask::Resume(run_id) => session
+                        .agent()
+                        .resume_with_options(&run_id, options, &mut forward)
+                        .await
+                        .map(|_| ()),
+                }
+                .map_err(|error| error.to_string());
                 let _ = sender.send(UiMessage::Finished {
                     session: Box::new(session),
                     result,
                 });
             });
         });
+    }
+}
+
+enum AgentTask {
+    Turn(String),
+    Resume(RunId),
+}
+
+enum TuiCommand {
+    Resume(Option<RunId>),
+    Session,
+    Help,
+}
+
+fn parse_command(input: &str) -> Option<TuiCommand> {
+    let mut parts = input.split_whitespace();
+    match parts.next()? {
+        "/resume" => Some(TuiCommand::Resume(parts.next().map(RunId::new))),
+        "/session" => Some(TuiCommand::Session),
+        "/help" => Some(TuiCommand::Help),
+        _ => None,
     }
 }
 
@@ -555,7 +646,7 @@ impl State {
         let hint = if self.running {
             "Esc cancel | Ctrl+C quit | PgUp/PgDn scroll"
         } else {
-            "Enter send | Esc quit | PgUp/PgDn scroll"
+            "Enter send | /resume /session /help | Esc quit | PgUp/PgDn scroll"
         };
         frame.render_widget(
             Paragraph::new(format!(" {} | {}", self.status, hint))
@@ -725,5 +816,48 @@ mod tests {
         assert!(state.lines.is_empty());
         assert_eq!(state.turn_index, 0);
         assert!(state.session.is_some());
+    }
+
+    #[test]
+    fn commands_are_parsed_before_a_turn() {
+        match parse_command("/resume run-1") {
+            Some(TuiCommand::Resume(Some(run_id))) => {
+                assert_eq!(run_id.to_string(), "run-1");
+            }
+            _ => panic!("expected /resume with a run id"),
+        }
+        assert!(matches!(
+            parse_command("/resume"),
+            Some(TuiCommand::Resume(None))
+        ));
+        assert!(matches!(
+            parse_command("/session"),
+            Some(TuiCommand::Session)
+        ));
+        assert!(matches!(parse_command("/help"), Some(TuiCommand::Help)));
+        assert!(parse_command("hello").is_none());
+    }
+
+    #[test]
+    fn the_session_command_reports_id_and_turn_count() {
+        let mut state = state();
+        state.input = "/session".to_owned();
+
+        state.submit();
+
+        let line = state.lines.last().unwrap();
+        assert!(line.text.starts_with("[session]"));
+        assert!(line.text.contains("turns 0"));
+        assert!(line.text.contains("last run none"));
+    }
+
+    #[test]
+    fn resume_without_a_recorded_run_explains_the_usage() {
+        let mut state = state();
+        state.input = "/resume".to_owned();
+
+        state.submit();
+
+        assert!(state.lines.last().unwrap().text.contains("usage: /resume"));
     }
 }
