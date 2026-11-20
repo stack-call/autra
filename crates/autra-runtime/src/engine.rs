@@ -14,9 +14,9 @@ use autra_core::{
     ToolCallSpec, ToolOutcome, TransitionProposal,
 };
 use autra_execution::{
-    Approver, ChildExecutionContext, DEFAULT_APPROVAL_TTL, DurableTransitionStore, EffectJournal,
-    ObserverHook, PolicyChain, PolicyDecision, PolicyRequest, RunError, RunEvent, RunOptions,
-    RunOutcome, RunSnapshot, ToolContext, ToolPolicy, ToolRegistry,
+    ApprovalRecord, Approver, ChildExecutionContext, DEFAULT_APPROVAL_TTL, DurableTransitionStore,
+    EffectJournal, ObserverHook, PolicyChain, PolicyDecision, PolicyRequest, RunError, RunEvent,
+    RunOptions, RunOutcome, RunSnapshot, ToolContext, ToolPolicy, ToolRegistry, now_unix_ms,
 };
 use tracing::Instrument;
 
@@ -142,6 +142,112 @@ impl LocalEngine {
             self.policy_decision(run_id, call),
             Some(PolicyDecision::Ask | PolicyDecision::Deny)
         )
+    }
+
+    /// Reuse a matching persisted decision, otherwise ask the approver and
+    /// persist the new decision.
+    async fn resolve_pending_approvals<F>(
+        &self,
+        journal: &dyn DurableTransitionStore,
+        stepper: &dyn AgentStepper,
+        state: &AgentState,
+        effects: &mut [EffectRecord],
+        approver: Option<&Arc<dyn Approver>>,
+        on_event: &mut F,
+    ) -> Result<(), RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        for call in stepper.pending_tool_calls(state) {
+            let Some(record) = effects.iter_mut().find(|record| {
+                record.kind == EffectKind::ToolCall
+                    && record.call_id.as_deref() == Some(call.call_id.as_str())
+            }) else {
+                continue;
+            };
+            if !matches!(
+                record.status,
+                EffectStatus::Recorded | EffectStatus::AwaitingApproval
+            ) {
+                continue;
+            }
+            let intent_call = serde_json::from_str::<EffectIntent>(&record.intent_json)
+                .ok()
+                .and_then(|intent| match intent {
+                    EffectIntent::CallTool(spec) => Some(spec.call),
+                    EffectIntent::CallModel(_) => None,
+                })
+                .unwrap_or(call);
+            let preview = self
+                .tools
+                .get(&intent_call.name)
+                .and_then(|tool| tool.preview(&intent_call.arguments));
+            let request = ApprovalRequest::new(&state.run_id, &record.id, &intent_call)
+                .with_policy(
+                    self.policy.revision(),
+                    self.actor.clone(),
+                    Some(self.approval_ttl.unwrap_or(DEFAULT_APPROVAL_TTL)),
+                )
+                .with_preview(preview);
+            on_event(&RunEvent::ApprovalRequested {
+                call_id: request.call_id.clone(),
+                tool_name: request.tool_name.clone(),
+                argument_digest: request.argument_digest.clone(),
+            });
+            let decision = self
+                .resolve_approval(&request, &record.id, approver)
+                .await?;
+            let approved = decision == ApprovalDecision::Approved;
+            on_event(&RunEvent::ApprovalDecided {
+                call_id: request.call_id.clone(),
+                approved,
+            });
+            if approved {
+                record.set_status(EffectStatus::Authorized);
+                journal
+                    .enqueue_effect(&state.run_id, record)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+            } else {
+                record.set_status(EffectStatus::Rejected);
+                record.error = Some("approval rejected; the tool was not executed".to_owned());
+            }
+            journal
+                .record(&state.run_id, record)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn resolve_approval(
+        &self,
+        request: &ApprovalRequest,
+        effect_id: &EffectId,
+        approver: Option<&Arc<dyn Approver>>,
+    ) -> Result<ApprovalDecision, RunError> {
+        let store = self
+            .journal
+            .as_ref()
+            .map(|journal| journal.approval_store());
+        if let Some(store) = store {
+            match store.load_approval(effect_id) {
+                Ok(Some(record)) if record.is_usable_for(request, now_unix_ms()) => {
+                    return Ok(record.decision);
+                }
+                Ok(_) => {}
+                Err(error) => return Err(RunError::Journal(error.to_string())),
+            }
+        }
+        let decision = match approver {
+            Some(approver) => approver.approve(request).await,
+            None => ApprovalDecision::Rejected,
+        };
+        if let Some(store) = store {
+            let record = ApprovalRecord::from_request(request, decision, now_unix_ms());
+            store
+                .save_approval(&record)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+        }
+        Ok(decision)
     }
 
     pub fn tools(&self) -> &ToolRegistry {
@@ -338,8 +444,18 @@ impl LocalEngine {
         }
 
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
+        let approver = options.approver.clone().or_else(|| self.approver.clone());
         match state.phase {
             AgentPhase::AwaitingTool => {
+                self.resolve_pending_approvals(
+                    journal.as_ref(),
+                    stepper.as_ref(),
+                    &state,
+                    &mut effects,
+                    approver.as_ref(),
+                    &mut on_event,
+                )
+                .await?;
                 let outcomes = self
                     .reconcile_tool_effects(
                         stepper.as_ref(),
@@ -950,10 +1066,9 @@ impl LocalEngine {
                     tool_name: request.tool_name.clone(),
                     argument_digest: request.argument_digest.clone(),
                 });
-                let decision = match sink.approver {
-                    Some(approver) => approver.approve(&request).await,
-                    None => ApprovalDecision::Rejected,
-                };
+                let decision = self
+                    .resolve_approval(&request, effect_id, sink.approver)
+                    .await?;
                 let is_approved = decision == ApprovalDecision::Approved;
                 sink.emit_stream(&RunEvent::ApprovalDecided {
                     call_id: request.call_id.clone(),

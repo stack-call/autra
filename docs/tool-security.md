@@ -60,6 +60,9 @@ The current MVP implements the description plus a minimal contract
 - `RulePolicy` supports allow/ask/deny tool lists and substring deny patterns
   for `run_command`. The CLI loads it from `--policy <path>`; deny rules also
   apply under `--yes`. Deny patterns are a coarse guard, not a sandbox.
+- Decisions are persisted in an `ApprovalStore` and reused on resume only when
+  the effect, argument digest and policy revision match and the record has not
+  expired. `autractl approve`/`reject` support headless approval.
 - The runtime asks an `Approver` for `Ask` calls. The request binds the Run id,
   call id, tool name, arguments, policy revision, actor and an expiry timestamp
   (default five minutes), plus a SHA-256 argument digest. A `Deny`, a rejected

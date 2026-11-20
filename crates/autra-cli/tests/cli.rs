@@ -355,3 +355,74 @@ fn snapshot_reads_a_journaled_run() {
     assert_eq!(value["phase"], "Completed");
     assert_eq!(value["final_answer"], "echo: hello");
 }
+
+#[test]
+fn approve_and_reject_write_an_approval_record() {
+    use autra::{ApprovalDecision, ApprovalStore, EffectJournal};
+    use autra_core::{
+        AgentPhase, AgentState, BudgetSnapshot, EffectId, EffectIntent, EffectKind, EffectRecord,
+        EffectStatus, RunId, ToolCallRequest, ToolCallSpec,
+    };
+    use autra_durable_sqlite::SqliteEffectJournal;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("approvals.db");
+    let run_id = RunId::new("run-approval");
+    let effect_id = EffectId::fresh();
+    {
+        let journal = SqliteEffectJournal::open(&db).unwrap();
+        let mut state = AgentState::new(run_id.clone(), BudgetSnapshot::new(4, 4));
+        state.phase = AgentPhase::AwaitingTool;
+        journal.save_run(&state).unwrap();
+        let call = ToolCallRequest {
+            call_id: "call-1".to_owned(),
+            name: "write_file".to_owned(),
+            arguments: r#"{"path":"note.txt","content":"hello"}"#.to_owned(),
+        };
+        let intent = EffectIntent::CallTool(ToolCallSpec { call });
+        let mut effect = EffectRecord::new(
+            effect_id.clone(),
+            EffectKind::ToolCall,
+            Some("write_file".to_owned()),
+            Some("call-1".to_owned()),
+            "digest".to_owned(),
+        )
+        .with_intent_json(serde_json::to_string(&intent).unwrap());
+        effect.set_status(EffectStatus::AwaitingApproval);
+        journal.record(&run_id, &effect).unwrap();
+    }
+
+    let approve = autractl()
+        .args([
+            "approve",
+            "--journal",
+            db.to_str().unwrap(),
+            run_id.as_str(),
+            effect_id.as_str(),
+        ])
+        .output()
+        .unwrap();
+    assert!(approve.status.success(), "stderr: {}", stderr(&approve));
+    let journal = SqliteEffectJournal::open(&db).unwrap();
+    assert_eq!(
+        journal.load_approval(&effect_id).unwrap().unwrap().decision,
+        ApprovalDecision::Approved
+    );
+
+    let reject = autractl()
+        .args([
+            "reject",
+            "--journal",
+            db.to_str().unwrap(),
+            run_id.as_str(),
+            effect_id.as_str(),
+        ])
+        .output()
+        .unwrap();
+    assert!(reject.status.success(), "stderr: {}", stderr(&reject));
+    let journal = SqliteEffectJournal::open(&db).unwrap();
+    assert_eq!(
+        journal.load_approval(&effect_id).unwrap().unwrap().decision,
+        ApprovalDecision::Rejected
+    );
+}

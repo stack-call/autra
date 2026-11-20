@@ -117,6 +117,9 @@ pub trait DurableTransitionStore: EffectJournal {
     /// The underlying journal, used for dispatch, recovery and inspection.
     fn journal(&self) -> &dyn EffectJournal;
 
+    /// Persist and reuse approval decisions for this Run's effects.
+    fn approval_store(&self) -> &dyn crate::approval::ApprovalStore;
+
     /// Commit the next state, one accepted event, the effects it introduced and
     /// the outbox rows for its `Authorized` effects as one unit.
     fn commit_transition(

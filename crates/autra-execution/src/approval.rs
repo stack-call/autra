@@ -1,7 +1,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use async_trait::async_trait;
-use autra_core::{EffectId, EffectIntent, RunId, ToolCallRequest};
+use autra_core::{EffectId, EffectIntent, EffectRecord, RunId, ToolCallRequest};
 use sha2::{Digest, Sha256};
 
 pub const LOCAL_POLICY_REVISION: &str = "local-v1";
@@ -80,10 +82,113 @@ pub trait Approver: Send + Sync {
     async fn approve(&self, request: &ApprovalRequest) -> ApprovalDecision;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ApprovalDecision {
     Approved,
     Rejected,
+}
+
+/// A persisted approval decision. It is reusable only for the same argument
+/// digest and policy revision, and only until it expires.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalRecord {
+    pub effect_id: EffectId,
+    pub run_id: RunId,
+    pub call_id: String,
+    pub tool_name: String,
+    pub argument_digest: String,
+    pub policy_revision: String,
+    pub actor: Option<String>,
+    pub decision: ApprovalDecision,
+    pub decided_at_unix_ms: u64,
+    pub expires_at_unix_ms: Option<u64>,
+}
+
+impl ApprovalRecord {
+    pub fn from_request(
+        request: &ApprovalRequest,
+        decision: ApprovalDecision,
+        decided_at_unix_ms: u64,
+    ) -> Self {
+        Self {
+            effect_id: request.effect_id.clone(),
+            run_id: RunId::new(request.run_id.clone()),
+            call_id: request.call_id.clone(),
+            tool_name: request.tool_name.clone(),
+            argument_digest: request.argument_digest.clone(),
+            policy_revision: request.policy_revision.clone(),
+            actor: request.actor.clone(),
+            decision,
+            decided_at_unix_ms,
+            expires_at_unix_ms: request.expires_at_unix_ms,
+        }
+    }
+
+    /// Build a record from an effect and a tool call, for headless approval.
+    pub fn from_effect(
+        effect: &EffectRecord,
+        run_id: &RunId,
+        decision: ApprovalDecision,
+        actor: Option<String>,
+        policy_revision: impl Into<String>,
+        ttl: Option<Duration>,
+    ) -> Option<Self> {
+        let intent: EffectIntent = serde_json::from_str(&effect.intent_json).ok()?;
+        let EffectIntent::CallTool(spec) = intent else {
+            return None;
+        };
+        let now = now_unix_ms();
+        Some(Self {
+            effect_id: effect.id.clone(),
+            run_id: run_id.clone(),
+            call_id: spec.call.call_id.clone(),
+            tool_name: spec.call.name.clone(),
+            argument_digest: digest_arguments(&spec.call.name, &spec.call.arguments),
+            policy_revision: policy_revision.into(),
+            actor,
+            decision,
+            decided_at_unix_ms: now,
+            expires_at_unix_ms: ttl.map(|ttl| now + ttl.as_millis() as u64),
+        })
+    }
+
+    pub fn is_usable_for(&self, request: &ApprovalRequest, now_unix_ms: u64) -> bool {
+        self.effect_id == request.effect_id
+            && self.argument_digest == request.argument_digest
+            && self.policy_revision == request.policy_revision
+            && self
+                .expires_at_unix_ms
+                .is_none_or(|expires| now_unix_ms <= expires)
+    }
+}
+
+pub fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|now| now.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApprovalStoreError {
+    #[error("{0}")]
+    Message(String),
+}
+
+impl ApprovalStoreError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self::Message(message.into())
+    }
+}
+
+/// Persistence for approval decisions. Kept separate from the effect journal
+/// so a session/interaction store can implement it independently.
+pub trait ApprovalStore: Send + Sync {
+    fn save_approval(&self, record: &ApprovalRecord) -> Result<(), ApprovalStoreError>;
+    fn load_approval(
+        &self,
+        effect_id: &EffectId,
+    ) -> Result<Option<ApprovalRecord>, ApprovalStoreError>;
 }
 
 pub fn digest_intent(intent: &EffectIntent) -> String {

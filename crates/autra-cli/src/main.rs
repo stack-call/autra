@@ -2,12 +2,13 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use autra_core::{RunId, SessionId};
+use autra_core::{EffectId, RunId, SessionId};
 use autra_durable_sqlite::{SqliteEffectJournal, SqliteSessionStore};
 
 use autra::{
-    Agent, ApprovalDecision, ApprovalRequest, Approver, EffectJournal, RulePolicy, RunError,
-    RunEvent, RunOptions, RunOutcome, Session, SessionStore,
+    Agent, ApprovalDecision, ApprovalRecord, ApprovalRequest, ApprovalStore, Approver,
+    DEFAULT_APPROVAL_TTL, EffectJournal, LOCAL_POLICY_REVISION, RulePolicy, RunError, RunEvent,
+    RunOptions, RunOutcome, Session, SessionStore,
 };
 use autra_harness::{
     EchoModel, EchoTool, EditFileTool, FakeModel, GitDiffTool, GitStatusTool, HistoryItem,
@@ -30,6 +31,8 @@ async fn main() -> ExitCode {
         Some("resume") => resume_command(&args[1..]).await,
         Some("outbox") => outbox_command(&args[1..]).await,
         Some("snapshot") => snapshot_command(&args[1..]),
+        Some("approve") => approval_command(&args[1..], ApprovalDecision::Approved),
+        Some("reject") => approval_command(&args[1..], ApprovalDecision::Rejected),
         Some("demo") => demo_command().await,
         Some("tools") => tools_command(),
         Some(other) => {
@@ -298,6 +301,72 @@ fn string_list(value: &serde_json::Value, key: &str) -> Result<Vec<String>, Stri
             })
             .collect(),
         Some(_) => Err(format!("policy `{key}` must be an array")),
+    }
+}
+
+fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {
+    let command = match decision {
+        ApprovalDecision::Approved => "approve",
+        ApprovalDecision::Rejected => "reject",
+    };
+    let flags = match parse_flags(args, command) {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if flags.rest.len() != 2 {
+        eprintln!(
+            "usage: autractl {command} --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>"
+        );
+        return ExitCode::FAILURE;
+    }
+    let Some(path) = flags.journal.as_ref() else {
+        eprintln!("{command} requires --journal <path>");
+        return ExitCode::FAILURE;
+    };
+    let run_id = RunId::new(flags.rest[0].clone());
+    let effect_id = EffectId::new(flags.rest[1].clone());
+    let journal = match SqliteEffectJournal::open(path) {
+        Ok(journal) => journal,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let effects = match journal.load(&run_id) {
+        Ok(effects) => effects,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(effect) = effects.iter().find(|effect| effect.id == effect_id) else {
+        eprintln!("effect `{effect_id}` was not found in run `{run_id}`");
+        return ExitCode::FAILURE;
+    };
+    let revision = match flags.policy.as_ref() {
+        Some(policy_path) => format!("file:{policy_path}"),
+        None => LOCAL_POLICY_REVISION.to_owned(),
+    };
+    let Some(record) = ApprovalRecord::from_effect(
+        effect,
+        &run_id,
+        decision,
+        flags.actor.clone(),
+        revision,
+        Some(DEFAULT_APPROVAL_TTL),
+    ) else {
+        eprintln!("effect `{effect_id}` is not a tool call");
+        return ExitCode::FAILURE;
+    };
+    match journal.save_approval(&record) {
+        Ok(()) => {
+            println!("{command}d effect `{effect_id}` for run `{run_id}`");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
     }
 }
 

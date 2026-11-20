@@ -16,8 +16,8 @@ pub mod session;
 pub mod tool;
 
 pub use approval::{
-    ApprovalDecision, ApprovalRequest, Approver, DEFAULT_APPROVAL_TTL, LOCAL_POLICY_REVISION,
-    digest_arguments, digest_intent,
+    ApprovalDecision, ApprovalRecord, ApprovalRequest, ApprovalStore, ApprovalStoreError, Approver,
+    DEFAULT_APPROVAL_TTL, LOCAL_POLICY_REVISION, digest_arguments, digest_intent, now_unix_ms,
 };
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities};

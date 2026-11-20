@@ -1,7 +1,7 @@
 //! In-process EffectJournal for local runs and tests.
 
-use autra_execution::DurableTransitionStore;
 pub use autra_execution::journal::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
+use autra_execution::{ApprovalRecord, ApprovalStore, ApprovalStoreError, DurableTransitionStore};
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -15,6 +15,7 @@ pub struct MemoryJournal {
     runs: Arc<Mutex<BTreeMap<RunId, AgentState>>>,
     events: Arc<Mutex<BTreeMap<RunId, Vec<AcceptedEvent>>>>,
     outbox: Arc<Mutex<BTreeMap<EffectId, OutboxEntry>>>,
+    approvals: Arc<Mutex<BTreeMap<EffectId, ApprovalRecord>>>,
 }
 
 impl MemoryJournal {
@@ -154,8 +155,34 @@ impl EffectJournal for MemoryJournal {
     }
 }
 
+impl ApprovalStore for MemoryJournal {
+    fn save_approval(&self, record: &ApprovalRecord) -> Result<(), ApprovalStoreError> {
+        self.approvals
+            .lock()
+            .expect("journal lock poisoned")
+            .insert(record.effect_id.clone(), record.clone());
+        Ok(())
+    }
+
+    fn load_approval(
+        &self,
+        effect_id: &EffectId,
+    ) -> Result<Option<ApprovalRecord>, ApprovalStoreError> {
+        Ok(self
+            .approvals
+            .lock()
+            .expect("journal lock poisoned")
+            .get(effect_id)
+            .cloned())
+    }
+}
+
 impl DurableTransitionStore for MemoryJournal {
     fn journal(&self) -> &dyn EffectJournal {
+        self
+    }
+
+    fn approval_store(&self) -> &dyn ApprovalStore {
         self
     }
 

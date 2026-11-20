@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use autra::{
-    Agent, ApprovalDecision, ApprovalRequest, Approver, DurableTransitionStore, EffectJournal,
-    JournalError, MemoryJournal, OutboxEntry, RunError,
+    Agent, ApprovalDecision, ApprovalRecord, ApprovalRequest, ApprovalStore, ApprovalStoreError,
+    Approver, DurableTransitionStore, EffectJournal, JournalError, MemoryJournal, OutboxEntry,
+    RunError,
 };
 use autra_core::{
     AcceptedEvent, AgentState, AttemptStatus, EffectId, EffectKind, EffectRecord, EffectStatus,
@@ -326,9 +327,26 @@ async fn a_claimed_tool_emits_started_before_its_result() {
     assert!(started < finished);
 }
 
+impl ApprovalStore for SpyJournal {
+    fn save_approval(&self, record: &ApprovalRecord) -> Result<(), ApprovalStoreError> {
+        self.inner.save_approval(record)
+    }
+
+    fn load_approval(
+        &self,
+        effect_id: &EffectId,
+    ) -> Result<Option<ApprovalRecord>, ApprovalStoreError> {
+        self.inner.load_approval(effect_id)
+    }
+}
+
 impl DurableTransitionStore for SpyJournal {
     fn journal(&self) -> &dyn EffectJournal {
         &self.inner
+    }
+
+    fn approval_store(&self) -> &dyn ApprovalStore {
+        self
     }
 
     fn commit_transition(

@@ -109,6 +109,11 @@ Tests observe public behaviour, not private helpers.
 32. **Snapshots** (`autra-runtime`, `autra-cli`): a hub records a final
     snapshot; subscriptions receive events and end at finish; subscribing after
     finish returns the snapshot; `autractl snapshot` reads a journaled Run.
+33. **Approval persistence** (`autra-execution`, `autra-runtime`,
+    `autra-durable-sqlite`, `autra-cli`): decisions are stored and reused on
+    resume when the digest and policy revision match and the record is not
+    expired; expired, mismatched or rejected records re-ask or reject; CLI
+    `approve`/`reject` write decisions.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
 use autra_execution::{
-    DEFAULT_CLAIM_LEASE, DurableTransitionStore, EffectJournal, JournalError, OutboxEntry,
+    ApprovalRecord, ApprovalStore, ApprovalStoreError, DEFAULT_CLAIM_LEASE, DurableTransitionStore,
+    EffectJournal, JournalError, OutboxEntry,
 };
 pub mod session;
 
@@ -45,6 +46,11 @@ impl SqliteEffectJournal {
                     event_json TEXT NOT NULL,
                     recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (run_id, seq)
+                );
+                CREATE TABLE IF NOT EXISTS approvals (
+                    effect_id TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS effect_outbox (
                     effect_id TEXT PRIMARY KEY,
@@ -385,8 +391,58 @@ impl EffectJournal for SqliteEffectJournal {
     }
 }
 
+impl ApprovalStore for SqliteEffectJournal {
+    fn save_approval(&self, record: &ApprovalRecord) -> Result<(), ApprovalStoreError> {
+        let payload = serde_json::to_string(record).map_err(|error| {
+            ApprovalStoreError::new(format!("cannot serialize approval: {error}"))
+        })?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| ApprovalStoreError::new("journal lock poisoned"))?;
+        connection
+            .execute(
+                "INSERT INTO approvals (effect_id, payload_json) VALUES (?1, ?2)
+                 ON CONFLICT(effect_id) DO UPDATE SET
+                   payload_json = excluded.payload_json,
+                   updated_at = CURRENT_TIMESTAMP",
+                params![record.effect_id.as_str(), payload],
+            )
+            .map_err(|error| ApprovalStoreError::new(format!("cannot save approval: {error}")))?;
+        Ok(())
+    }
+
+    fn load_approval(
+        &self,
+        effect_id: &EffectId,
+    ) -> Result<Option<ApprovalRecord>, ApprovalStoreError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| ApprovalStoreError::new("journal lock poisoned"))?;
+        let payload: Option<String> = connection
+            .query_row(
+                "SELECT payload_json FROM approvals WHERE effect_id = ?1",
+                params![effect_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| ApprovalStoreError::new(format!("cannot read approval: {error}")))?;
+        match payload {
+            Some(payload) => serde_json::from_str(&payload).map(Some).map_err(|error| {
+                ApprovalStoreError::new(format!("cannot decode approval: {error}"))
+            }),
+            None => Ok(None),
+        }
+    }
+}
+
 impl DurableTransitionStore for SqliteEffectJournal {
     fn journal(&self) -> &dyn EffectJournal {
+        self
+    }
+
+    fn approval_store(&self) -> &dyn ApprovalStore {
         self
     }
 

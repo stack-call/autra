@@ -68,6 +68,7 @@ After building, the binary is `autractl` (or prefix with
 - `autractl chat [options]` — one turn per stdin line, keeping session history.
 - `autractl resume --journal <path> --model <name> <run-id>` — continue a checkpointed run.
 - `autractl snapshot --journal <path> <run-id>` — print the current Run snapshot as JSON.
+- `autractl approve|reject --journal <path> <run-id> <effect-id>` — record an approval decision for a pending effect.
 - `autractl outbox --journal <path> --model <name>` — drain due outbox rows, reclaiming expired leases.
 - `autractl demo` — deterministic list-files, read-README demo.
 - `autractl tools` — list the built-in tools.
