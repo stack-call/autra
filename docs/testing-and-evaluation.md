@@ -58,11 +58,15 @@ Tests observe public behaviour, not private helpers.
     execution and can run without a builder model.
 21. **Workspace tools** (`autra-harness`, `autra-runtime`): `search_text` skips
     symlinks and build directories, caps results and stays inside the root;
+    `edit_file` rejects missing, ambiguous and identical replacements;
     `write_file` creates parent directories; `run_command` runs in the
-    workspace root, reports non-zero exits, and marks a timeout unknown. An
-    end-to-end Agent run writes a nested file and runs a command after two
-    approvals.
-22. **Workspace CLI** (`autra-cli`): `run --workspace --read-only` uses the
+    workspace root, reports non-zero exits, and marks a timeout unknown;
+    `git_status` and `git_diff` report repository state. An end-to-end Agent
+    run writes a nested file and runs a command after two approvals.
+22. **Approval preview** (`autra-harness`, `autra-runtime`): `write_file` and
+    `edit_file` describe the pending diff, `run_command` shows the command, and
+    the runtime carries the preview on `ApprovalRequest`.
+23. **Workspace CLI** (`autra-cli`): `run --workspace --read-only` uses the
     selected root, `tools` lists the workspace capabilities, and unknown
     options fail with usage.
 

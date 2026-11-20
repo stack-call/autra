@@ -36,8 +36,18 @@ The current MVP implements the description plus a minimal contract
 - Built-in read-only tools are `ReadOnly`. `search_text` walks the workspace,
   skips symlinks, `.git`, `target` and `node_modules`, caps file size and result
   count, and never leaves the root.
+- `edit_file` declares `Idempotent`, requires approval, and replaces an exact
+  string only when it is unique; an ambiguous match is rejected unless
+  `replace_all` is set. The result includes a bounded unified diff.
 - `write_file` declares `Idempotent`, requires approval, creates missing parent
   directories inside the workspace and caps content at 1 MiB.
+- `git_status` and `git_diff` are `ReadOnly`, run `git` in the workspace root
+  and are bounded to 32 KiB. `git_diff` limits a requested path to the
+  workspace.
+- A tool may return a `preview` of its pending change. The runtime attaches it
+  to `ApprovalRequest`, and the CLI prints it before asking for approval. The
+  preview is guidance for a human; it does not authorize anything and cannot
+  widen what the tool may do.
 - `run_command` declares `NonIdempotent`, requires approval, runs an
   unsandboxed shell in the workspace root, caps output at 32 KiB and defaults
   to a 60-second timeout. A timed-out command is reported as `OutcomeUnknown`

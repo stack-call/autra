@@ -608,7 +608,12 @@ impl Agent {
             if requires_approval {
                 sink.effect_mut(effect_id)
                     .set_status(EffectStatus::AwaitingApproval);
-                let request = ApprovalRequest::new(sink.run_id, effect_id, call);
+                let preview = self
+                    .tools
+                    .get(&call.name)
+                    .and_then(|tool| tool.preview(&call.arguments));
+                let request =
+                    ApprovalRequest::new(sink.run_id, effect_id, call).with_preview(preview);
                 sink.emit_stream(&RunEvent::ApprovalRequested {
                     call_id: request.call_id.clone(),
                     tool_name: request.tool_name.clone(),

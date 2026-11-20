@@ -2,13 +2,13 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use autra_harness::{
-    EchoModel, EchoTool, FakeModel, HistoryItem, ListFilesTool, LocalWorkspace, ModelOutput,
-    ReadFileTool, SearchTextTool, ToolCallRequest, ToolRegistry, WriteFileTool,
+    EchoModel, EchoTool, EditFileTool, FakeModel, HistoryItem, ListFilesTool, LocalWorkspace,
+    ModelOutput, ReadFileTool, SearchTextTool, ToolCallRequest, ToolRegistry, WriteFileTool,
 };
 use autra_openai::OpenAiCompatibleModel;
 use autra_runtime::{
-    Agent, ApprovalDecision, ApprovalRequest, Approver, RunCommandTool, RunError, RunEvent,
-    RunOptions, RunOutcome, Session,
+    Agent, ApprovalDecision, ApprovalRequest, Approver, GitDiffTool, GitStatusTool, RunCommandTool,
+    RunError, RunEvent, RunOptions, RunOutcome, Session,
 };
 
 #[tokio::main]
@@ -42,10 +42,11 @@ struct Flags {
 
 const WORKSPACE_INSTRUCTIONS: &str = "\
 You are a coding agent working inside one workspace.
-Inspect the workspace with list_files, search_text and read_file before changing it.
-Use write_file to create or replace files; missing parent directories are created.
-Use run_command to build, test or inspect the project. Keep changes focused, stay
-inside the workspace, and when you finish summarize what changed and what you verified.";
+Inspect the workspace with list_files, search_text, read_file, git_status and git_diff.
+Use edit_file for targeted changes and write_file for new files; missing parent
+directories are created. Use run_command to build, test or inspect the project.
+Check git_diff after editing. Keep changes focused, stay inside the workspace,
+and when you finish summarize what changed and what you verified.";
 
 async fn run_command(args: &[String]) -> ExitCode {
     let flags = match parse_flags(args, "run") {
@@ -192,10 +193,13 @@ fn build_agent(flags: &Flags) -> Result<Agent, String> {
     tools.register(ListFilesTool::new(workspace.clone()));
     tools.register(ReadFileTool::new(workspace.clone()));
     tools.register(SearchTextTool::new(workspace.clone()));
+    tools.register(GitStatusTool::new(workspace.clone()));
+    tools.register(GitDiffTool::new(workspace.clone()));
     if flags.read_only {
         eprintln!("[workspace] {root} (read-only)");
     } else {
         tools.register(WriteFileTool::new(workspace.clone()));
+        tools.register(EditFileTool::new(workspace.clone()));
         tools.register(RunCommandTool::new(workspace));
         eprintln!("[workspace] {root}");
     }
@@ -244,7 +248,12 @@ struct InteractiveApprover;
 #[async_trait::async_trait]
 impl Approver for InteractiveApprover {
     async fn approve(&self, request: &ApprovalRequest) -> ApprovalDecision {
-        eprint!("[approval] run `{}`? [y/N] ", request.tool_name);
+        eprintln!("[approval] {} ({})", request.tool_name, request.call_id);
+        match &request.preview {
+            Some(preview) => eprintln!("{preview}"),
+            None => eprintln!("arguments: {}", request.arguments),
+        }
+        eprint!("allow? [y/N] ");
         let _ = io::stderr().flush();
         let mut answer = String::new();
         match io::stdin().read_line(&mut answer) {
@@ -340,6 +349,9 @@ fn tools_command() -> ExitCode {
     };
     let mut registry = builtin_registry(workspace.clone());
     registry.register(SearchTextTool::new(workspace.clone()));
+    registry.register(EditFileTool::new(workspace.clone()));
+    registry.register(GitStatusTool::new(workspace.clone()));
+    registry.register(GitDiffTool::new(workspace.clone()));
     registry.register(RunCommandTool::new(workspace));
     for spec in registry.specs() {
         println!("{}\t{}", spec.name, spec.description);

@@ -8,6 +8,7 @@ pub mod agent;
 pub mod approval;
 pub mod command;
 pub mod dispatcher;
+pub mod git;
 pub mod hooks;
 pub mod host;
 pub mod journal;
@@ -23,6 +24,7 @@ pub use command::RunCommandTool;
 pub use dispatcher::{
     DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher, LocalDispatcher, OutboxDispatcher,
 };
+pub use git::{GitDiffTool, GitStatusTool};
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities, LocalHost};
 pub use journal::{EffectJournal, JournalError, MemoryJournal, OutboxEntry};

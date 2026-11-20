@@ -148,6 +148,9 @@ fn tools_lists_the_workspace_capabilities() {
     assert!(output.status.success());
     let output_text = stdout(&output);
     for name in [
+        "edit_file",
+        "git_diff",
+        "git_status",
         "list_files",
         "read_file",
         "search_text",

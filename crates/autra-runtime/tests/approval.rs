@@ -248,3 +248,26 @@ async fn mixed_batch_approves_only_the_write() {
     assert_eq!(tools.len(), 2);
     assert!(tools.iter().all(|tool| !tool.is_error));
 }
+
+#[tokio::test]
+async fn approval_carries_a_tool_preview() {
+    let dir = tempdir().unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let agent = Agent::builder("preview")
+        .model(model_with(vec![write_call("call-1", "note.txt", "hello")]))
+        .tool(WriteFileTool::new(workspace))
+        .approver(ScriptedApprover {
+            decision: ApprovalDecision::Approved,
+            seen: seen.clone(),
+        })
+        .build()
+        .unwrap();
+
+    agent.run("go").await.unwrap();
+
+    let seen = seen.lock().unwrap();
+    let preview = seen[0].preview.as_deref().expect("tool preview");
+    assert!(preview.contains("create note.txt"));
+    assert!(preview.contains("hello"));
+}

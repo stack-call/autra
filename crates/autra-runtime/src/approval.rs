@@ -13,6 +13,8 @@ pub struct ApprovalRequest {
     pub arguments: String,
     pub argument_digest: String,
     pub policy_revision: String,
+    /// Tool-provided description of the pending change, if the tool has one.
+    pub preview: Option<String>,
 }
 
 impl ApprovalRequest {
@@ -25,7 +27,13 @@ impl ApprovalRequest {
             arguments: call.arguments.clone(),
             argument_digest: digest_arguments(&call.name, &call.arguments),
             policy_revision: LOCAL_POLICY_REVISION.to_owned(),
+            preview: None,
         }
+    }
+
+    pub fn with_preview(mut self, preview: Option<String>) -> Self {
+        self.preview = preview;
+        self
     }
 }
 

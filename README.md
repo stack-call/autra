@@ -70,8 +70,15 @@ After building, the binary is `autractl` (or prefix with
 | `list_files` | list one directory | no |
 | `read_file` | read a UTF-8 file | no |
 | `search_text` | search files and return `path:line` matches | no |
+| `git_status` | show the workspace repository status | no |
+| `git_diff` | show unstaged or staged changes, optionally for one path | no |
+| `edit_file` | replace an exact string; ambiguous matches are rejected | yes |
 | `write_file` | create or replace a file, including parent directories | yes |
 | `run_command` | run a shell command in the workspace root | yes |
+
+Before asking for approval, the CLI prints the tool's preview: the command, a
+unified diff for edits and overwrites, or the rejection reason for an ambiguous
+edit.
 
 | Flag | Meaning |
 |---|---|

@@ -87,6 +87,12 @@ pub trait Tool: Send + Sync {
         TOOL_PROTOCOL_VERSION
     }
 
+    /// A human-readable description of the pending change, shown to whoever
+    /// approves the call. Returning `None` leaves only the raw arguments.
+    fn preview(&self, _arguments: &str) -> Option<String> {
+        None
+    }
+
     async fn call(&self, arguments: &str) -> Result<String, ToolError>;
 
     /// Execution entry point used by the runtime. Existing tools get this
@@ -219,7 +225,7 @@ impl LocalWorkspace {
         &self.root
     }
 
-    fn resolve(&self, relative: &str) -> Result<std::path::PathBuf, ToolError> {
+    pub fn resolve(&self, relative: &str) -> Result<std::path::PathBuf, ToolError> {
         use std::path::Component;
 
         let relative_path = std::path::Path::new(relative);
@@ -550,6 +556,31 @@ impl Tool for WriteFileTool {
         true
     }
 
+    fn preview(&self, arguments: &str) -> Option<String> {
+        let args: WriteFileArgs = serde_json::from_str(arguments).ok()?;
+        if args.content.len() > WRITE_FILE_MAX_BYTES {
+            return Some(format!(
+                "write_file {}: content exceeds {WRITE_FILE_MAX_BYTES} bytes",
+                args.path
+            ));
+        }
+        let existing = self
+            .workspace
+            .resolve(&args.path)
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok());
+        Some(match existing {
+            Some(old) => unified_preview(&args.path, &old, &args.content, PREVIEW_MAX_BYTES),
+            None => format!(
+                "create {} ({} bytes)
+{}",
+                args.path,
+                args.content.len(),
+                first_lines(&args.content, 20)
+            ),
+        })
+    }
+
     async fn call(&self, arguments: &str) -> Result<String, ToolError> {
         let args: WriteFileArgs = serde_json::from_str(arguments)
             .map_err(|error| invalid_arguments("write_file", error))?;
@@ -712,5 +743,157 @@ impl Tool for SearchTextTool {
             output.push_str(&format!("\n[stopped at {limit} matches]"));
         }
         Ok(output)
+    }
+}
+
+const PREVIEW_MAX_BYTES: usize = 4 * 1024;
+
+/// Renders a bounded unified diff for approval previews and tool results.
+pub fn unified_preview(path: &str, old: &str, new: &str, max_bytes: usize) -> String {
+    let diff = similar::TextDiff::from_lines(old, new);
+    let rendered = diff
+        .unified_diff()
+        .context_radius(3)
+        .header(path, path)
+        .to_string();
+    if rendered.len() <= max_bytes {
+        return rendered;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !rendered.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n[diff truncated at {max_bytes} bytes]",
+        &rendered[..end]
+    )
+}
+
+fn first_lines(content: &str, limit: usize) -> String {
+    let mut lines: Vec<&str> = content.lines().take(limit).collect();
+    let truncated = content.lines().count() > limit;
+    if truncated {
+        lines.push("…");
+    }
+    lines.join("\n")
+}
+
+const EDIT_FILE_SCHEMA: &str = r#"{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative file path"},"old_string":{"type":"string","description":"Exact text to replace"},"new_string":{"type":"string","description":"Replacement text"},"replace_all":{"type":"boolean","description":"Replace every occurrence (default false; ambiguous edits are rejected)"}},"required":["path","old_string","new_string"]}"#;
+const EDIT_FILE_MAX_BYTES: usize = 1024 * 1024;
+
+/// Replaces an exact string in a workspace file. Requires approval.
+pub struct EditFileTool {
+    workspace: LocalWorkspace,
+}
+
+impl EditFileTool {
+    pub fn new(workspace: LocalWorkspace) -> Self {
+        Self { workspace }
+    }
+
+    fn replacement(&self, args: &EditFileArgs) -> Result<(String, String, usize), ToolError> {
+        if args.old_string.is_empty() {
+            return Err(ToolError::new("old_string must not be empty"));
+        }
+        if args.old_string == args.new_string {
+            return Err(ToolError::new(
+                "old_string and new_string are identical; there is nothing to change",
+            ));
+        }
+        let path = self.workspace.resolve(&args.path)?;
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| ToolError::new(format!("cannot read `{}`: {error}", args.path)))?;
+        if !metadata.is_file() {
+            return Err(ToolError::new(format!("`{}` is not a file", args.path)));
+        }
+        if metadata.len() > EDIT_FILE_MAX_BYTES as u64 {
+            return Err(ToolError::new(format!(
+                "`{}` exceeds {EDIT_FILE_MAX_BYTES} bytes",
+                args.path
+            )));
+        }
+        let content = std::fs::read_to_string(&path).map_err(|error| {
+            ToolError::new(format!("cannot read `{}` as UTF-8: {error}", args.path))
+        })?;
+        let count = content.matches(&args.old_string).count();
+        if count == 0 {
+            return Err(ToolError::new(format!(
+                "old_string not found in `{}`",
+                args.path
+            )));
+        }
+        if count > 1 && !args.replace_all {
+            return Err(ToolError::new(format!(
+                "old_string matches {count} times in `{}`; provide more context or set replace_all",
+                args.path
+            )));
+        }
+        let updated = if args.replace_all {
+            content.replace(&args.old_string, &args.new_string)
+        } else {
+            content.replacen(&args.old_string, &args.new_string, 1)
+        };
+        if updated.len() > EDIT_FILE_MAX_BYTES {
+            return Err(ToolError::new(format!(
+                "edited `{}` would exceed {EDIT_FILE_MAX_BYTES} bytes",
+                args.path
+            )));
+        }
+        Ok((content, updated, count))
+    }
+}
+
+#[derive(Deserialize)]
+struct EditFileArgs {
+    path: String,
+    old_string: String,
+    new_string: String,
+    #[serde(default)]
+    replace_all: bool,
+}
+
+#[async_trait]
+impl Tool for EditFileTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "edit_file".to_owned(),
+            description: "Replace an exact string in a workspace file. Requires approval."
+                .to_owned(),
+            input_schema: EDIT_FILE_SCHEMA.to_owned(),
+        }
+    }
+
+    fn effect_class(&self) -> EffectClass {
+        EffectClass::Idempotent
+    }
+
+    fn requires_approval(&self) -> bool {
+        true
+    }
+
+    fn preview(&self, arguments: &str) -> Option<String> {
+        let args: EditFileArgs = serde_json::from_str(arguments).ok()?;
+        Some(match self.replacement(&args) {
+            Ok((old, new, count)) => format!(
+                "edit {} ({count} occurrence(s))\n{}",
+                args.path,
+                unified_preview(&args.path, &old, &new, PREVIEW_MAX_BYTES)
+            ),
+            Err(error) => format!("edit {} will be rejected: {}", args.path, error.message),
+        })
+    }
+
+    async fn call(&self, arguments: &str) -> Result<String, ToolError> {
+        let args: EditFileArgs = serde_json::from_str(arguments)
+            .map_err(|error| invalid_arguments("edit_file", error))?;
+        let (old, new, count) = self.replacement(&args)?;
+        let path = self.workspace.resolve(&args.path)?;
+        std::fs::write(&path, new.as_bytes())
+            .map_err(|error| ToolError::new(format!("cannot write `{}`: {error}", args.path)))?;
+        Ok(format!(
+            "replaced {count} occurrence(s) in {}\n{}",
+            args.path,
+            unified_preview(&args.path, &old, &new, PREVIEW_MAX_BYTES)
+        ))
     }
 }

@@ -21,7 +21,7 @@ pub use planning::{PlanItem, PlanStatus, SharedPlan, UpdatePlanTool};
 pub use react::ReActStepper;
 pub use skills::{LoadSkillTool, Skill, SkillRegistry};
 pub use tools::{
-    EchoTool, ListFilesTool, LocalWorkspace, ReadFileTool, SearchTextTool, TOOL_PROTOCOL_VERSION,
-    Tool, ToolContext, ToolContract, ToolDescriptor, ToolError, ToolInput, ToolOutput,
-    ToolRegistry, WriteFileTool,
+    EchoTool, EditFileTool, ListFilesTool, LocalWorkspace, ReadFileTool, SearchTextTool,
+    TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor, ToolError, ToolInput,
+    ToolOutput, ToolRegistry, WriteFileTool,
 };

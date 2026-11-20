@@ -91,3 +91,22 @@ async fn write_file_creates_missing_parent_directories() {
         "hello"
     );
 }
+
+#[tokio::test]
+async fn write_file_preview_marks_new_files_and_diffs_overwrites() {
+    let dir = tempdir().unwrap();
+    let tool = WriteFileTool::new(workspace(dir.path()));
+
+    let creating = tool
+        .preview(r#"{"path":"new.txt","content":"hello\nworld"}"#)
+        .unwrap();
+    assert!(creating.contains("create new.txt"));
+    assert!(creating.contains("hello"));
+
+    fs::write(dir.path().join("new.txt"), "old\n").unwrap();
+    let overwriting = tool
+        .preview(r#"{"path":"new.txt","content":"new\n"}"#)
+        .unwrap();
+    assert!(overwriting.contains("-old"));
+    assert!(overwriting.contains("+new"));
+}
