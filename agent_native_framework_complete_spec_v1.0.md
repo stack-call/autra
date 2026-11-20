@@ -978,6 +978,8 @@ pub trait SandboxBackend: Send + Sync {
 
 OpenShell 提供 Gateway、Sandbox 生命周期、可信 Supervisor、安全与网络策略的实施机制。`autra-openshell` Adapter 通过官方接口管理其 Sandbox 与命令执行。我们的 Policy 决定 Agent 可以请求哪些权限，但最终隔离必须由可信执行后端实施。**OpenShell 不是 Durable Workflow Engine**；它的环境管理不替代我们的 Run 状态语义。
 
+实现状态：`SandboxBackend` 契约与 `SandboxCapabilities` 已定义，OpenShell 等后端尚未接入。
+
 ### 13.4 环境恢复的三种情况
 
 | 环境情况 | 是否能恢复执行 | 处理 |
@@ -1689,7 +1691,7 @@ Autra 的扩展不是动态插件平台，而是 **Rust trait + Builder 显式�
 |---|---|---|
 | Intelligence | `AgentStepper`、`ContextBuilder`、Planner、Memory、`SkillRegistry` | Engine/Context/Skills 已实现；Planner/Memory 待做 |
 | Capability | `Tool`、`ModelProvider`、MCP | Tool/Provider 已实现；MCP 待做 |
-| Execution | Execution Host、`SandboxBackend`、Workspace | Local 内建；Host/Sandbox trait 待做 |
+| Execution | Execution Host、`SandboxBackend`、Workspace | `HostCapabilities` 与 `SandboxBackend` trait 已定义；Local host；无外部 Adapter |
 | Observation | Hooks、`tracing`、`autra-eval` | tracing/Eval 已实现；类型化 Hooks 待做 |
 
 ### 31.3 当前扩展入口

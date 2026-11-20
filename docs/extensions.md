@@ -17,7 +17,7 @@ adapters. It is not a dynamic plugin platform.
 |---|---|---|
 | Intelligence | `AgentStepper`, `ContextBuilder`, Planner, Memory, `SkillRegistry` | Engine, Context and Skills implemented; Planner and Memory pending |
 | Capability | `Tool`, `ModelProvider`, MCP | Tool and Provider implemented; MCP pending |
-| Execution | Execution Host, `SandboxBackend`, Workspace | Local is built in; Host/Sandbox traits pending |
+| Execution | Execution Host, `SandboxBackend`, Workspace | `HostCapabilities` and `SandboxBackend` traits defined; Local host; no external adapter |
 | Observation | Hooks, `tracing`, `autra-eval` | tracing and evaluation implemented; typed Hooks pending |
 
 ## Current extension points
@@ -75,7 +75,7 @@ Every extension group should declare:
 | Tool protocol version negotiation | Extensions cannot yet declare compatibility with stored Runs |
 | `ModelCapabilities` | No declared streaming/structured-output/multimodal support |
 | Planner trait | Planning is currently a tool, not a replaceable behaviour |
-| `SandboxBackend`/Host traits | Adapters cannot be registered yet |
+| Sandbox adapter and lifecycle binding | The trait exists, but no backend is wired into execution |
 | Dependency and close ordering | Builder composition has no explicit lifecycle manager |
 | Protocol version negotiation | Extensions cannot yet declare compatibility with stored Runs |
 | Shared contract-test suite | Each extension is tested ad hoc |
