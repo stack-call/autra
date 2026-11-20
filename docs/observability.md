@@ -24,6 +24,13 @@ unchanged because the default level is `warn`.
 RUST_LOG=info cargo run -p autra-cli -- demo
 ```
 
+## Hooks
+
+`ObserverHook` exposes typed stages: `on_run_started`, `on_model_request`,
+`on_effect_accepted` and `on_run_finished`. Observers cannot modify accepted
+execution. Behaviour modifiers and Policy Authority are future stages; Policy
+Authority is installed only by the trusted host, not by an ordinary extension.
+
 ## Boundaries
 
 - Durable Events and Stream Events are the execution interfaces. A trace cannot

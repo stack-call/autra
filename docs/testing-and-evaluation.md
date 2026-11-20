@@ -40,6 +40,8 @@ Tests observe public behaviour, not private helpers.
 12. **Evaluation** (`autra-eval`): pass, fail and run-error reports.
 13. **Contract checks** (`autra-testkit`): built-in Tool, Model, Stepper and Host
     pass protocol checks.
+14. **Observer hooks** (`autra-runtime`): a recording hook sees run, model,
+    effect and finish stages.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

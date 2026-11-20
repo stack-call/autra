@@ -603,6 +603,10 @@ Hooks 默认分为：
 - **Behavior Modifier**：在 Agent 决策前调整 Context、可见工具或 Planner 策略；变更应该版本化、可追踪。
 - **Policy Authority**：由受信任的 Host 安装，不通过普通扩展注册提升权限。
 
+当前实现：`ObserverHook` 提供 `on_run_started`、`on_model_request`、`on_effect_accepted`、
+`on_run_finished` 四个类型化阶段，通过 `AgentBuilder::observer` 注册；Behavior Modifier
+与 Policy Authority 尚未实现，后者只能由可信 Host 安装。
+
 考虑 DSH 的服务依赖生命周期，但第一版只要求显式构建时依赖校验和稳定的关闭顺序；不开发动态热加载和复杂全局 Service Locator。
 
 ---
@@ -1692,7 +1696,7 @@ Autra 的扩展不是动态插件平台，而是 **Rust trait + Builder 显式�
 | Intelligence | `AgentStepper`、`ContextBuilder`、Planner、Memory、`SkillRegistry` | Engine/Context/Skills 已实现；Planner/Memory 待做 |
 | Capability | `Tool`、`ModelProvider`、MCP | Tool/Provider 已实现；MCP 待做 |
 | Execution | Execution Host、`SandboxBackend`、Workspace | `HostCapabilities` 与 `SandboxBackend` trait 已定义；Local host；无外部 Adapter |
-| Observation | Hooks、`tracing`、`autra-eval` | tracing/Eval 已实现；类型化 Hooks 待做 |
+| Observation | Hooks、`tracing`、`autra-eval` | tracing/Eval 与 `ObserverHook` 已实现；Behavior/Policy hooks 待做 |
 
 ### 31.3 当前扩展入口
 
@@ -1728,7 +1732,7 @@ Autra 的扩展不是动态插件平台，而是 **Rust trait + Builder 显式�
 
 共享 `autra-testkit` 已校验 Tool/Model/Stepper/Host 的协议版本与描述；ToolDescriptor/ToolContract
 拆分已完成。Per-adapter 行为测试、依赖与关闭顺序、跨 Run 的 schema migration 仍待实现。
-Hooks 目前只有设计分类，没有类型化注册入口。
+ObserverHook 已提供 run/model/effect/finish 四个类型化阶段；Behavior Modifier 与 Policy Authority 仍待实现。
 
 ### 31.7 明确不做
 

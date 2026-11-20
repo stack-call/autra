@@ -18,6 +18,7 @@ use futures_util::FutureExt;
 use tracing::Instrument;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver};
+use crate::hooks::ObserverHook;
 use crate::subagent::{SubagentRegistry, SubagentTool};
 use thiserror::Error;
 
@@ -183,6 +184,7 @@ pub struct Agent {
     plan: Option<SharedPlan>,
     context_builder: Option<Arc<dyn ContextBuilder>>,
     stepper: Option<Arc<dyn AgentStepper>>,
+    observer: Option<Arc<dyn ObserverHook>>,
 }
 
 impl Agent {
@@ -230,6 +232,9 @@ impl Agent {
     {
         let run_id = RunId::fresh();
         tracing::info!(run_id = %run_id, "agent run started");
+        if let Some(observer) = &self.observer {
+            observer.on_run_started(&run_id);
+        }
         let mut state = AgentState::new(
             run_id.clone(),
             BudgetSnapshot::new(self.max_turns, self.max_tool_calls),
@@ -316,6 +321,9 @@ impl Agent {
                         });
                     }
                     tracing::info!(phase = ?state.phase, "agent run finished");
+                    if let Some(observer) = &self.observer {
+                        observer.on_run_finished(&run_id, &state.phase);
+                    }
                     return Ok(RunOutcome { state });
                 }
                 Disposition::Failed => {
@@ -327,6 +335,9 @@ impl Agent {
                         message: message.clone(),
                     });
                     tracing::warn!(message = %message, "agent run failed");
+                    if let Some(observer) = &self.observer {
+                        observer.on_run_finished(&run_id, &state.phase);
+                    }
                     return Err(RunError::Failed(message));
                 }
                 Disposition::Continue => {}
@@ -337,6 +348,11 @@ impl Agent {
                 continue;
             }
 
+            if let Some(observer) = &self.observer {
+                for intent in &transition.intents {
+                    observer.on_effect_accepted(&run_id, intent);
+                }
+            }
             let mut tool_calls = Vec::new();
             let mut model_requests = Vec::new();
             for intent in transition.intents {
@@ -373,6 +389,9 @@ impl Agent {
                 on_event(&RunEvent::ModelCallStarted {
                     turn: state.budget.turns_used,
                 });
+                if let Some(observer) = &self.observer {
+                    observer.on_model_request(&run_id, state.budget.turns_used);
+                }
                 let model_span =
                     tracing::info_span!("gen_ai.model.call", turn = state.budget.turns_used);
                 let output_result =
@@ -394,6 +413,9 @@ impl Agent {
                         on_event(&RunEvent::RunFailed {
                             message: message.clone(),
                         });
+                        if let Some(observer) = &self.observer {
+                            observer.on_run_finished(&run_id, &state.phase);
+                        }
                         return Err(RunError::Model(error));
                     }
                 };
@@ -544,6 +566,7 @@ pub struct AgentBuilder {
     subagents: SubagentRegistry,
     context_builder: Option<Arc<dyn ContextBuilder>>,
     stepper: Option<Arc<dyn AgentStepper>>,
+    observer: Option<Arc<dyn ObserverHook>>,
 }
 
 impl AgentBuilder {
@@ -564,6 +587,7 @@ impl AgentBuilder {
             subagents: SubagentRegistry::new(),
             context_builder: None,
             stepper: None,
+            observer: None,
         }
     }
 
@@ -645,6 +669,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn observer(mut self, observer: impl ObserverHook + 'static) -> Self {
+        self.observer = Some(Arc::new(observer));
+        self
+    }
+
     pub fn context_budget_chars(mut self, max_chars: usize) -> Self {
         self.context_budget_chars = Some(max_chars);
         self
@@ -691,6 +720,7 @@ Maintain a short plan with `update_plan` and keep it current."
             plan,
             context_builder: self.context_builder,
             stepper: self.stepper,
+            observer: self.observer,
         })
     }
 }

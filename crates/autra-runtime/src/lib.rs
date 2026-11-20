@@ -6,6 +6,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod hooks;
 pub mod host;
 pub mod sandbox;
 pub mod session;
@@ -15,6 +16,7 @@ pub use agent::{
     Agent, AgentBuilder, BuildError, RunError, RunEvent, RunOptions, RunOutcome, RunStatus,
 };
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
+pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities, LocalHost};
 pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
