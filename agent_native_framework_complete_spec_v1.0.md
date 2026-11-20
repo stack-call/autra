@@ -1701,6 +1701,7 @@ Autra 的扩展不是动态插件平台，而是 **Rust trait + Builder 显式�
 | Intelligence | `AgentStepper`、`ContextBuilder`、Planner、Memory、`SkillRegistry` | Engine/Context/Skills 已实现；Planner/Memory 待做 |
 | Capability | `Tool`、`ModelProvider`、MCP | Tool/Provider 已实现；MCP 待做 |
 | Execution | Execution Host、`SandboxBackend`、Workspace | `HostCapabilities` 与 `SandboxBackend` trait 已定义；Local host；无外部 Adapter |
+| Dispatcher | `AgentBuilder::dispatcher` | `call_model`、`call_tool`；可替换模型/工具执行边界 |
 | Observation | Hooks、`tracing`、`autra-eval` | tracing/Eval 与 `ObserverHook` 已实现；Behavior/Policy hooks 待做 |
 
 ### 31.3 当前扩展入口

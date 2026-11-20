@@ -52,7 +52,7 @@ MCP Client is an M3 experience item; MCP Gateway/Server stays in M8.
 - Budgets, cooperative cancellation, optional Effect timeouts.
 - Deterministic tests at the Agent, Stepper, Tool and snapshot seams.
 - An OpenAI-compatible non-streaming provider crate.
-- Extension seams: custom ContextBuilder/Stepper, Tool descriptor/contract/context,
+- Extension seams: custom ContextBuilder/Stepper/Dispatcher, Tool descriptor/contract/context,
   ModelCapabilities, Host/Sandbox declarations, protocol checks and ObserverHook.
 - Documentation and ADR baseline.
 

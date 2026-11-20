@@ -38,7 +38,8 @@ A trace or token stream cannot rebuild business state.
 | `EffectRecord` | The logical operation the host accepted, with a stable id |
 | `EffectAttempt` | One physical attempt to execute the operation |
 
-LocalEphemeral now records an in-memory EffectRecord/EffectAttempt ledger per Run:
+LocalEphemeral records an in-memory EffectRecord/EffectAttempt ledger per Run and
+executes effects through a `Dispatcher` (the default is `LocalDispatcher`):
 stable `EffectId`, status lifecycle, intent digest and attempts. `RunOutcome::effects()`
 exposes it. The ledger is not durable; a durable host will persist it and add
 reconciliation. See §6.6 of the design spec.

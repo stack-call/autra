@@ -47,7 +47,9 @@ Tests observe public behaviour, not private helpers.
 16. **SQLite journal** (`autra-durable-sqlite`): the Run snapshot, accepted
     events and EffectRecords survive reopen through `AgentBuilder::journal`.
 17. **Outbox** (`autra-durable-sqlite`): Authorized effects enqueue, claim with
-    attempts, release and complete; no dispatcher loop yet.
+    attempts, release and complete; no claim-driven loop yet.
+18. **Dispatcher** (`autra-runtime`): a custom dispatcher replaces model/tool
+    execution and can run without a builder model.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes and
 a missing provider key. Core `/implement` tests remain at the Agent seam, not

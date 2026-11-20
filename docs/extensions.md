@@ -17,7 +17,7 @@ adapters. It is not a dynamic plugin platform.
 |---|---|---|
 | Intelligence | `AgentStepper`, `ContextBuilder`, Planner, Memory, `SkillRegistry` | Engine, Context and Skills implemented; Planner and Memory pending |
 | Capability | `Tool`, `ModelProvider`, MCP | Tool and Provider implemented; MCP pending |
-| Execution | Execution Host, `SandboxBackend`, Workspace | Host/Sandbox traits defined; `SqliteEffectJournal` implements persistence; Run recovery pending |
+| Execution | Execution Host, `Dispatcher`, `SandboxBackend`, Workspace | Host/Sandbox and Dispatcher contracts defined; LocalDispatcher and SQLite journal; outbox claim loop pending |
 | Observation | Hooks, `tracing`, `autra-eval` | tracing, evaluation and `ObserverHook` implemented; Behavior/Policy hooks pending |
 
 ## Current extension points
@@ -31,6 +31,7 @@ adapters. It is not a dynamic plugin platform.
 | Skill | `AgentBuilder::skill` | Named instructions plus read-only `load_skill`; loading grants no permission |
 | Subagent | `AgentBuilder::subagent` | Named child Agent behind `spawn_subagent`; tool-backed, not runtime ChildRun |
 | Approver | `AgentBuilder::approver` | `Approver::approve`; the coordinator binds the decision to the call |
+| Dispatcher | `AgentBuilder::dispatcher` | `call_model` and `call_tool`; custom model/tool executor |
 | Observation | `AgentBuilder::observer`, `tracing` subscriber, `autra-eval` | `ObserverHook` sees run/model/effect/finish stages; traces and evaluation are not execution state |
 
 A new Tool, Provider, Context strategy or Stepper does not require editing

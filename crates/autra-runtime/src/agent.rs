@@ -1,6 +1,4 @@
 use std::collections::VecDeque;
-use std::future::Future;
-use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,13 +10,12 @@ use autra_core::{
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, ModelError, ModelProvider, PlanItem, ReActStepper, SharedPlan,
-    SimpleContextBuilder, Skill, SkillRegistry, Tool, ToolContext, ToolInput, ToolRegistry,
-    UpdatePlanTool,
+    SimpleContextBuilder, Skill, SkillRegistry, Tool, ToolRegistry, UpdatePlanTool,
 };
-use futures_util::FutureExt;
 use tracing::Instrument;
 
 use crate::approval::{ApprovalDecision, ApprovalRequest, Approver, digest_intent};
+use crate::dispatcher::{Dispatcher, LocalDispatcher};
 use crate::hooks::ObserverHook;
 use crate::journal::EffectJournal;
 use crate::subagent::{SubagentRegistry, SubagentTool};
@@ -223,7 +220,7 @@ where
 pub struct Agent {
     name: String,
     instructions: Option<String>,
-    model: Arc<dyn ModelProvider>,
+    dispatcher: Arc<dyn Dispatcher>,
     tools: ToolRegistry,
     effect_timeout: Option<Duration>,
     max_turns: u32,
@@ -488,16 +485,11 @@ impl Agent {
                 }
                 let model_span =
                     tracing::info_span!("gen_ai.model.call", turn = state.budget.turns_used);
-                let output_result =
-                    match with_timeout(effect_timeout, self.model.complete(&request))
-                        .instrument(model_span)
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(()) => Err(ModelError::new(
-                            "model call exceeded the configured timeout",
-                        )),
-                    };
+                let output_result = self
+                    .dispatcher
+                    .call_model(&request, effect_timeout)
+                    .instrument(model_span)
+                    .await;
                 let output = match output_result {
                     Ok(output) => {
                         let record = effect_mut(&mut effects, &effect_id);
@@ -609,13 +601,10 @@ impl Agent {
                 sink.effect_mut(&effect_id)
                     .set_status(EffectStatus::Dispatched);
                 sink.start_tool(&call);
-                let outcome = execute_tool(
-                    self.tools.clone(),
-                    call,
-                    effect_timeout,
-                    sink.run_id.clone(),
-                )
-                .await;
+                let outcome = self
+                    .dispatcher
+                    .call_tool(sink.run_id, &call, effect_timeout)
+                    .await;
                 sink.record_tool_outcome(&effect_id, known_tool, &outcome);
                 sink.emit_tool_result(&outcome);
                 outcomes[index] = Some(outcome);
@@ -634,7 +623,7 @@ impl Agent {
                     sink.start_tool(call);
                     let index = *index;
                     let effect_id = effect_id.clone();
-                    let tools = self.tools.clone();
+                    let dispatcher = self.dispatcher.clone();
                     let call = call.clone();
                     let run_id = sink.run_id.clone();
                     tasks.spawn(async move {
@@ -642,7 +631,7 @@ impl Agent {
                             index,
                             effect_id,
                             known_tool,
-                            execute_tool(tools, call, effect_timeout, run_id).await,
+                            dispatcher.call_tool(&run_id, &call, effect_timeout).await,
                         )
                     });
                 }
@@ -678,6 +667,7 @@ pub struct AgentBuilder {
     name: String,
     instructions: Option<String>,
     model: Option<Arc<dyn ModelProvider>>,
+    dispatcher: Option<Arc<dyn Dispatcher>>,
     tools: ToolRegistry,
     effect_timeout: Option<Duration>,
     max_turns: u32,
@@ -700,6 +690,7 @@ impl AgentBuilder {
             name: name.into(),
             instructions: None,
             model: None,
+            dispatcher: None,
             tools: ToolRegistry::new(),
             effect_timeout: None,
             max_turns: 8,
@@ -800,6 +791,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn dispatcher(mut self, dispatcher: impl Dispatcher + 'static) -> Self {
+        self.dispatcher = Some(Arc::new(dispatcher));
+        self
+    }
+
     pub fn journal(mut self, journal: impl EffectJournal + 'static) -> Self {
         self.journal = Some(Arc::new(journal));
         self
@@ -811,9 +807,6 @@ impl AgentBuilder {
     }
 
     pub fn build(self) -> Result<Agent, BuildError> {
-        let model = self.model.ok_or_else(|| BuildError::MissingModel {
-            name: self.name.clone(),
-        })?;
         let mut tools = self.tools;
         if !self.skills.is_empty() {
             tools.register(LoadSkillTool::new(Arc::new(self.skills.clone())));
@@ -836,10 +829,19 @@ Maintain a short plan with `update_plan` and keep it current."
         } else {
             (self.instructions, None)
         };
+        let dispatcher = match self.dispatcher {
+            Some(dispatcher) => dispatcher,
+            None => {
+                let model = self.model.ok_or_else(|| BuildError::MissingModel {
+                    name: self.name.clone(),
+                })?;
+                Arc::new(LocalDispatcher::new(model, tools.clone()))
+            }
+        };
         Ok(Agent {
             name: self.name,
             instructions,
-            model,
+            dispatcher,
             tools,
             effect_timeout: self.effect_timeout,
             max_turns: self.max_turns,
@@ -866,71 +868,6 @@ fn queue_cancel(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, cancel_queue
     if !*cancel_queued {
         enqueue(queue, seq, EventKind::CancelRequested);
         *cancel_queued = true;
-    }
-}
-
-async fn with_timeout<F, T, E>(timeout: Option<Duration>, future: F) -> Result<Result<T, E>, ()>
-where
-    F: Future<Output = Result<T, E>>,
-{
-    match timeout {
-        Some(duration) => tokio::time::timeout(duration, future).await.map_err(|_| ()),
-        None => Ok(future.await),
-    }
-}
-
-async fn execute_tool(
-    tools: ToolRegistry,
-    call: ToolCallRequest,
-    timeout: Option<Duration>,
-    run_id: RunId,
-) -> ToolOutcome {
-    let result: Result<String, (String, bool)> = match tools.get(&call.name) {
-        Some(tool) => {
-            let span = tracing::info_span!(
-                "agent.tool.execute",
-                tool = %call.name,
-                call_id = %call.call_id
-            );
-            let input = ToolInput {
-                arguments: call.arguments.clone(),
-            };
-            let context = ToolContext {
-                run_id,
-                call_id: call.call_id.clone(),
-            };
-            let future = AssertUnwindSafe(with_timeout(timeout, tool.execute(input, context)));
-            match future.catch_unwind().instrument(span).await {
-                Ok(Ok(Ok(output))) => Ok(output.content),
-                Ok(Ok(Err(error))) => Err((error.to_string(), false)),
-                Ok(Err(())) => Err((
-                    format!(
-                        "tool `{}` timed out; it may still have run and its outcome is unknown",
-                        call.name
-                    ),
-                    true,
-                )),
-                Err(_) => Err((
-                    format!(
-                        "tool `{}` panicked; it may have run and its outcome is unknown",
-                        call.name
-                    ),
-                    true,
-                )),
-            }
-        }
-        None => Err((format!("unknown tool `{}`", call.name), false)),
-    };
-    let (content, is_error, outcome_unknown) = match result {
-        Ok(content) => (content, false, false),
-        Err((message, unknown)) => (message, true, unknown),
-    };
-    ToolOutcome {
-        call_id: call.call_id,
-        name: call.name,
-        content,
-        is_error,
-        outcome_unknown,
     }
 }
 
