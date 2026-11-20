@@ -111,9 +111,12 @@ engine. A shared journal records child effects under the child Run id and
 exposes `parent_run_id` in the stored state, so the child can be resumed.
 
 The engine creates a `BudgetHandle` per tool batch and passes it through
-`ToolContext`. `spawn_subagent` reserves four turns and four tool calls from
-the parent up front; unused reservations are not returned. Reserving from an
-exhausted parent rejects the spawn without starting the child.
+`ToolContext`. A child Run has its own budget: `spawn_subagent` gives it four
+turns and up to four tool calls, capped by the parent's remaining tool calls
+without charging the parent. The spawn itself is one parent tool call. A
+parent with no remaining tool calls can still spawn a child, but the child gets
+a zero-tool allowance. `BudgetHandle::reserve_child` remains available for
+explicit budget slicing but is not used by the default subagent tool.
 
 `ChildSpec::forward_events` exposes child Run events through
 `ChildHandle::events`/`take_events`. `FailFast` cancels and awaits remaining

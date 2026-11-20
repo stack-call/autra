@@ -19,7 +19,9 @@ effect. Approval was the remaining gap in the durable loop.
 The engine first loads a usable record; only if none exists does it call the
 approver, and it saves every new decision. On resume, `AwaitingApproval` and
 `Recorded` pending calls are resolved from a stored decision or re-asked with
-the current approver, then dispatched or rejected. `autractl approve` and
+the current approver, then dispatched or rejected. Resume re-evaluates the
+current policy first: a `Deny` rejects without asking, and an `Allow`
+authorizes without asking. `autractl approve` and
 `autractl reject` write a decision for a specific effect, using the same policy
 revision and actor fields.
 

@@ -145,15 +145,15 @@ impl Tool for SubagentTool {
             .clone()
             .unwrap_or_else(|| context.run_id.clone());
         let cancel = context.cancel.clone().unwrap_or_default();
-        let child_budget = match context.budget.as_ref() {
-            Some(budget) => budget.reserve_child(4, 4).ok_or_else(|| {
-                ToolError::new(format!(
-                    "subagent `{}` exceeds the parent budget",
-                    args.agent
-                ))
-            })?,
-            None => BudgetSnapshot::new(4, 4),
-        };
+        // A child Run has its own budget. Cap its tool allowance by what the
+        // parent has left, but do not charge the parent: the spawn itself is
+        // one parent tool call, and child tool calls belong to the child.
+        let child_tool_calls = context
+            .budget
+            .as_ref()
+            .map(|budget| 4_u32.min(budget.remaining_tool_calls()))
+            .unwrap_or(4);
+        let child_budget = BudgetSnapshot::new(4, child_tool_calls);
         let execution = context.child_execution.clone().unwrap_or_default();
         let outcome = subagent
             .agent

@@ -112,13 +112,14 @@ Tests observe public behaviour, not private helpers.
 33. **Approval persistence** (`autra-execution`, `autra-runtime`,
     `autra-durable-sqlite`, `autra-cli`): decisions are stored and reused on
     resume when the digest and policy revision match and the record is not
-    expired; expired, mismatched or rejected records re-ask or reject; CLI
-    `approve`/`reject` write decisions.
+    expired; expired, mismatched or rejected records re-ask or reject; resume
+    re-evaluates policy (Deny rejects, Allow authorizes); CLI `approve`/`reject`
+    write decisions.
 34. **Reconciliation** (`autra-runtime`, `autra-cli`): a `ReadOnly` unknown is
     retried; a non-idempotent unknown, a `Reconcileable` unknown, or an
     idempotent write without a valid approval stays unresolved; model retries
-    can be disabled; `effects --unknown` lists pending effects and `reconcile`
-    reports retried and unresolved ids.
+    can be disabled; a current policy `Deny` prevents retry; `effects --unknown`
+    lists pending effects and `reconcile` reports retried and unresolved ids.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

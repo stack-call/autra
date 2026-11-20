@@ -1,6 +1,6 @@
 # Child Runs Share Budget, Cancellation and Optional Execution
 
-**Status:** accepted
+**Status:** accepted; the budget reservation described below is superseded by ADR-0054
 
 Child Runs had identity and cancellation, but `spawn_subagent` did not charge
 the parent budget, children could not share the parent's journal or approver,

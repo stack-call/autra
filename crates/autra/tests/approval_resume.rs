@@ -262,3 +262,38 @@ async fn resume_re_asks_when_the_policy_revision_changed() {
 
     assert_eq!(approver.seen(), 1);
 }
+
+#[tokio::test]
+async fn resume_applies_a_deny_policy_without_asking() {
+    let journal = MemoryJournal::new();
+    let dir = tempdir().unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+    let run_id = RunId::new("run-denied");
+    let call = call();
+    checkpoint(&journal, &run_id, &call);
+    let approver = RecordingApprover::new(ApprovalDecision::Approved);
+    let agent = Agent::builder("resume")
+        .model(FakeModel::new(vec![ModelOutput {
+            text: Some("done".to_owned()),
+            tool_calls: Vec::new(),
+        }]))
+        .tool(WriteFileTool::new(workspace))
+        .journal(journal.clone())
+        .policy(RulePolicy::new("test-v1").deny_tool("write_file"))
+        .approver(approver.clone())
+        .build()
+        .unwrap();
+
+    let outcome = agent.resume(&run_id).await.unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    assert_eq!(approver.seen(), 0);
+    assert!(!dir.path().join("note.txt").exists());
+    let stored = journal.load(&run_id).unwrap();
+    let tool = stored
+        .iter()
+        .find(|effect| effect.kind == EffectKind::ToolCall)
+        .unwrap();
+    assert_eq!(tool.status, EffectStatus::Rejected);
+    assert!(tool.error.as_deref().unwrap().contains("denied by policy"));
+}

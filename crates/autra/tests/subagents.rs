@@ -132,7 +132,7 @@ fn schema_lists_registered_subagents() {
 }
 
 #[tokio::test]
-async fn spawn_subagent_reserves_parent_budget() {
+async fn spawn_subagent_does_not_charge_child_tools_to_parent() {
     let parent = Agent::builder("parent")
         .model(parent_model(vec![spawn_call(
             "call-1",
@@ -146,24 +146,34 @@ async fn spawn_subagent_reserves_parent_budget() {
     let outcome = parent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    assert_eq!(outcome.state().budget.tool_calls_used, 5);
-    assert_eq!(outcome.state().budget.turns_used, 3);
+    assert_eq!(outcome.state().budget.tool_calls_used, 1);
+    assert_eq!(outcome.state().budget.turns_used, 2);
 }
 
 #[tokio::test]
-async fn spawn_subagent_rejects_when_parent_budget_is_exhausted() {
+async fn a_child_with_no_remaining_budget_cannot_use_tools() {
+    let child_model = FakeModel::new(vec![
+        ModelOutput {
+            text: None,
+            tool_calls: vec![ToolCallRequest {
+                call_id: "child-call".to_owned(),
+                name: "echo".to_owned(),
+                arguments: r#"{"text":"hi"}"#.to_owned(),
+            }],
+        },
+        ModelOutput {
+            text: Some("child done".to_owned()),
+            tool_calls: Vec::new(),
+        },
+    ]);
+    let child = Agent::builder("child")
+        .model(child_model)
+        .tool(autra_harness::EchoTool)
+        .build()
+        .unwrap();
     let parent = Agent::builder("parent")
-        .model(parent_model(vec![spawn_call(
-            "call-1", "broken", "do work",
-        )]))
-        .subagent(
-            "broken",
-            "Would panic if invoked",
-            Agent::builder("broken")
-                .model(FakeModel::new(Vec::new()))
-                .build()
-                .unwrap(),
-        )
+        .model(parent_model(vec![spawn_call("call-1", "child", "do work")]))
+        .subagent("child", "Uses a tool", child)
         .max_tool_calls(1)
         .build()
         .unwrap();
@@ -173,5 +183,5 @@ async fn spawn_subagent_rejects_when_parent_budget_is_exhausted() {
     assert_eq!(outcome.answer(), Some("done"));
     let tools = tool_outcomes(&outcome);
     assert!(tools[0].is_error);
-    assert!(tools[0].content.contains("exceeds the parent budget"));
+    assert!(tools[0].content.contains("max tool calls exceeded"));
 }

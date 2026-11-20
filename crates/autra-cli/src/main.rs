@@ -55,6 +55,7 @@ struct Flags {
     policy: Option<String>,
     actor: Option<String>,
     unknown_only: bool,
+    local: bool,
     rest: Vec<String>,
 }
 
@@ -151,6 +152,7 @@ async fn chat_command(args: &[String]) -> ExitCode {
     let options = options_for_model(flags.model.as_deref());
     let stdin = std::io::stdin();
     let mut line = String::new();
+    let mut printer = EventPrinter::default();
 
     loop {
         line.clear();
@@ -167,7 +169,7 @@ async fn chat_command(args: &[String]) -> ExitCode {
             continue;
         }
         match session
-            .run_turn_with_options(input, options.clone(), print_event)
+            .run_turn_with_options(input, options.clone(), |event| printer.print(event))
             .await
         {
             Ok(outcome) => print_status(&outcome),
@@ -202,8 +204,10 @@ async fn resume_command(args: &[String]) -> ExitCode {
         eprintln!("resume requires --journal <path>");
         return ExitCode::FAILURE;
     }
-    if flags.model.is_none() {
-        eprintln!("resume requires --model <name>: the journal does not store the provider");
+    if flags.model.is_none() && !flags.local {
+        eprintln!(
+            "resume requires --model <name> or --local: the journal does not store the provider"
+        );
         return ExitCode::FAILURE;
     }
 
@@ -215,9 +219,12 @@ async fn resume_command(args: &[String]) -> ExitCode {
         }
     };
     let options = options_for_model(flags.model.as_deref());
+    let mut printer = EventPrinter::default();
 
     match agent
-        .resume_with_options(&RunId::new(run_id.clone()), options, print_event)
+        .resume_with_options(&RunId::new(run_id.clone()), options, |event| {
+            printer.print(event)
+        })
         .await
     {
         Ok(outcome) => {
@@ -244,8 +251,10 @@ async fn outbox_command(args: &[String]) -> ExitCode {
         eprintln!("outbox requires --journal <path>");
         return ExitCode::FAILURE;
     }
-    if flags.model.is_none() {
-        eprintln!("outbox requires --model <name>: model effects need the run's provider");
+    if flags.model.is_none() && !flags.local {
+        eprintln!(
+            "outbox requires --model <name> or --local: model effects need the run's provider"
+        );
         return ExitCode::FAILURE;
     }
     let agent = match build_agent(&flags) {
@@ -549,6 +558,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         policy: None,
         actor: None,
         unknown_only: false,
+        local: false,
         rest: Vec::new(),
     };
     let mut parsing_flags = true;
@@ -606,6 +616,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
                 }
             },
             "--unknown" => flags.unknown_only = true,
+            "--local" => flags.local = true,
             "--yes" | "-y" => flags.auto_approve = true,
             "--read-only" => flags.read_only = true,
             other => {
@@ -619,6 +630,9 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
 }
 
 fn build_agent(flags: &Flags) -> Result<Agent, String> {
+    if flags.local && flags.model.is_some() {
+        return Err("--local and --model cannot be combined".to_owned());
+    }
     let root = flags.workspace.as_deref().unwrap_or(".");
     let workspace = LocalWorkspace::open(root).map_err(|error| error.to_string())?;
     let mut tools = ToolRegistry::new();
@@ -815,7 +829,10 @@ fn builtin_registry(workspace: LocalWorkspace) -> ToolRegistry {
 }
 
 async fn execute(agent: Agent, prompt: &str, options: RunOptions) -> Result<RunOutcome, RunError> {
-    agent.run_with_options(prompt, options, print_event).await
+    let mut printer = EventPrinter::default();
+    agent
+        .run_with_options(prompt, options, |event| printer.print(event))
+        .await
 }
 
 fn print_status(outcome: &RunOutcome) {
@@ -828,66 +845,77 @@ fn print_status(outcome: &RunOutcome) {
     );
 }
 
-fn print_event(event: &RunEvent) {
-    match event {
-        RunEvent::RunStarted { run_id } => println!("[run] {run_id} started"),
-        RunEvent::RunResumed { run_id } => println!("[run] {run_id} resumed"),
-        RunEvent::ModelCallStarted { turn } => println!("[model] turn {turn}"),
-        RunEvent::ModelDelta { text } => {
-            print!("{text}");
-            let _ = io::stdout().flush();
-        }
-        RunEvent::ModelResult { text, tool_calls } => {
-            if let Some(text) = text {
-                println!("[model] {}", preview(text));
+#[derive(Default)]
+struct EventPrinter {
+    streamed: bool,
+}
+
+impl EventPrinter {
+    fn print(&mut self, event: &RunEvent) {
+        match event {
+            RunEvent::RunStarted { run_id } => println!("[run] {run_id} started"),
+            RunEvent::RunResumed { run_id } => println!("[run] {run_id} resumed"),
+            RunEvent::ModelCallStarted { turn } => println!("[model] turn {turn}"),
+            RunEvent::ModelDelta { text } => {
+                print!("{text}");
+                let _ = io::stdout().flush();
+                self.streamed = true;
             }
-            for call in tool_calls {
-                println!("[model] tool call: {} ({})", call.name, call.call_id);
+            RunEvent::ModelResult { text, tool_calls } => {
+                if self.streamed {
+                    println!();
+                    self.streamed = false;
+                } else if let Some(text) = text {
+                    println!("[model] {}", preview(text));
+                }
+                for call in tool_calls {
+                    println!("[model] tool call: {} ({})", call.name, call.call_id);
+                }
             }
+            RunEvent::ApprovalRequested {
+                call_id,
+                tool_name,
+                argument_digest,
+            } => {
+                println!("[approval] {tool_name} ({call_id}) digest {argument_digest}");
+            }
+            RunEvent::ApprovalDecided { call_id, approved } => {
+                println!(
+                    "[approval] {call_id} {}",
+                    if *approved { "approved" } else { "rejected" }
+                );
+            }
+            RunEvent::ToolCallStarted { call_id, name } => {
+                println!("[tool] {name} ({call_id}) started");
+            }
+            RunEvent::ToolResult {
+                name,
+                is_error,
+                outcome_unknown,
+                content,
+                ..
+            } => {
+                let status = if *outcome_unknown {
+                    "unknown"
+                } else if *is_error {
+                    "error"
+                } else {
+                    "ok"
+                };
+                println!("[tool] {name} {status}: {}", preview(content));
+            }
+            RunEvent::RunCompleted { answer } => {
+                println!(
+                    "[run] completed: {}",
+                    answer
+                        .as_deref()
+                        .map(preview)
+                        .unwrap_or_else(|| "(no answer)".to_owned())
+                );
+            }
+            RunEvent::RunCancelled => println!("[run] cancelled"),
+            RunEvent::RunFailed { message } => eprintln!("[run] failed: {message}"),
         }
-        RunEvent::ApprovalRequested {
-            call_id,
-            tool_name,
-            argument_digest,
-        } => {
-            println!("[approval] {tool_name} ({call_id}) digest {argument_digest}");
-        }
-        RunEvent::ApprovalDecided { call_id, approved } => {
-            println!(
-                "[approval] {call_id} {}",
-                if *approved { "approved" } else { "rejected" }
-            );
-        }
-        RunEvent::ToolCallStarted { call_id, name } => {
-            println!("[tool] {name} ({call_id}) started");
-        }
-        RunEvent::ToolResult {
-            name,
-            is_error,
-            outcome_unknown,
-            content,
-            ..
-        } => {
-            let status = if *outcome_unknown {
-                "unknown"
-            } else if *is_error {
-                "error"
-            } else {
-                "ok"
-            };
-            println!("[tool] {name} {status}: {}", preview(content));
-        }
-        RunEvent::RunCompleted { answer } => {
-            println!(
-                "[run] completed: {}",
-                answer
-                    .as_deref()
-                    .map(preview)
-                    .unwrap_or_else(|| "(no answer)".to_owned())
-            );
-        }
-        RunEvent::RunCancelled => println!("[run] cancelled"),
-        RunEvent::RunFailed { message } => eprintln!("[run] failed: {message}"),
     }
 }
 
@@ -900,7 +928,31 @@ fn preview(text: &str) -> String {
 }
 
 fn usage() -> &'static str {
-    "autractl — Autra local agent CLI\n\nUSAGE:\n  autractl run [--model <name>] <prompt>\n  autractl chat [--model <name>]\n  autractl demo\n  autractl tools\n  autractl --help"
+    r#"autractl - Autra local workspace agent
+
+USAGE:
+  autractl run [--workspace <dir>] [--model <name>] [--journal <path>] [--policy <path>] [--actor <name>] [--yes] [--read-only] <prompt>
+  autractl chat [--workspace <dir>] [--model <name>] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
+  autractl resume --journal <path> (--model <name> | --local) [--workspace <dir>] [--policy <path>] [--actor <name>] <run-id>
+  autractl outbox --journal <path> (--model <name> | --local) [--workspace <dir>]
+  autractl snapshot --journal <path> <run-id>
+  autractl effects --journal <path> [--unknown] <run-id>
+  autractl reconcile --journal <path> [--model <name>] [--workspace <dir>] [--policy <path>] <run-id>
+  autractl approve|reject --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>
+  autractl demo
+  autractl tools
+  autractl --help
+
+OPTIONS:
+  --workspace <dir>  workspace root (default ".")
+  --model <name>     OpenAI-compatible model; omit for the local echo model
+  --local            use the built-in local echo model explicitly
+  --journal <path>   persist runs, events, effects, approvals and sessions to SQLite
+  --session <id>     named chat session (requires --journal)
+  --policy <path>    JSON tool/command policy
+  --actor <name>     operator identity recorded on approvals
+  --yes              auto-approve gated tools
+  --read-only        only expose read-only tools"#
 }
 
 fn init_tracing() {

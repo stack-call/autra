@@ -96,6 +96,7 @@ edit.
 |---|---|
 | `--workspace <dir>`, `-C <dir>` | workspace root (default `.`); file tools stay inside it |
 | `--model <name>`, `-m <name>` | OpenAI-compatible model; omit for the local echo model |
+| `--local` | use the built-in echo model explicitly (needed for `resume`/`outbox` without a provider) |
 | `--journal <path>`, `-j <path>` | persist run state, events and effects to a SQLite journal |
 | `--session <id>` | restore or create a named chat session (requires `--journal`) |
 | `--policy <path>` | JSON tool/command policy (`allow_tools`, `ask_tools`, `deny_tools`, `deny_commands`) |
@@ -109,8 +110,8 @@ cargo run -p autra-cli -- run --journal .autra.db --model gpt-4o-mini "Inspect t
 cargo run -p autra-cli -- resume --journal .autra.db --model gpt-4o-mini <run-id>
 ```
 
-`resume` requires `--journal` and an explicit `--model`: the journal stores Run
-state and effects, not provider configuration. Model calls emit
+`resume` requires `--journal` and an explicit `--model` or `--local`: the journal
+stores Run state and effects, not provider configuration. Model calls emit
 `RunEvent::ModelDelta` chunks; the OpenAI adapter streams SSE responses. A run interrupted while a tool
 or model call was in flight never retries that call blindly: an in-flight
 read-only or idempotent tool is retried, any other tool becomes

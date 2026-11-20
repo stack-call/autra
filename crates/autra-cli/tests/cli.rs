@@ -117,8 +117,8 @@ fn chat_runs_one_turn_per_line() {
 
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let text = stdout(&output);
-    assert_eq!(text.matches("[model] echo: hello").count(), 1);
-    assert_eq!(text.matches("[model] echo: again").count(), 1);
+    assert!(text.contains("[run] completed: echo: hello"));
+    assert!(text.contains("[run] completed: echo: again"));
 }
 
 #[test]
@@ -493,4 +493,41 @@ fn effects_and_reconcile_handle_an_unknown_read_only_tool() {
     let stored = journal.load(&run_id).unwrap();
     assert_eq!(stored[0].status, EffectStatus::Committed);
     assert_eq!(stored[0].result.as_deref(), Some("hello"));
+}
+
+#[test]
+fn resume_local_returns_a_completed_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("resume-local.db");
+    let run = autractl()
+        .args([
+            "run",
+            "--journal",
+            db.to_str().unwrap(),
+            "--read-only",
+            "hello",
+        ])
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "stderr: {}", stderr(&run));
+    let run_id = stdout(&run)
+        .lines()
+        .find_map(|line| line.strip_prefix("[run] "))
+        .and_then(|line| line.strip_suffix(" started"))
+        .expect("run id in events")
+        .to_owned();
+
+    let resume = autractl()
+        .args([
+            "resume",
+            "--journal",
+            db.to_str().unwrap(),
+            "--local",
+            &run_id,
+        ])
+        .output()
+        .unwrap();
+
+    assert!(resume.status.success(), "stderr: {}", stderr(&resume));
+    assert!(stdout(&resume).contains("[run] completed: echo: hello"));
 }

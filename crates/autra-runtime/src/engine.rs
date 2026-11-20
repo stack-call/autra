@@ -179,6 +179,30 @@ impl LocalEngine {
                     EffectIntent::CallModel(_) => None,
                 })
                 .unwrap_or(call);
+            match self.policy_decision(&state.run_id, &intent_call) {
+                Some(PolicyDecision::Deny) => {
+                    record.set_status(EffectStatus::Rejected);
+                    record.error = Some(format!(
+                        "denied by policy `{}`; the tool was not executed",
+                        self.policy.revision()
+                    ));
+                    journal
+                        .record(&state.run_id, record)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    continue;
+                }
+                Some(PolicyDecision::Allow) => {
+                    record.set_status(EffectStatus::Authorized);
+                    journal
+                        .enqueue_effect(&state.run_id, record)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    journal
+                        .record(&state.run_id, record)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    continue;
+                }
+                _ => {}
+            }
             let preview = self
                 .tools
                 .get(&intent_call.name)
@@ -529,26 +553,41 @@ impl LocalEngine {
                         false
                     }
                     Some(tool) => {
-                        let class = tool.effect_class();
-                        let class_safe =
-                            matches!(class, EffectClass::ReadOnly | EffectClass::Idempotent);
-                        if !class_safe {
-                            reason = Some(match class {
-                                EffectClass::Reconcileable => {
-                                    "tool is Reconcileable; automatic retry is not defined"
-                                        .to_owned()
-                                }
-                                _ => "tool is not safe to retry automatically".to_owned(),
+                        let denied = serde_json::from_str::<EffectIntent>(&record.intent_json)
+                            .ok()
+                            .and_then(|intent| match intent {
+                                EffectIntent::CallTool(spec) => Some(spec.call),
+                                EffectIntent::CallModel(_) => None,
+                            })
+                            .is_some_and(|call| {
+                                self.policy_decision(run_id, &call) == Some(PolicyDecision::Deny)
                             });
-                        }
-                        if class_safe
-                            && tool.contract().requires_approval
-                            && !self.has_valid_approval(&record.id)
-                        {
-                            reason = Some("approval is no longer valid for this effect".to_owned());
+                        if denied {
+                            reason = Some("denied by current policy".to_owned());
                             false
                         } else {
-                            class_safe
+                            let class = tool.effect_class();
+                            let class_safe =
+                                matches!(class, EffectClass::ReadOnly | EffectClass::Idempotent);
+                            if !class_safe {
+                                reason = Some(match class {
+                                    EffectClass::Reconcileable => {
+                                        "tool is Reconcileable; automatic retry is not defined"
+                                            .to_owned()
+                                    }
+                                    _ => "tool is not safe to retry automatically".to_owned(),
+                                });
+                            }
+                            if class_safe
+                                && tool.contract().requires_approval
+                                && !self.has_valid_approval(&record.id)
+                            {
+                                reason =
+                                    Some("approval is no longer valid for this effect".to_owned());
+                                false
+                            } else {
+                                class_safe
+                            }
                         }
                     }
                 },
@@ -608,7 +647,7 @@ impl LocalEngine {
                 record.decision == ApprovalDecision::Approved
                     && record
                         .expires_at_unix_ms
-                        .is_none_or(|expires| now_unix_ms() <= expires)
+                        .is_none_or(|expires| now_unix_ms() < expires)
             }
             _ => false,
         }

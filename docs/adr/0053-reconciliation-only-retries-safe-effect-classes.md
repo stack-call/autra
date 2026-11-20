@@ -17,6 +17,7 @@ inspect or clear them.
 | `Reconcileable` tool | unresolved; a tool-specific check is required |
 | `NonIdempotent` or `Unknown` tool | unresolved; a human decides |
 | Tool no longer registered | unresolved |
+| Any tool denied by the current policy | unresolved |
 
 Each retried effect gets a reconciliation note, is set back to `Authorized`,
 recorded and enqueued through the outbox. The report lists retried ids and

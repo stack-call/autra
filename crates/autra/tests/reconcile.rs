@@ -236,3 +236,33 @@ async fn reconciliation_requires_a_journal() {
 
     assert!(matches!(error, autra::RunError::Protocol(_)));
 }
+
+#[tokio::test]
+async fn a_deny_policy_prevents_reconciliation() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("run-reconcile-policy");
+    let effect = tool_effect(
+        &run_id,
+        &call("echo", r#"{"text":"hi"}"#),
+        EffectKind::ToolCall,
+    );
+    journal.record(&run_id, &effect).unwrap();
+    let agent = Agent::builder("reconcile")
+        .model(EchoModel)
+        .tool(EchoTool)
+        .journal(journal.clone())
+        .policy(autra::RulePolicy::new("test-v1").deny_tool("echo"))
+        .build()
+        .unwrap();
+
+    let report = agent.reconcile(&run_id).await.unwrap();
+
+    assert!(report.retried.is_empty());
+    assert!(
+        report.unresolved[0]
+            .reason
+            .contains("denied by current policy")
+    );
+    let stored = journal.load(&run_id).unwrap();
+    assert_eq!(stored[0].status, EffectStatus::OutcomeUnknown);
+}
