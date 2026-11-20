@@ -1,6 +1,8 @@
 # Roadmap
 
 Status reflects the repository, not the ambition of the design proposal.
+The first complete harness (§0.4) is reached at a basic level; see
+[`harness.md`](harness.md).
 
 ## Milestones
 

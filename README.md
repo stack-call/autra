@@ -3,8 +3,9 @@
 A Rust-native agent framework: composable intelligence, structured execution,
 explicit effects, optional infrastructure.
 
-> **Status: MVP v1 implemented.** Local ReAct agent, read-only workspace
-> tools, budgets, cancellation, timeouts, the CLI and an OpenAI-compatible
+> **Status: Harness v1 implemented.** Local ReAct agent, sessions, approval,
+> context and a character budget, skills, planning, bounded parallel tools,
+> restricted subagents, tracing, basic evaluation and an OpenAI-compatible
 > provider. The broader design spec remains a proposal beyond this slice. See
 > [`agent_native_framework_complete_spec_v1.0.md`](./agent_native_framework_complete_spec_v1.0.md)
 > and [`.scratch/mvp-v1/spec.md`](./.scratch/mvp-v1/spec.md).
@@ -73,5 +74,6 @@ Moonshot, vLLM, Ollama or LM Studio.
 - [Context and memory](docs/context-and-memory.md) · [Tool security](docs/tool-security.md)
 - [Durability](docs/durability.md) · [Model providers](docs/model-providers.md)
 - [Testing and evaluation](docs/testing-and-evaluation.md) · [Observability](docs/observability.md)
-- [Evaluation](docs/evaluation.md) · [Roadmap](docs/roadmap.md)
+- [Evaluation](docs/evaluation.md) · [Harness v1 acceptance](docs/harness.md)
+- [Roadmap](docs/roadmap.md)
 - [Architecture decisions](docs/adr/) · [OpenShell](docs/integrations/openshell.md) · [Restate](docs/integrations/restate.md)

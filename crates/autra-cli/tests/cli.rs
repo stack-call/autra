@@ -45,6 +45,7 @@ fn tools_lists_builtin_tools() {
     assert!(output_text.contains("echo"));
     assert!(output_text.contains("list_files"));
     assert!(output_text.contains("read_file"));
+    assert!(output_text.contains("write_file"));
 }
 
 #[test]

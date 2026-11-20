@@ -2,7 +2,7 @@ use std::process::ExitCode;
 
 use autra_harness::{
     EchoModel, EchoTool, FakeModel, HistoryItem, ListFilesTool, LocalWorkspace, ModelOutput,
-    ReadFileTool, ToolCallRequest, ToolRegistry,
+    ReadFileTool, ToolCallRequest, ToolRegistry, WriteFileTool,
 };
 use autra_openai::OpenAiCompatibleModel;
 use autra_runtime::{Agent, RunError, RunEvent, RunOptions, RunOutcome, Session};
@@ -246,6 +246,7 @@ fn builtin_registry(workspace: LocalWorkspace) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(EchoTool);
     registry.register(ListFilesTool::new(workspace.clone()));
+    registry.register(WriteFileTool::new(workspace.clone()));
     registry.register(ReadFileTool::new(workspace));
     registry
 }
