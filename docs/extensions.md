@@ -78,4 +78,9 @@ Every extension group should declare:
 | Sandbox adapter and lifecycle binding | The trait exists, but no backend is wired into execution |
 | Dependency and close ordering | Builder composition has no explicit lifecycle manager |
 | Protocol version negotiation | Extensions cannot yet declare compatibility with stored Runs |
+|| Cross-Run compatibility negotiation | Protocol versions exist, but stored Run migration is not negotiated |
+| Streaming and structured-output adapters | Capabilities are declared; the OpenAI adapter does not implement them |
+| Planner trait | Planning is currently a tool, not a replaceable behaviour |
+| Sandbox adapter and lifecycle binding | The trait exists, but no backend is wired into execution |
+| Dependency and close ordering | Builder composition has no explicit lifecycle manager |
 | Per-adapter behavioural tests | `autra-testkit` checks protocol basics; host/sandbox behaviour needs its own suite |

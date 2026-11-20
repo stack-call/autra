@@ -1731,7 +1731,8 @@ Autra 的扩展不是动态插件平台，而是 **Rust trait + Builder 显式�
 ### 31.6 当前缺口
 
 共享 `autra-testkit` 已校验 Tool/Model/Stepper/Host 的协议版本与描述；ToolDescriptor/ToolContract
-拆分已完成。Per-adapter 行为测试、依赖与关闭顺序、跨 Run 的 schema migration 仍待实现。
+拆分已完成。Per-adapter 行为测试、依赖与关闭顺序、跨 Run 的 schema migration、Planner trait 与
+Sandbox/Host adapter 接入仍待实现。
 ObserverHook 已提供 run/model/effect/finish 四个类型化阶段；Behavior Modifier 与 Policy Authority 仍待实现。
 
 ### 31.7 明确不做
