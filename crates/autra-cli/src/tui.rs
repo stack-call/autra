@@ -93,7 +93,7 @@ struct State {
     status: String,
     running: bool,
     scroll_back: usize,
-    approval: Option<(ApprovalRequest, Sender<ApprovalDecision>)>,
+    approval: std::collections::VecDeque<(ApprovalRequest, Sender<ApprovalDecision>)>,
     should_quit: bool,
     cancel: Option<CancelFlag>,
 }
@@ -125,7 +125,7 @@ impl State {
             status: "idle".to_owned(),
             running: false,
             scroll_back: 0,
-            approval: None,
+            approval: std::collections::VecDeque::new(),
             should_quit: false,
             cancel: None,
         }
@@ -143,7 +143,7 @@ impl State {
         match message {
             UiMessage::Event(event) => self.handle_event(event),
             UiMessage::Approval(request, sender) => {
-                self.approval = Some((request, sender));
+                self.approval.push_back((request, sender));
                 self.status = "awaiting approval".to_owned();
             }
             UiMessage::Finished { session, result } => {
@@ -279,19 +279,21 @@ impl State {
         if key.kind != KeyEventKind::Press {
             return;
         }
-        if let Some((_, decision)) = &self.approval {
-            match key.code {
-                KeyCode::Char('y' | 'Y') => {
-                    let _ = decision.send(ApprovalDecision::Approved);
-                    self.approval = None;
-                    self.status = "running".to_owned();
+        if !self.approval.is_empty() {
+            let decision = match key.code {
+                KeyCode::Char('y' | 'Y') => Some(ApprovalDecision::Approved),
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(ApprovalDecision::Rejected),
+                _ => None,
+            };
+            if let Some(decision) = decision {
+                if let Some((_, sender)) = self.approval.pop_front() {
+                    let _ = sender.send(decision);
                 }
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                    let _ = decision.send(ApprovalDecision::Rejected);
-                    self.approval = None;
-                    self.status = "running".to_owned();
-                }
-                _ => {}
+                self.status = if self.approval.is_empty() {
+                    "running".to_owned()
+                } else {
+                    "awaiting approval".to_owned()
+                };
             }
             return;
         }
@@ -325,7 +327,7 @@ impl State {
     }
 
     fn submit(&mut self) {
-        if self.running || self.approval.is_some() {
+        if self.running || !self.approval.is_empty() {
             return;
         }
         let prompt = self.input.trim().to_owned();
@@ -382,7 +384,7 @@ impl State {
     }
 
     fn start_task(&mut self, task: AgentTask) {
-        if self.running || self.approval.is_some() {
+        if self.running || !self.approval.is_empty() {
             return;
         }
         let Some(mut session) = self.session.take() else {
@@ -613,7 +615,7 @@ impl State {
         let visible: Vec<Line> = content[range].to_vec();
         frame.render_widget(Paragraph::new(visible).block(conversation), chunks[1]);
 
-        if let Some((request, _)) = &self.approval {
+        if let Some((request, _)) = self.approval.front() {
             let preview = request.preview.as_deref().unwrap_or("");
             let text = format!(
                 "Approve `{}` {}? [y/N]  {}",
@@ -777,7 +779,35 @@ mod tests {
         state.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
 
         assert_eq!(receiver.recv().unwrap(), ApprovalDecision::Approved);
-        assert!(state.approval.is_none());
+        assert!(state.approval.is_empty());
+    }
+
+    #[test]
+    fn queued_approvals_are_decided_one_at_a_time() {
+        let mut state = state();
+        let (first_sender, first_receiver) = std::sync::mpsc::channel();
+        let (second_sender, second_receiver) = std::sync::mpsc::channel();
+        let request = |call_id: &str| {
+            ApprovalRequest::new(
+                &RunId::new("run"),
+                &EffectId::fresh(),
+                &ToolCallRequest {
+                    call_id: call_id.to_owned(),
+                    name: "write_file".to_owned(),
+                    arguments: "{}".to_owned(),
+                },
+            )
+        };
+        state.handle_message(UiMessage::Approval(request("call-1"), first_sender));
+        state.handle_message(UiMessage::Approval(request("call-2"), second_sender));
+
+        state.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(first_receiver.recv().unwrap(), ApprovalDecision::Approved);
+        assert_eq!(state.approval.len(), 1);
+
+        state.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert_eq!(second_receiver.recv().unwrap(), ApprovalDecision::Rejected);
+        assert!(state.approval.is_empty());
     }
 
     #[test]

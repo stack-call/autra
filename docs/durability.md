@@ -102,6 +102,11 @@ effects and state are recorded under the child Run id with `parent_run_id`.
 The parent does not coordinate child recovery, and an interrupted
 `spawn_subagent` remains an unknown outcome rather than being retried.
 
+The SQLite adapter opens its databases in WAL mode with a five-second busy
+timeout, so the journal and session store can share one file without immediate
+`SQLITE_BUSY` failures. `PRAGMA user_version` records the schema version and a
+database written by a newer version is refused instead of being misread.
+
 Outbox claims carry a 30-second lease. `Agent::drain_outbox` and
 `autractl outbox` reclaim due rows. Completing or releasing a row requires the
 current claim id, so a worker whose lease expired cannot remove an effect now

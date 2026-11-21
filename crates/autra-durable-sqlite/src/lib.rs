@@ -17,6 +17,34 @@ pub use session::SqliteSessionStore;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// Version written to `PRAGMA user_version`. Future schema changes must bump
+/// it and add an explicit migration step.
+pub(crate) const SCHEMA_VERSION: i64 = 1;
+
+/// Shared connection settings for the journal and session stores.
+pub(crate) fn configure_connection(connection: &Connection) -> Result<(), String> {
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+        .map_err(|error| error.to_string())?;
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if version > SCHEMA_VERSION {
+        return Err(format!(
+            "database schema version {version} is newer than supported {SCHEMA_VERSION}"
+        ));
+    }
+    if version < SCHEMA_VERSION {
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 pub struct SqliteEffectJournal {
     connection: Arc<Mutex<Connection>>,
 }
@@ -25,6 +53,8 @@ impl SqliteEffectJournal {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, JournalError> {
         let connection = Connection::open(path)
             .map_err(|error| JournalError::new(format!("cannot open journal: {error}")))?;
+        configure_connection(&connection)
+            .map_err(|error| JournalError::new(format!("cannot configure journal: {error}")))?;
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS effects (

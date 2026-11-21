@@ -80,10 +80,13 @@ typed errors. Provider-specific fields stay inside the adapter.
 
 ## What is not implemented
 
-- token streaming (`complete()` returns the whole response);
-- retries or provider-side rate-limit handling;
 - provider-specific fields, reasoning traces or embeddings;
 - live-provider tests in the default suite.
 
-The runtime's `effect_timeout` applies to the whole model call. If a provider
-call times out, the Run fails; there is no hidden retry.
+Transport errors, `429` and `5xx` responses are retried up to three attempts
+with exponential backoff; an integer `Retry-After` header is honored up to five
+seconds. Once a stream has started, errors are surfaced rather than retried so
+deltas are never duplicated.
+
+The runtime's `effect_timeout` applies to the whole model call, including the
+retry attempts. If a provider call times out, the Run fails.

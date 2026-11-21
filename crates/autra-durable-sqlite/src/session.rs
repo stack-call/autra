@@ -16,6 +16,9 @@ impl SqliteSessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SessionStoreError> {
         let connection = Connection::open(path)
             .map_err(|error| SessionStoreError::new(format!("cannot open sessions: {error}")))?;
+        super::configure_connection(&connection).map_err(|error| {
+            SessionStoreError::new(format!("cannot configure sessions: {error}"))
+        })?;
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS sessions (

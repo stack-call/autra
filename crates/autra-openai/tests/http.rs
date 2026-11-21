@@ -162,3 +162,29 @@ async fn streams_tool_call_fragments() {
     assert_eq!(output.tool_calls[0].name, "echo");
     assert_eq!(output.tool_calls[0].arguments, r#"{"text":"hi"}"#);
 }
+
+#[tokio::test]
+async fn retries_a_transient_server_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("transient"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": { "content": "after retry" } }]
+        })))
+        .mount(&server)
+        .await;
+    let model =
+        OpenAiCompatibleModel::new(OpenAiConfig::new(server.uri(), "test-key", "test-model"))
+            .unwrap();
+
+    let output = model.complete(&request()).await.unwrap();
+
+    assert_eq!(output.text.as_deref(), Some("after retry"));
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}

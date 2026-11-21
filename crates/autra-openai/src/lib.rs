@@ -88,16 +88,13 @@ impl ModelProvider for OpenAiCompatibleModel {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.config.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                ModelError::new(format!("model request failed: {}", describe(&error)))
-            })?;
+        let response = send_with_retry(|| {
+            self.client
+                .post(&url)
+                .bearer_auth(&self.config.api_key)
+                .json(&body)
+        })
+        .await?;
         let status = response.status();
         let text = response
             .text()
@@ -128,17 +125,14 @@ impl ModelProvider for OpenAiCompatibleModel {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(&self.config.api_key)
-            .header(reqwest::header::ACCEPT, "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| {
-                ModelError::new(format!("model request failed: {}", describe(&error)))
-            })?;
+        let response = send_with_retry(|| {
+            self.client
+                .post(&url)
+                .bearer_auth(&self.config.api_key)
+                .header(reqwest::header::ACCEPT, "text/event-stream")
+                .json(&body)
+        })
+        .await?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
@@ -197,6 +191,53 @@ impl ModelProvider for OpenAiCompatibleModel {
         }
         Ok(mapping::finish_stream(accumulator))
     }
+}
+
+const MAX_ATTEMPTS: usize = 3;
+
+async fn send_with_retry<F>(build: F) -> Result<reqwest::Response, ModelError>
+where
+    F: Fn() -> reqwest::RequestBuilder,
+{
+    let mut attempt = 1;
+    loop {
+        match build().send().await {
+            Ok(response) if attempt < MAX_ATTEMPTS && retryable_status(response.status()) => {
+                let delay = retry_delay(&response, attempt);
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Ok(response) => return Ok(response),
+            Err(error) if attempt < MAX_ATTEMPTS && (error.is_connect() || error.is_timeout()) => {
+                tokio::time::sleep(backoff(attempt)).await;
+                attempt += 1;
+            }
+            Err(error) => {
+                return Err(ModelError::new(format!(
+                    "model request failed: {}",
+                    describe(&error)
+                )));
+            }
+        }
+    }
+}
+
+fn retryable_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn backoff(attempt: usize) -> std::time::Duration {
+    std::time::Duration::from_millis(200 * 2_u64.pow((attempt - 1) as u32))
+}
+
+fn retry_delay(response: &reqwest::Response, attempt: usize) -> std::time::Duration {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| std::time::Duration::from_secs(seconds.min(5)))
+        .unwrap_or_else(|| backoff(attempt))
 }
 
 fn describe(error: &reqwest::Error) -> String {

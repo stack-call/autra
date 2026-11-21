@@ -91,3 +91,36 @@ fn an_expired_lease_can_be_reclaimed() {
             .is_empty()
     );
 }
+
+#[test]
+fn opening_configures_wal_and_sets_the_schema_version() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.db");
+    let _journal = SqliteEffectJournal::open(&path).unwrap();
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let mode: String = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(mode.to_ascii_lowercase(), "wal");
+    let version: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 1);
+}
+
+#[test]
+fn a_newer_schema_version_is_rejected() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("future.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "user_version", 99_i64)
+            .unwrap();
+    }
+
+    let error = SqliteEffectJournal::open(&path).err().expect("must fail");
+
+    assert!(error.to_string().contains("newer"));
+}

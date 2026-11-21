@@ -266,3 +266,29 @@ impl Tool for RunCommandTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{is_sensitive_key, read_capped};
+    use std::ffi::OsStr;
+
+    #[test]
+    fn credential_environment_variables_are_filtered() {
+        assert!(is_sensitive_key(OsStr::new("OPENAI_API_KEY")));
+        assert!(is_sensitive_key(OsStr::new("GITHUB_TOKEN")));
+        assert!(is_sensitive_key(OsStr::new("AWS_SECRET_ACCESS_KEY")));
+        assert!(is_sensitive_key(OsStr::new("SERVICE_PASSWORD")));
+        assert!(!is_sensitive_key(OsStr::new("PATH")));
+        assert!(!is_sensitive_key(OsStr::new("GIT_AUTHOR_NAME")));
+        assert!(!is_sensitive_key(OsStr::new("RUSTUP_HOME")));
+    }
+
+    #[tokio::test]
+    async fn captured_output_is_bounded_while_the_pipe_is_drained() {
+        let input = std::io::Cursor::new(vec![b'x'; 4096]);
+
+        let collected = read_capped(input, 32).await;
+
+        assert_eq!(collected.len(), 32);
+    }
+}
