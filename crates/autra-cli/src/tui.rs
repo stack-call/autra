@@ -10,7 +10,10 @@ use autra::{
     ApprovalDecision, ApprovalRequest, Approver, RunEvent, RunOptions, Session, SessionStore,
 };
 use autra_core::{CancelFlag, HistoryItem, RunId, SessionId};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -90,6 +93,9 @@ struct State {
     lines: Vec<ChatLine>,
     streaming: Option<String>,
     input: String,
+    cursor: usize,
+    history: Vec<String>,
+    history_index: Option<usize>,
     status: String,
     running: bool,
     scroll_back: usize,
@@ -122,6 +128,9 @@ impl State {
             lines,
             streaming: None,
             input: String::new(),
+            cursor: 0,
+            history: Vec::new(),
+            history_index: None,
             status: "idle".to_owned(),
             running: false,
             scroll_back: 0,
@@ -324,18 +333,101 @@ impl State {
                 self.should_quit = true;
             }
             KeyCode::Enter => self.submit(),
-            KeyCode::Backspace => {
-                self.input.pop();
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete_forward(),
+            KeyCode::Left => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Right => {
+                self.cursor = (self.cursor + 1).min(self.input.chars().count());
+            }
+            KeyCode::Home => self.cursor = 0,
+            KeyCode::End => self.cursor = self.input.chars().count(),
+            KeyCode::Up => {
+                if !self.recall_history(-1) {
+                    self.scroll_back = self.scroll_back.saturating_add(1);
+                }
+            }
+            KeyCode::Down => {
+                if !self.recall_history(1) {
+                    self.scroll_back = self.scroll_back.saturating_sub(1);
+                }
             }
             KeyCode::Char(character) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.input.push(character);
+                self.insert_char(character);
             }
             KeyCode::PageUp => self.scroll_back = self.scroll_back.saturating_add(10),
             KeyCode::PageDown => self.scroll_back = self.scroll_back.saturating_sub(10),
-            KeyCode::Up => self.scroll_back = self.scroll_back.saturating_add(1),
-            KeyCode::Down => self.scroll_back = self.scroll_back.saturating_sub(1),
             _ => {}
         }
+    }
+
+    fn byte_index(&self, char_index: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(char_index)
+            .map(|(index, _)| index)
+            .unwrap_or(self.input.len())
+    }
+
+    fn insert_char(&mut self, character: char) {
+        let index = self.byte_index(self.cursor);
+        self.input.insert(index, character);
+        self.cursor += 1;
+        self.history_index = None;
+    }
+
+    fn insert_text(&mut self, text: &str) {
+        for character in text.chars().filter(|character| *character != '\r') {
+            self.insert_char(character);
+        }
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let start = self.byte_index(self.cursor - 1);
+        let end = self.byte_index(self.cursor);
+        self.input.replace_range(start..end, "");
+        self.cursor -= 1;
+    }
+
+    fn delete_forward(&mut self) {
+        if self.cursor >= self.input.chars().count() {
+            return;
+        }
+        let start = self.byte_index(self.cursor);
+        let end = self.byte_index(self.cursor + 1);
+        self.input.replace_range(start..end, "");
+    }
+
+    /// Recall shell-style input history. Returns false when there is nothing
+    /// to recall, so the caller can fall back to scrolling.
+    fn recall_history(&mut self, direction: isize) -> bool {
+        if self.history.is_empty() {
+            return false;
+        }
+        if direction < 0 {
+            let index = match self.history_index {
+                Some(index) => index.saturating_sub(1),
+                None => self.history.len() - 1,
+            };
+            self.history_index = Some(index);
+            self.input = self.history[index].clone();
+        } else {
+            match self.history_index {
+                Some(index) if index + 1 < self.history.len() => {
+                    self.history_index = Some(index + 1);
+                    self.input = self.history[index + 1].clone();
+                }
+                Some(_) => {
+                    self.history_index = None;
+                    self.input.clear();
+                }
+                None => return false,
+            }
+        }
+        self.cursor = self.input.chars().count();
+        true
     }
 
     fn submit(&mut self) {
@@ -347,6 +439,9 @@ impl State {
             return;
         }
         self.input.clear();
+        self.cursor = 0;
+        self.history_index = None;
+        self.history.push(prompt.clone());
         if let Some(command) = parse_command(&prompt) {
             self.handle_command(command);
             return;
@@ -648,7 +743,7 @@ impl State {
                 chunks[2],
             );
             if !self.running {
-                let x = chunks[2].x + 3 + self.input.chars().count() as u16;
+                let x = chunks[2].x + 3 + self.cursor as u16;
                 let y = chunks[2].y + 1;
                 frame.set_cursor_position(Position::new(
                     x.min(chunks[2].right().saturating_sub(2)),
@@ -660,7 +755,7 @@ impl State {
         let hint = if self.running {
             "Esc cancel | Ctrl+C quit | PgUp/PgDn scroll"
         } else {
-            "Enter send | /resume /session /help | Esc quit | PgUp/PgDn scroll"
+            "Enter send | Up/Down history | /resume /session /help | Esc quit | PgUp/PgDn scroll"
         };
         frame.render_widget(
             Paragraph::new(format!(" {} | {}", self.status, hint))
@@ -684,13 +779,17 @@ pub fn run(
     let mut state = State::new(session, config, sender);
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     let result = event_loop(&mut terminal, &mut state, receiver);
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableBracketedPaste
+    )?;
     terminal.show_cursor()?;
     result
 }
@@ -706,8 +805,10 @@ fn event_loop(
         }
         terminal.draw(|frame| state.draw(frame))?;
         if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                state.handle_key(key);
+            match event::read()? {
+                Event::Key(key) => state.handle_key(key),
+                Event::Paste(text) => state.insert_text(&text),
+                _ => {}
             }
         }
         if state.should_quit {
@@ -901,5 +1002,51 @@ mod tests {
         state.submit();
 
         assert!(state.lines.last().unwrap().text.contains("usage: /resume"));
+    }
+
+    #[test]
+    fn input_editing_uses_the_cursor() {
+        let mut state = state();
+        for character in "ac".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(state.input, "abc");
+        assert_eq!(state.cursor, 2);
+
+        state.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(state.input, "bc");
+        assert_eq!(state.cursor, 0);
+
+        state.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(state.input, "b");
+    }
+
+    #[test]
+    fn history_recalls_previous_input() {
+        let mut state = state();
+        state.history = vec!["first".to_owned(), "second".to_owned()];
+
+        state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.input, "second");
+        state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(state.input, "first");
+        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.input, "second");
+        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(state.input, "");
+    }
+
+    #[test]
+    fn paste_inserts_text_at_the_cursor() {
+        let mut state = state();
+
+        state.insert_text("你好\r\nworld");
+
+        assert_eq!(state.input, "你好\nworld");
+        assert_eq!(state.cursor, 8);
     }
 }

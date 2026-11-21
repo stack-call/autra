@@ -94,8 +94,10 @@ unified diff for edits and overwrites, or the rejection reason for an ambiguous
 edit.
 
 `autractl tui` opens a full-screen session. Enter sends, Esc cancels a running
-turn (or quits when idle), Ctrl+C quits, PgUp/PgDn scroll, and a pending
-approval shows the tool and preview and waits for `y`/`n`. Use `--yes` for
+turn (or quits when idle), Ctrl+C quits, and a pending approval shows the tool
+and preview and waits for `y`/`n`. The prompt supports cursor movement
+(Left/Right/Home/End), Delete/Backspace, input history (Up/Down), and pasted
+multi-line text; PgUp/PgDn scroll the transcript. Use `--yes` for
 auto-approval and `--local` for a deterministic echo session.
 
 With `--journal <path> --session <id>`, the TUI restores that session's turns

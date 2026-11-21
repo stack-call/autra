@@ -59,7 +59,7 @@ async fn git_status_reports_workspace_changes() {
     let output = tool.call("{}").await.unwrap();
 
     assert_eq!(tool.effect_class(), EffectClass::ReadOnly);
-    assert!(output.contains("note.txt"));
+    assert!(output.contains("note.txt"), "git status output: {output:?}");
 }
 
 #[tokio::test]
