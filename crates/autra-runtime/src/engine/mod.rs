@@ -575,6 +575,13 @@ impl LocalEngine {
                 .await;
                 let output = match output_result {
                     Ok(ModelStep::Output(output)) => {
+                        if let Some(usage) = output.usage {
+                            on_event(&RunEvent::ModelUsage {
+                                prompt_tokens: usage.prompt_tokens,
+                                completion_tokens: usage.completion_tokens,
+                                total_tokens: usage.total_tokens,
+                            });
+                        }
                         if self.journal.is_none() {
                             effect_mut(&mut effects, &effect_id)
                                 .apply_model_success(output.text.clone());

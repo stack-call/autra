@@ -38,9 +38,23 @@ pub enum HistoryItem {
     Tool(ToolOutcome),
 }
 
+/// Token counts reported by the provider for one model call.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenUsage {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+}
+
 /// One complete model response.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelOutput {
     pub text: Option<String>,
     pub tool_calls: Vec<ToolCallRequest>,
+    /// Provider-reported usage, when the endpoint returns it.
+    #[serde(default)]
+    pub usage: Option<TokenUsage>,
 }

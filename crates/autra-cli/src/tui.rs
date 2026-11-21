@@ -201,6 +201,18 @@ impl State {
                     );
                 }
             }
+            RunEvent::ModelUsage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            } => {
+                self.push(
+                    Style::default().fg(Color::DarkGray),
+                    format!(
+                        "[usage] prompt={prompt_tokens} completion={completion_tokens} total={total_tokens}"
+                    ),
+                );
+            }
             RunEvent::ApprovalRequested {
                 tool_name, call_id, ..
             } => {

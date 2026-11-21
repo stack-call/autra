@@ -34,6 +34,7 @@ impl ModelProvider for CapturingModel {
             .expect("system log poisoned")
             .push(request.system.clone());
         Ok(ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         })

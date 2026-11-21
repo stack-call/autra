@@ -12,6 +12,7 @@ async fn agent_lists_and_reads_a_workspace_file() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let model = FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "call-1".to_owned(),
@@ -20,6 +21,7 @@ async fn agent_lists_and_reads_a_workspace_file() {
             }],
         },
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "call-2".to_owned(),
@@ -28,6 +30,7 @@ async fn agent_lists_and_reads_a_workspace_file() {
             }],
         },
         ModelOutput {
+            usage: None,
             text: Some("read the readme".to_owned()),
             tool_calls: Vec::new(),
         },
@@ -82,6 +85,7 @@ async fn agent_writes_a_nested_file_and_runs_a_command() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let model = FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "call-1".to_owned(),
@@ -90,6 +94,7 @@ async fn agent_writes_a_nested_file_and_runs_a_command() {
             }],
         },
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "call-2".to_owned(),
@@ -98,6 +103,7 @@ async fn agent_writes_a_nested_file_and_runs_a_command() {
             }],
         },
         ModelOutput {
+            usage: None,
             text: Some("workspace updated".to_owned()),
             tool_calls: Vec::new(),
         },

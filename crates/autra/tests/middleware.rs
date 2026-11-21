@@ -18,6 +18,7 @@ impl ModelProvider for CapturingModel {
     async fn complete(&self, request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
         self.requests.lock().unwrap().push(request.clone());
         Ok(ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         })

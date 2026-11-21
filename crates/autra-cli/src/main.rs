@@ -923,6 +923,7 @@ async fn demo_command() -> ExitCode {
     };
     let model = FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "demo-1".to_owned(),
@@ -931,6 +932,7 @@ async fn demo_command() -> ExitCode {
             }],
         },
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "demo-2".to_owned(),
@@ -939,6 +941,7 @@ async fn demo_command() -> ExitCode {
             }],
         },
         ModelOutput {
+            usage: None,
             text: Some("Demo run finished.".to_owned()),
             tool_calls: Vec::new(),
         },
@@ -1031,6 +1034,7 @@ fn print_status(outcome: &RunOutcome) {
 #[derive(Default)]
 struct EventPrinter {
     streamed: bool,
+    streamed_output: bool,
 }
 
 impl EventPrinter {
@@ -1043,17 +1047,34 @@ impl EventPrinter {
                 print!("{text}");
                 let _ = io::stdout().flush();
                 self.streamed = true;
+                self.streamed_output = true;
             }
             RunEvent::ModelResult { text, tool_calls } => {
                 if self.streamed {
                     println!();
                     self.streamed = false;
-                } else if let Some(text) = text {
-                    println!("[model] {}", preview(text));
+                } else if !self.streamed_output {
+                    if let Some(text) = text {
+                        println!("[model] {}", preview(text));
+                    }
                 }
+                self.streamed_output = false;
                 for call in tool_calls {
                     println!("[model] tool call: {} ({})", call.name, call.call_id);
                 }
+            }
+            RunEvent::ModelUsage {
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            } => {
+                if self.streamed {
+                    println!();
+                    self.streamed = false;
+                }
+                println!(
+                    "[usage] prompt={prompt_tokens} completion={completion_tokens} total={total_tokens}"
+                );
             }
             RunEvent::ApprovalRequested {
                 call_id,

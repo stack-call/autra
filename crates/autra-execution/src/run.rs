@@ -63,6 +63,11 @@ pub enum RunEvent {
         text: Option<String>,
         tool_calls: Vec<ToolCallRequest>,
     },
+    ModelUsage {
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        total_tokens: u64,
+    },
     ApprovalRequested {
         call_id: String,
         tool_name: String,

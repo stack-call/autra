@@ -148,6 +148,7 @@ async fn a_model_effect_is_reissued() {
     journal.record(&run_id, &effect).unwrap();
     let agent = Agent::builder("reconcile")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))

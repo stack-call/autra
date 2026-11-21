@@ -26,6 +26,7 @@ impl Dispatcher for StaticDispatcher {
     ) -> Result<ModelOutput, ModelError> {
         if self.model_ok {
             Ok(ModelOutput {
+                usage: None,
                 text: Some("model-ok".to_owned()),
                 tool_calls: Vec::new(),
             })
@@ -70,6 +71,7 @@ impl Dispatcher for CountingDispatcher {
     ) -> Result<ModelOutput, ModelError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(ModelOutput {
+            usage: None,
             text: Some("counted-model".to_owned()),
             tool_calls: Vec::new(),
         })

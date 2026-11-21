@@ -56,6 +56,7 @@ fn event_names(events: &[RunEvent]) -> Vec<&'static str> {
             RunEvent::ModelCallStarted { .. } => "ModelCallStarted",
             RunEvent::ModelDelta { .. } => "ModelDelta",
             RunEvent::ModelResult { .. } => "ModelResult",
+            RunEvent::ModelUsage { .. } => "ModelUsage",
             RunEvent::ApprovalRequested { .. } => "ApprovalRequested",
             RunEvent::ApprovalDecided { .. } => "ApprovalDecided",
             RunEvent::ToolCallStarted { .. } => "ToolCallStarted",
@@ -88,6 +89,7 @@ impl ModelProvider for DuplicateCallModel {
             arguments: "{}".to_owned(),
         };
         Ok(ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![call.clone(), call],
         })
@@ -143,10 +145,12 @@ fn call(id: &str, name: &str, arguments: &str) -> ToolCallRequest {
 fn tool_call_model(calls: Vec<ToolCallRequest>, answer: &str) -> FakeModel {
     FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: calls,
         },
         ModelOutput {
+            usage: None,
             text: Some(answer.to_owned()),
             tool_calls: Vec::new(),
         },
@@ -319,6 +323,7 @@ async fn cancellation_stops_remaining_tool_intents() {
     let cancel = CancelFlag::new();
     let calls = Arc::new(AtomicUsize::new(0));
     let model = FakeModel::new(vec![ModelOutput {
+        usage: None,
         text: None,
         tool_calls: vec![
             call("call-1", "cancel", "{}"),

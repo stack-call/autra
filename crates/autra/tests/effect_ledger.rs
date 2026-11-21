@@ -57,10 +57,12 @@ fn call(name: &str, arguments: &str) -> ToolCallRequest {
 fn scripted(calls: Vec<ToolCallRequest>) -> FakeModel {
     FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: calls,
         },
         ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         },

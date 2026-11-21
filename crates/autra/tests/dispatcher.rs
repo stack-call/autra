@@ -15,6 +15,7 @@ impl Dispatcher for ConstantDispatcher {
         _timeout: Option<Duration>,
     ) -> Result<ModelOutput, ModelError> {
         Ok(ModelOutput {
+            usage: None,
             text: Some("custom dispatcher".to_owned()),
             tool_calls: Vec::new(),
         })

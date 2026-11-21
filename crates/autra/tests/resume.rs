@@ -122,6 +122,7 @@ async fn resume_dispatches_an_authorized_tool_then_continues() {
 
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))
@@ -167,6 +168,7 @@ async fn resume_does_not_retry_a_dispatched_tool() {
     let calls = Arc::new(AtomicUsize::new(0));
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))
@@ -209,6 +211,7 @@ async fn resume_retires_an_interrupted_model_call_and_reissues_it() {
 
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))
@@ -296,6 +299,7 @@ async fn resume_retries_a_read_only_dispatched_tool() {
 
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))

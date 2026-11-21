@@ -22,6 +22,7 @@ impl ModelProvider for EchoModel {
             })
             .unwrap_or("");
         Ok(ModelOutput {
+            usage: None,
             text: Some(format!("echo: {input}")),
             tool_calls: Vec::new(),
         })

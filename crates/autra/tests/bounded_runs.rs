@@ -15,6 +15,7 @@ fn call(id: &str, name: &str, arguments: &str) -> ToolCallRequest {
 
 fn final_answer(text: &str) -> ModelOutput {
     ModelOutput {
+        usage: None,
         text: Some(text.to_owned()),
         tool_calls: Vec::new(),
     }
@@ -22,6 +23,7 @@ fn final_answer(text: &str) -> ModelOutput {
 
 fn tool_call(call: ToolCallRequest) -> ModelOutput {
     ModelOutput {
+        usage: None,
         text: None,
         tool_calls: vec![call],
     }
@@ -35,6 +37,7 @@ fn event_names(events: &[RunEvent]) -> Vec<&'static str> {
             RunEvent::ModelCallStarted { .. } => "ModelCallStarted",
             RunEvent::ModelDelta { .. } => "ModelDelta",
             RunEvent::ModelResult { .. } => "ModelResult",
+            RunEvent::ModelUsage { .. } => "ModelUsage",
             RunEvent::ApprovalRequested { .. } => "ApprovalRequested",
             RunEvent::ApprovalDecided { .. } => "ApprovalDecided",
             RunEvent::ToolCallStarted { .. } => "ToolCallStarted",
@@ -89,6 +92,7 @@ async fn max_turns_fails_the_run() {
 #[tokio::test]
 async fn max_tool_calls_fails_before_executing_any_tool() {
     let model = FakeModel::new(vec![ModelOutput {
+        usage: None,
         text: None,
         tool_calls: vec![
             call("call-1", "echo", r#"{"text":"one"}"#),
@@ -252,6 +256,7 @@ async fn default_max_turns_is_eight() {
 #[tokio::test]
 async fn default_max_tool_calls_is_eight() {
     let model = FakeModel::new(vec![ModelOutput {
+        usage: None,
         text: None,
         tool_calls: (0..9)
             .map(|index| call(&format!("call-{index}"), "echo", r#"{"text":"x"}"#))

@@ -57,10 +57,12 @@ fn delay_call(id: &str, arguments: &str) -> ToolCallRequest {
 fn tool_model(calls: Vec<ToolCallRequest>) -> FakeModel {
     FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: calls,
         },
         ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         },
@@ -192,6 +194,7 @@ impl ModelProvider for CancellingModel {
     async fn complete(&self, _request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
         self.cancel.cancel();
         Ok(ModelOutput {
+            usage: None,
             text: None,
             tool_calls: self.calls.clone(),
         })

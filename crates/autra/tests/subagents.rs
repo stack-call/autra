@@ -6,6 +6,7 @@ use autra_harness::{FakeModel, HistoryItem, Tool};
 fn child(name: &str, answer: &str) -> Agent {
     Agent::builder(name)
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some(answer.to_owned()),
             tool_calls: Vec::new(),
         }]))
@@ -24,10 +25,12 @@ fn spawn_call(id: &str, agent: &str, task: &str) -> ToolCallRequest {
 fn parent_model(calls: Vec<ToolCallRequest>) -> FakeModel {
     FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: calls,
         },
         ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         },
@@ -156,6 +159,7 @@ async fn spawn_subagent_reserves_child_tools_from_the_parent() {
 async fn a_child_with_no_remaining_budget_cannot_use_tools() {
     let child_model = FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "child-call".to_owned(),
@@ -164,6 +168,7 @@ async fn a_child_with_no_remaining_budget_cannot_use_tools() {
             }],
         },
         ModelOutput {
+            usage: None,
             text: Some("child done".to_owned()),
             tool_calls: Vec::new(),
         },

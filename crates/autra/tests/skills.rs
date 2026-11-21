@@ -33,6 +33,7 @@ async fn agent_can_load_a_named_skill() {
     let model = CapturingModel {
         responses: Mutex::new(VecDeque::from(vec![
             ModelOutput {
+                usage: None,
                 text: None,
                 tool_calls: vec![ToolCallRequest {
                     call_id: "call-1".to_owned(),
@@ -41,6 +42,7 @@ async fn agent_can_load_a_named_skill() {
                 }],
             },
             ModelOutput {
+                usage: None,
                 text: Some("done".to_owned()),
                 tool_calls: Vec::new(),
             },

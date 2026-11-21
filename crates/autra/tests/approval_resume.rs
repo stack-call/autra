@@ -95,6 +95,7 @@ fn save_decision(
 fn agent(journal: &MemoryJournal, workspace: LocalWorkspace, approver: RecordingApprover) -> Agent {
     Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))
@@ -113,10 +114,12 @@ async fn a_normal_run_persists_its_approval_decision() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let model = FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![call()],
         },
         ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         },
@@ -274,6 +277,7 @@ async fn resume_applies_a_deny_policy_without_asking() {
     let approver = RecordingApprover::new(ApprovalDecision::Approved);
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))
@@ -311,6 +315,7 @@ async fn resume_authorizes_a_read_only_pending_call_without_asking() {
     let approver = RecordingApprover::new(ApprovalDecision::Rejected);
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))

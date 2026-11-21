@@ -10,6 +10,7 @@ struct StreamingModel;
 impl ModelProvider for StreamingModel {
     async fn complete(&self, _request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
         Ok(ModelOutput {
+            usage: None,
             text: Some("hello".to_owned()),
             tool_calls: Vec::new(),
         })
@@ -23,6 +24,7 @@ impl ModelProvider for StreamingModel {
         on_delta("he".to_owned());
         on_delta("llo".to_owned());
         Ok(ModelOutput {
+            usage: None,
             text: Some("hello".to_owned()),
             tool_calls: Vec::new(),
         })

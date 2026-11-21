@@ -1,4 +1,4 @@
-use autra_core::{HistoryItem, ModelCallSpec, ModelOutput, ToolCallRequest};
+use autra_core::{HistoryItem, ModelCallSpec, ModelOutput, TokenUsage, ToolCallRequest};
 use autra_harness::ModelError;
 use std::collections::BTreeMap;
 
@@ -183,7 +183,35 @@ pub(crate) fn parse_response(value: &Value) -> Result<ModelOutput, ModelError> {
         }
     }
 
-    Ok(ModelOutput { text, tool_calls })
+    let usage = value.get("usage").and_then(parse_usage);
+    Ok(ModelOutput {
+        text,
+        tool_calls,
+        usage,
+    })
+}
+
+fn parse_usage(value: &Value) -> Option<TokenUsage> {
+    let prompt_tokens = value
+        .get("prompt_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let completion_tokens = value
+        .get("completion_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_tokens = value
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(prompt_tokens + completion_tokens);
+    if prompt_tokens == 0 && completion_tokens == 0 && total_tokens == 0 {
+        return None;
+    }
+    Some(TokenUsage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+    })
 }
 
 pub(crate) fn truncate(text: &str, max: usize) -> String {
@@ -351,6 +379,7 @@ mod null_argument_tests {
 pub(crate) struct StreamAccumulator {
     pub content: String,
     pub tool_calls: BTreeMap<usize, StreamToolCall>,
+    pub usage: Option<TokenUsage>,
 }
 
 #[derive(Default)]
@@ -377,6 +406,9 @@ pub(crate) fn apply_stream_data(
     })?;
     if let Some(error) = value.get("error") {
         return Err(ModelError::new(format!("model stream error: {error}")));
+    }
+    if let Some(usage) = value.get("usage") {
+        accumulator.usage = parse_usage(usage);
     }
     let mut delta_text = None;
     if let Some(text) = value
@@ -408,6 +440,7 @@ pub(crate) fn apply_stream_data(
 }
 
 pub(crate) fn finish_stream(accumulator: StreamAccumulator) -> ModelOutput {
+    let usage = accumulator.usage;
     let text = if accumulator.content.is_empty() {
         None
     } else {
@@ -423,7 +456,11 @@ pub(crate) fn finish_stream(accumulator: StreamAccumulator) -> ModelOutput {
             arguments: call.arguments,
         })
         .collect();
-    ModelOutput { text, tool_calls }
+    ModelOutput {
+        text,
+        tool_calls,
+        usage,
+    }
 }
 
 #[cfg(test)]
@@ -473,5 +510,40 @@ mod sse_tests {
             .push(b"data: first\ndata: second\n\n", &mut events)
             .unwrap();
         assert_eq!(events, ["first\nsecond"]);
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::{StreamAccumulator, apply_stream_data, finish_stream, parse_response};
+    use serde_json::json;
+
+    #[test]
+    fn parses_non_streaming_usage() {
+        let value = json!({
+            "choices": [{ "message": { "content": "hi" } }],
+            "usage": { "prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8 }
+        });
+
+        let output = parse_response(&value).unwrap();
+
+        let usage = output.usage.expect("usage");
+        assert_eq!(usage.prompt_tokens, 3);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.total_tokens, 8);
+    }
+
+    #[test]
+    fn captures_streaming_usage() {
+        let mut accumulator = StreamAccumulator::default();
+
+        apply_stream_data(
+            r#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}"#,
+            &mut accumulator,
+        )
+        .unwrap();
+        let output = finish_stream(accumulator);
+
+        assert_eq!(output.usage.expect("usage").total_tokens, 8);
     }
 }

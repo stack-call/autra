@@ -18,7 +18,7 @@ pub use effect::{
 };
 pub use event::{AcceptedEvent, EventKind};
 pub use ids::{EffectId, RunId, SessionId, TurnId};
-pub use message::{HistoryItem, ModelOutput, ToolCallRequest, ToolOutcome, ToolSpec};
+pub use message::{HistoryItem, ModelOutput, TokenUsage, ToolCallRequest, ToolOutcome, ToolSpec};
 pub use scope::{BudgetHandle, BudgetSnapshot, CancelFlag, ExecutionScope};
 pub use state::{AgentPhase, AgentState, EngineState};
 pub use stepper::{

@@ -64,6 +64,7 @@ async fn a_durable_tool_run_drains_its_outbox() {
     let journal = SqliteEffectJournal::open(&path).unwrap();
     let model = FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "call-1".to_owned(),
@@ -72,6 +73,7 @@ async fn a_durable_tool_run_drains_its_outbox() {
             }],
         },
         ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         },
@@ -153,6 +155,7 @@ async fn a_sqlite_checkpoint_can_be_resumed_after_reopen() {
     let reopened = SqliteEffectJournal::open(&path).unwrap();
     let agent = Agent::builder("durable-resume")
         .model(FakeModel::new(vec![ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }]))

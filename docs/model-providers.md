@@ -88,5 +88,10 @@ with exponential backoff; an integer `Retry-After` header is honored up to five
 seconds. Once a stream has started, errors are surfaced rather than retried so
 deltas are never duplicated.
 
+When the endpoint reports `usage`, the adapter attaches it to `ModelOutput` and
+the runtime emits a `ModelUsage` stream event with prompt, completion and total
+tokens. The CLI and TUI display that line; no cost or quota accounting is
+derived from it.
+
 The runtime's `effect_timeout` applies to the whole model call, including the
 retry attempts. If a provider call times out, the Run fails.

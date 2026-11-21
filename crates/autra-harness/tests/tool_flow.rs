@@ -43,6 +43,7 @@ fn model_result(seq: u64, calls: Vec<ToolCallRequest>) -> AcceptedEvent {
     AcceptedEvent {
         seq,
         kind: EventKind::ModelResult(ModelOutput {
+            usage: None,
             text: None,
             tool_calls: calls,
         }),

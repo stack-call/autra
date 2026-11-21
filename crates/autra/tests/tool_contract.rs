@@ -55,6 +55,7 @@ impl Approver for AlwaysApprove {
 async fn runtime_uses_contract_and_execute() {
     let model = FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: vec![ToolCallRequest {
                 call_id: "call-1".to_owned(),
@@ -63,6 +64,7 @@ async fn runtime_uses_contract_and_execute() {
             }],
         },
         ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         },

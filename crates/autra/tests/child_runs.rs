@@ -180,6 +180,7 @@ async fn a_child_can_inherit_an_approver() {
     let child = Agent::builder("child")
         .model(FakeModel::new(vec![
             ModelOutput {
+                usage: None,
                 text: None,
                 tool_calls: vec![ToolCallRequest {
                     call_id: "call-1".to_owned(),
@@ -188,6 +189,7 @@ async fn a_child_can_inherit_an_approver() {
                 }],
             },
             ModelOutput {
+                usage: None,
                 text: Some("done".to_owned()),
                 tool_calls: Vec::new(),
             },

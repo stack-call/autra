@@ -53,10 +53,12 @@ fn write_call(id: &str, path: &str, content: &str) -> ToolCallRequest {
 fn model_with(calls: Vec<ToolCallRequest>) -> FakeModel {
     FakeModel::new(vec![
         ModelOutput {
+            usage: None,
             text: None,
             tool_calls: calls,
         },
         ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         },

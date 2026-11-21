@@ -41,6 +41,7 @@ fn final_model_result_completes_the_run() {
     let event = AcceptedEvent {
         seq: 2,
         kind: EventKind::ModelResult(ModelOutput {
+            usage: None,
             text: Some("done".to_owned()),
             tool_calls: Vec::new(),
         }),

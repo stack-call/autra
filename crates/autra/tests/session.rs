@@ -28,6 +28,7 @@ impl ModelProvider for RecordingModel {
 
 fn final_answer(text: &str) -> ModelOutput {
     ModelOutput {
+        usage: None,
         text: Some(text.to_owned()),
         tool_calls: Vec::new(),
     }
