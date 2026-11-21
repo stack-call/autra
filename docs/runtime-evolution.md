@@ -1,268 +1,326 @@
-# Runtime Evolution: Coordination, Lifecycle and Execution Middleware
+# Runtime Evolution: Responsibility, Lifecycle and Execution Middleware
 
 **Status: design proposal. The target structures and APIs below are not
-implemented.** This page records a design review of the current Runtime and the
-intended direction. It does not change the execution semantics described in
+implemented.** This page records a design review of extension placement and
+Runtime structure. It does not change the execution semantics in
 [`execution-model.md`](execution-model.md) or [`durability.md`](durability.md).
 
 ## Decision summary
 
-Keep three extension powers separate:
+Two dimensions are often conflated:
 
-| Power | Question | Timing | May change execution? |
-|---|---|---|---|
-| **Transform** | What request should be proposed? | before commit | yes, restricted draft |
-| **Lifecycle** | What happened? | after the fact | no |
-| **Middleware (Wrap)** | How is an operation executed? | around dispatch | yes, inside the host boundary |
+- **Mechanism**: Transform, Lifecycle, Wrap Middleware.
+- **Layer**: Harness, Runtime, Execution contracts.
 
-Trusted authorization (policy and approval) is not ordinary middleware. It is
-the gate between a proposal and a committed Effect. A single component owns
-`AgentState`; helpers may propose or persist, but they must not each mutate run
-state independently.
+They are not one-to-one. The placement of an extension is decided by two
+questions:
+
+1. **What does it change?** Prompt, context or visible tools belong to the
+   Harness. External execution, authorization and dispatch belong to the
+   Runtime. Permission decisions belong to trusted Runtime policy, not ordinary
+   middleware.
+2. **What fact does it observe?** Agent decisions can be observed at the
+   Harness behaviour boundary. Effect commit, authorization, dispatch, result
+   and Run completion can only be published by the Runtime.
+
+The resulting split is:
+
+| | Harness | Runtime |
+|---|---|---|
+| **Transform** | `ModelRequestTransform` over an uncommitted draft | must not rewrite committed Effects |
+| **Lifecycle** | optional behaviour-phase observation; must not claim execution facts | authoritative Run and Effect lifecycle |
+| **Wrap** | possible around the stepper's decision algorithm; not needed yet | around `Dispatcher` at the real execution boundary |
+
+Do not implement two identical Lifecycle + Middleware frameworks in both
+layers. Keep the Harness lightweight; let the Runtime own authoritative
+lifecycle and the execution wrap.
+
+The non-negotiable boundary is not directory placement. It is this:
+
+> **The ability to change an agent's decision and the ability to change an
+> already-authorized execution must not cross.**
 
 ---
 
 ## 1. Current snapshot
 
-The pieces already exist, but their boundaries are implicit:
-
 | Concern | Today | Location |
 |---|---|---|
-| Run loop, transitions, commit, dispatch, streaming, cancellation | one `LocalEngine::drive` | `crates/autra-runtime/src/engine/mod.rs` |
-| Request transformation | `ModelRequestTransform` over `ModelRequestDraft` | `crates/autra-harness/src/middleware.rs` |
+| Run loop, transition, commit, dispatch, streaming, cancellation | one `LocalEngine::drive` | `crates/autra-runtime/src/engine/mod.rs` |
+| Model request transformation | `ModelRequestTransform` over `ModelRequestDraft` | `crates/autra-harness/src/middleware.rs` |
 | Lifecycle observation | `ObserverHook` (read-only, four stages) | `crates/autra-execution/src/hooks.rs` |
 | Execution boundary | `Dispatcher` / `OutboxDispatcher` | `crates/autra-runtime/src/dispatcher.rs` |
 | Authorization | `PolicyChain` + `Approver` | `crates/autra-execution/src/policy.rs`, runtime approval module |
 
+`MiddlewareStepper::transition` applies `ModelRequestTransform` to
+`EffectIntent::CallModel` **inside the stepper**, before the transition is
+committed. It is a pre-commit transform, not an execution wrap.
+
 Known timing gap: `ObserverHook::on_effect_accepted` is emitted **before**
-`commit_transition` (`engine/mod.rs` emits it while building EffectRecords, and
-the journal commit happens later). It is therefore closer to
-`on_effect_proposed` than to a committed fact. The target model below splits
-these events and moves the committed notification after a successful commit.
+`commit_transition` (`engine/mod.rs` emits it while building EffectRecords; the
+commit happens later). It is closer to `on_effect_proposed` than to a committed
+fact. The target model below splits these events.
 
 ---
 
-## 2. `drive()` is doing too much
+## 2. Two dimensions, three mechanism families
 
-`drive()` currently owns:
+### 2.1 Mechanism definitions
 
-```text
-Event loop
-Transition
-Effect recording
-Journal commit
-Tool batches
-Model dispatch
-Streaming
-Cancellation
-Run completion
-```
+| Mechanism | Question | Timing | May change execution? |
+|---|---|---|---|
+| **Transform** | What should be proposed? | before commit | yes, on a restricted draft |
+| **Lifecycle** | What happened? | after the fact | no |
+| **Wrap Middleware** | How is this operation executed? | around dispatch | yes, inside the host boundary |
 
-This is not automatically wrong: one Run needs one clear control center. The
-problem is that every new feature edits the same function, and the ordering
-rules between commit, authorization and dispatch become implicit.
+Trusted authorization (policy and approval) is a fourth thing, and not a
+replaceable middleware: it is the gate between a proposal and an authorized
+Effect.
 
-### Proposed internal decomposition
+### 2.2 Placement matrix
 
-```text
-RunCoordinator
-    ├── TransitionCommitter
-    ├── EffectScheduler
-    ├── AuthorizationGate
-    └── ResultCollector
-```
-
-| Collaborator | Responsibility | Must not |
+| Mechanism | Harness | Runtime |
 |---|---|---|
-| `RunCoordinator` | event loop, cancellation, completion, ordering | mutate state owned by other collaborators |
-| `TransitionCommitter` | validate proposal, CAS, atomic commit | dispatch Effects |
-| `EffectScheduler` | build records, enqueue outbox, group batches | approve Effects |
-| `AuthorizationGate` | policy + approval, bind digest/actor/expiry | execute Effects |
-| `ResultCollector` | collect dispatch results, stream deltas, enqueue accepted events | commit transitions |
+| Transform | **yes** — prompt, context, visible tools, model request draft | no rewriting of committed Effect intents |
+| Lifecycle | optional **behaviour-phase** observation (`before_step`, `after_step`), if ever needed | **authoritative** Run/Effect/Attempt lifecycle |
+| Wrap | possible around the stepper's decision algorithm; no current use case | **yes** — around `Dispatcher` execution |
 
-**Invariant:** only the coordinator writes the authoritative `AgentState`.
-Collaborators receive narrow inputs and return proposals/results. This keeps
-one state owner while allowing mechanisms to be tested and replaced
-individually.
-
-The decomposition is a long-term direction, not a required first step.
+The Execution crate owns shared contracts (`LifecycleObserver`,
+`ExecutionMiddleware`); it does not own the runtime's events or the harness's
+call sites.
 
 ---
 
-## 3. Execution middleware belongs at the dispatch boundary
+## 3. Why the Harness needs extension
 
-Target pipeline:
+The Harness manages agent behaviour:
 
 ```text
-Runtime::drive()
-       │
-       ├── Lifecycle: RunStarted
-       │
-       ▼
-Stepper.transition()
-       │
-       ▼
+user input
+   ↓
+build model context
+   ↓
+decide CallModel
+   ↓
+receive ModelResult
+   ↓
+decide CallTool
+```
+
+Typical needs:
+
+- add a system-prompt fragment;
+- filter the tools visible to the model;
+- adjust context selection for the current task;
+- inspect a model decision before it becomes an Effect.
+
+These are **behaviour extensions**. They belong at the Harness decision
+boundary, not in the Runtime dispatch path.
+
+Current mechanism:
+
+```rust
+fn transform(
+    &self,
+    ctx: &ModelBuildContext,
+    draft: ModelRequestDraft,
+) -> Result<ModelRequestDraft, ExtensionError>;
+```
+
+`MiddlewareStepper` applies transforms after the inner stepper produces a
+`CallModel` intent and before the Runtime commits the Effect. The transform
+only sees `ModelRequestDraft`; it never receives `&mut AgentState`.
+
+The Harness could later gain `before_step` / `after_step` observation around
+decisions. That would be a **Harness behaviour lifecycle**, not the Runtime's
+`EffectCommitted` / `RunCompleted` lifecycle.
+
+---
+
+## 4. Why the Runtime needs extension
+
+The Runtime manages execution facts:
+
+```text
 TransitionProposal
-       │
-       ▼
-RequestTransform            (before commit)
-       │
-       ▼
-Policy / Approval           (trusted authorization)
-       │
-       ▼
-Commit state + Effect
-       │
-       ├── Lifecycle: EffectCommitted
-       │
-       ▼
-Execution Middleware        (wrap around dispatch)
-       │
-       ├── Middleware A.before
-       │     └── Middleware B.before
-       │           └── Dispatcher
-       │                 └── Model / Tool
-       │           └── Middleware B.after
-       └── Middleware A.after
-             │
-             ▼
+   ↓
+Effect commit
+   ↓
+Authorization
+   ↓
+Dispatcher
+   ↓
+Model / Tool
+   ↓
+Effect result
+```
+
+Typical needs:
+
+- measure real model/tool latency;
+- trace tool execution;
+- audit after a Run finishes;
+- count Effect attempts;
+- publish run status.
+
+The Harness cannot know whether an Effect was committed, approved, dispatched,
+recovered or resolved. Therefore:
+
+```text
+Harness
+    └── EffectProposed
+              │
+              ▼
+Runtime
+    ├── EffectCommitted
+    ├── ApprovalRequested
+    ├── EffectAuthorized
+    ├── EffectRejected
+    ├── EffectDispatched
+    ├── EffectResolved
+    └── RunCompleted
+```
+
+If a lifecycle event is about authoritative execution, the publisher must be
+the Runtime.
+
+---
+
+## 5. Two questions decide placement
+
+**First: what does it change?**
+
+| Change | Owner |
+|---|---|
+| Prompt, context, model-visible tools | Harness transform |
+| How an external call is scheduled or executed | Runtime wrap |
+| Whether an Effect is permitted | trusted Runtime policy/approval |
+
+**Second: what fact does it observe?**
+
+| Fact | Publisher |
+|---|---|
+| What decision the agent produced | Harness behaviour boundary |
+| Whether an Effect committed, was authorized, dispatched or resolved | Runtime |
+| Whether a Run completed, failed, cancelled or resumed | Runtime |
+
+This is stricter than “Lifecycle goes in the Runtime, Middleware goes in the
+Harness”. Both layers may have more than one mechanism; they must not have the
+same authority.
+
+---
+
+## 6. Authoritative lifecycle and event timing
+
+### 6.1 Effect lifecycle
+
+An Effect may be committed before it is authorized. Approval-required Effects
+are recorded as `AwaitingApproval` first, then authorized or rejected.
+
+Proposed order:
+
+```text
+Stepper.produces EffectIntent
+          │
+          ▼
+Runtime builds EffectRecords
+          │
+          ▼
+commit_transition()                 ← CAS + atomic commit
+          │
+          ├── Lifecycle: EffectCommitted
+          │
+          ▼
+Policy / Approval
+          │
+          ├── Lifecycle: EffectAuthorized / EffectRejected
+          │
+          ▼
+Execution Middleware chain
+          │
+          ▼
+Dispatcher → Model / Tool
+          │
+          ▼
 Record Effect result
-             │
-             ├── Lifecycle: EffectResolved
-             │
-             ▼
+          │
+          ├── Lifecycle: EffectResolved
+          │
+          ▼
 AcceptedEvent → drive()
 ```
 
-Ordering rules:
+`EffectCommitted` means the Effect record is part of the authoritative run
+state. With a journal it means the transaction succeeded; without a journal it
+means local acceptance. It does **not** mean the external call happened.
 
-- Registration order for `before`, reverse order for `after`.
-- `next` is callable **once**; a chain cannot repeat an operation implicitly.
-- Middleware may transform inputs/outputs only inside the execution boundary; it
-  must not replace the approved Effect arguments or its digest.
-- Retrying a non-idempotent tool is not a middleware decision. Retry and
-  reconciliation belong to the runtime/host policy and the Effect class rules.
-- A middleware error becomes the Effect outcome; it cannot leave the journal
-  unaware of an external call that already happened.
-- Streaming deltas pass through the chain, but must not be duplicated or
-  replayed after a partial stream.
-- Cancellation is observed at the same boundary; a middleware must not swallow
-  it.
-
-Transforms are different: they run **before** the Effect is committed and only
-see `ModelRequestDraft` (system, messages, tools). They cannot touch
-`AgentState`, and they cannot authorize anything.
-
-Policy and approval are also different: they are the trusted gate, not a
-replaceable wrap. Making them middleware would let an ordinary extension widen
-its own authority.
-
----
-
-## 4. Lifecycle and Middleware are separate
-
-They are not separated merely because their timing differs; they own different
-**control**.
-
-| Dimension | Lifecycle | Middleware (Wrap) |
-|---|---|---|
-| Purpose | observe execution | extend execution |
-| Changes the flow | no | yes, within authority |
-| Changes input/output | no | yes, inside the boundary |
-| Calls `next()` | no | yes |
-| Can block execution | no | yes, with explicit semantics |
-| Failure handling | usually does not affect the Run | may affect the current operation |
-| Typical use | logs, metrics, notifications | caching, tracing, result mapping, rate limiting |
-
-Why not implement lifecycle as middleware, even though it is technically
-possible:
-
-1. **Observation must not gain a veto.** If an observer holds `next()`, it can
-   silently prevent an operation.
-2. **Notifications need fixed semantic boundaries.** `EffectCommitted` must mean
-   the commit succeeded. A middleware `before` hook has no such meaning and
-   changes meaning with its position in the chain.
-3. **Lifecycle spans more than one operation.** A Run may start, call a model,
-   request approval, exit, resume in another process, call a tool and finish. A
-   middleware wrapping one dispatch cannot express that.
-
-Lifecycle is therefore published by the runtime at defined state changes;
-middleware wraps dispatch.
-
----
-
-## 5. Timing and delivery guarantees
-
-Lifecycle events fire **after the corresponding fact holds**:
+Never announce a fact before it holds:
 
 ```text
-Stepper produces EffectIntent
-          │
-          ▼
-Runtime.commit_transition()
-          │
-     commit succeeds
-          │
-          ▼
+commit_transition succeeds
+        ↓
 on_effect_committed()
 ```
 
-Never announce `EffectCommitted` before the journal commit. If the commit fails,
-observers must not have received a fact that did not happen.
+If the commit fails, observers must not have received a fact that did not
+happen. In-memory callbacks are best effort; anything that must be delivered
+reliably belongs in the Journal/Outbox, not in a lifecycle callback.
 
-Proposed event set:
+### 6.2 Proposed observer interface
 
 ```rust
 pub trait LifecycleObserver: Send + Sync {
     fn on_run_started(&self, event: &RunStarted) {}
     fn on_effect_proposed(&self, event: &EffectProposed) {}
     fn on_effect_committed(&self, event: &EffectCommitted) {}
+    fn on_effect_authorized(&self, event: &EffectAuthorized) {}
+    fn on_effect_rejected(&self, event: &EffectRejected) {}
     fn on_effect_resolved(&self, event: &EffectResolved) {}
     fn on_run_finished(&self, event: &RunFinished) {}
 }
 ```
 
-Semantics:
+Observers cannot mutate accepted execution and cannot block an operation.
 
-| Event | Fires when | Notes |
-|---|---|---|
-| `on_run_started` | run state is accepted | before the first model call |
-| `on_effect_proposed` | stepper proposed an EffectIntent | pure intent, not yet authorized or committed |
-| `on_effect_committed` | the transition committed | the durable fact exists |
-| `on_effect_resolved` | the Effect result is recorded | terminal or `OutcomeUnknown` |
-| `on_run_finished` | terminal state committed | completed, failed or cancelled |
+### 6.3 Current gap
 
-In-memory callbacks are **best effort**. If a notification must be reliable, it
-belongs in the Journal/Outbox, not in a lifecycle callback. Observers cannot
-mutate accepted execution.
+`ObserverHook` exposes `on_effect_accepted`, `on_model_request`,
+`on_run_started` and `on_run_finished`. `on_effect_accepted` currently fires
+before the commit. The migration must split it and fix the timing; the old
+method can remain as a compatibility shim during the transition.
 
 ---
 
-## 6. Target layout
+## 7. Execution middleware belongs at the dispatcher
 
-Suggested file layout; names are illustrative, not current:
+The Harness stepper is synchronous:
 
-```text
-autra-harness/
-└── middleware/
-    └── model_transform.rs
-
-autra-execution/
-├── lifecycle.rs
-│   └── LifecycleObserver
-└── middleware.rs
-    ├── ExecutionMiddleware
-    └── Next
-
-autra-runtime/
-├── lifecycle.rs
-│   └── LifecycleEmitter
-└── middleware/
-    ├── chain.rs
-    └── next.rs
+```rust
+fn transition(&self, state: &AgentState, event: &AcceptedEvent)
+    -> Result<TransitionProposal, StepError>;
 ```
 
-Sketch of the wrap trait:
+It computes a decision; it does not await a model or tool. Wrapping it wraps
+**decision computation**:
+
+```text
+before transition
+    Stepper.transition()
+after transition
+```
+
+The Runtime dispatch path is asynchronous and wraps **real execution**:
+
+```text
+before execution
+    Dispatcher.call_tool() / call_model()
+after execution
+```
+
+There is no current need for a generic stepper-wrap system. The natural place
+for a real `next()` chain is the `Dispatcher` boundary.
+
+Sketch:
 
 ```rust
 #[async_trait]
@@ -275,58 +333,197 @@ pub trait ExecutionMiddleware: Send + Sync {
 }
 ```
 
-`Next` should enforce:
+Rules for the chain:
 
-- callable once;
-- carries the already-authorized Effect identity and digest;
-- cannot be replaced by a fresh request with different arguments;
-- surfaces cancellation and timeout rather than hiding them.
+- `before` runs in registration order; `after` runs in reverse order.
+- `next` is callable **once**.
+- Middleware cannot replace the authorized Effect identity or argument digest.
+- Middleware must not retry non-idempotent tools. Retry and reconciliation are
+  Runtime/host policy decisions based on `EffectClass`.
+- Middleware errors become the Effect outcome; they cannot leave the journal
+  unaware of an external call that already happened.
+- Streaming deltas may pass through the chain, but must not be duplicated or
+  replayed after a partial stream.
+- Cancellation and timeout must surface, not be swallowed.
+- The chain must not bypass policy or approval; those happen before it.
 
 ---
 
-## 7. Migration plan
+## 8. Target architecture
+
+```text
+                    Agent::run()
+                         │
+                         ▼
+                  Runtime.drive()
+                         │
+                         ├── Lifecycle: RunStarted
+                         │
+                         ▼
+                Harness.ReActStepper
+                         │
+                         ▼
+                 ContextBuilder
+                         │
+                         ▼
+              ModelRequestTransform
+                         │
+                         ▼
+                TransitionProposal
+                         │
+                         ▼
+                Runtime Coordinator
+                         │
+                 Prepare / Commit
+                         │
+                         ├── Lifecycle: EffectCommitted
+                         │
+                         ▼
+                  Policy / Approval
+                         │
+                         ├── Lifecycle: EffectAuthorized / Rejected
+                         │
+                         ▼
+               Execution Middleware
+                         │
+                    Wrap / Next
+                         │
+                         ▼
+                    Dispatcher
+                         │
+                    Model / Tool
+                         │
+                         ▼
+                    EffectResult
+                         │
+                   Record Result
+                         │
+                         ├── Lifecycle: EffectResolved
+                         │
+                         ▼
+                    AcceptedEvent
+                         │
+                         └────→ drive()
+```
+
+Authorization persistence and outbox claim mechanics are omitted to keep the
+responsibility boundaries visible.
+
+Suggested code layout; illustrative, not current:
+
+```text
+autra-harness/
+├── react.rs
+├── context.rs
+└── transform/
+    └── model_request.rs
+
+autra-execution/
+├── lifecycle.rs
+│   └── LifecycleObserver trait
+└── middleware.rs
+    └── ExecutionMiddleware trait
+
+autra-runtime/
+├── engine/
+│   ├── mod.rs
+│   └── lifecycle.rs
+└── dispatcher/
+    ├── mod.rs
+    └── middleware.rs
+```
+
+`autra-execution` owns shared interfaces. Harness and Runtime provide their own
+call sites and implementations.
+
+---
+
+## 9. Coordinator decomposition
+
+`drive()` currently owns the event loop, transitions, effect recording, journal
+commit, tool batches, model dispatch, streaming, cancellation and completion.
+
+One control center per Run is desirable; the problem is that every new feature
+edits the same function and ordering rules become implicit.
+
+Long-term internal split:
+
+```text
+RunCoordinator
+    ├── TransitionCommitter
+    ├── EffectScheduler
+    ├── AuthorizationGate
+    └── ResultCollector
+```
+
+| Collaborator | Responsibility | Must not |
+|---|---|---|
+| `RunCoordinator` | event loop, cancellation, completion, ordering | mutate state owned by another collaborator |
+| `TransitionCommitter` | validate proposal, CAS, atomic commit | dispatch Effects |
+| `EffectScheduler` | build records, enqueue outbox, group batches | approve Effects |
+| `AuthorizationGate` | policy + approval, bind digest/actor/expiry | execute Effects |
+| `ResultCollector` | collect results, stream deltas, enqueue accepted events | commit transitions |
+
+**Invariant:** only the coordinator writes authoritative `AgentState`.
+Collaborators receive narrow inputs and return proposals/results. The public
+`Agent`/`RunOptions` surface stays unchanged.
+
+This decomposition is not a prerequisite for the lifecycle or middleware work.
+
+---
+
+## 10. Migration plan
 
 ### Phase 1 — Lifecycle correctness
 
 1. Split `on_effect_accepted` into `on_effect_proposed` and
    `on_effect_committed`.
 2. Emit `on_effect_committed` only after `commit_transition` succeeds.
-3. Emit `on_effect_resolved` after the result commit.
-4. Keep `ObserverHook` as a compatibility shim during the transition.
-5. Add tests proving no committed notification on commit failure.
+3. Add `on_effect_authorized` / `on_effect_rejected` at the authorization gate.
+4. Emit `on_effect_resolved` after the result commit.
+5. Keep `ObserverHook` as a compatibility shim during the transition.
+6. Test that a failed commit emits no committed event.
 
 ### Phase 2 — Execution middleware chain
 
-1. Introduce a middleware chain at the `Dispatcher` boundary with an identity
-   default.
+1. Add a `next()` chain at the `Dispatcher` boundary with an identity default.
 2. Add tracing/metrics middleware as the first consumer.
-3. Test ordering, once-only `next`, error mapping, digest immutability and
-   cancellation.
-4. Keep model-request transforms in the pre-commit phase.
+3. Test ordering, once-only `next`, error mapping, digest immutability,
+   cancellation and non-idempotent retry refusal.
+4. Keep model-request transforms in the pre-commit Harness phase.
 
 ### Phase 3 — Coordinator decomposition
 
-1. Extract `TransitionCommitter`, `AuthorizationGate`, `EffectScheduler` and
-   `ResultCollector` behind private interfaces.
-2. Keep the public `Agent`/`RunOptions` surface unchanged.
+1. Extract the four collaborators behind private interfaces.
+2. Keep the public API stable.
 3. Prove behavior with the existing runtime and durability suites.
-4. Only after that consider exposing the collaborators as extension points.
+
+### Phase 4 — Harness behaviour observation, only if needed
+
+If a real use case appears for `before_step` / `after_step`, add it inside the
+Harness. Do not fold it into the Runtime lifecycle and do not call execution
+facts from it.
 
 ---
 
-## 8. Non-goals
+## 11. Non-goals and anti-patterns
 
 - No plugin manager, dynamic loading or marketplace in this design.
-- No unified `Extension` trait that folds Observe, Intercept and Transform
+- No single `Extension` trait that folds Observe, Intercept and Transform
   together.
-- No lifecycle observer with the ability to block or mutate.
-- No middleware that bypasses policy, approval or the journal.
-- No automatic retry of non-idempotent tools.
+- No duplicate Lifecycle + Middleware framework in Harness and Runtime.
+- No lifecycle observer that can block or mutate.
+- No Harness event claiming `EffectCommitted`, `EffectDispatched` or
+  `RunCompleted`.
+- No Runtime transform that silently rewrites a committed Effect.
+- No middleware bypassing policy, approval or the journal.
+- No automatic retry of non-idempotent tools in middleware.
 - No second owner of `AgentState`.
+- No announcing a fact before the corresponding commit succeeds.
 
 ---
 
-## 9. Open questions
+## 12. Open questions
 
 - Where do provider-level retries end and execution middleware begin?
 - Can streaming deltas be transformed (for example redaction) without breaking
@@ -334,9 +531,11 @@ pub trait ExecutionMiddleware: Send + Sync {
 - How do child-run lifecycle events relate to the parent's stream?
 - What is the ordering between approval resolution, resume and middleware
   `before` hooks?
-- Should middleware be allowed to short-circuit with a synthetic result, and how
-  is that recorded?
-- Which tests need an error-injection middleware to prove the failure windows?
+- May middleware short-circuit with a synthetic result, and how is that
+  recorded?
+- Which tests need an error-injection middleware to prove failure windows?
+- Does a journal-less `LocalEphemeral` run treat local acceptance as
+  `EffectCommitted`, and should the event name say so?
 
 ---
 
