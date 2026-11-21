@@ -107,6 +107,10 @@ timeout, so the journal and session store can share one file without immediate
 `SQLITE_BUSY` failures. `PRAGMA user_version` records the schema version and a
 database written by a newer version is refused instead of being misread.
 
+Recovery also checks engine-owned state: a checkpoint whose `engine_id` is not
+the active stepper, whose `schema_revision` is newer, or whose payload cannot
+be decoded fails the resume. It is never replaced with an empty history.
+
 Outbox claims carry a 30-second lease. `Agent::drain_outbox` and
 `autractl outbox` reclaim due rows. Completing or releasing a row requires the
 current claim id, so a worker whose lease expired cannot remove an effect now

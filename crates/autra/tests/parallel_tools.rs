@@ -71,6 +71,7 @@ fn tool_model(calls: Vec<ToolCallRequest>) -> FakeModel {
 
 fn tool_contents(outcome: &RunOutcome) -> Vec<String> {
     react_history(outcome.state())
+        .unwrap()
         .into_iter()
         .filter_map(|item| match item {
             HistoryItem::Tool(tool) => Some(tool.content),
@@ -322,7 +323,7 @@ async fn a_tool_panic_becomes_an_unknown_outcome() {
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let history = react_history(outcome.state());
+    let history = react_history(outcome.state()).unwrap();
     let panicked: Vec<_> = history
         .iter()
         .filter_map(|item| match item {
@@ -366,7 +367,7 @@ async fn a_tool_panic_is_caught_in_sequential_mode() {
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let history = react_history(outcome.state());
+    let history = react_history(outcome.state()).unwrap();
     let tool = history
         .iter()
         .find_map(|item| match item {

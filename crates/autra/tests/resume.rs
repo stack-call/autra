@@ -188,7 +188,7 @@ async fn resume_does_not_retry_a_dispatched_tool() {
         .unwrap();
     assert_eq!(tool.status, EffectStatus::OutcomeUnknown);
     assert_eq!(tool.attempts[0].status, AttemptStatus::OutcomeUnknown);
-    let history = react_history(outcome.state());
+    let history = react_history(outcome.state()).unwrap();
     let tool_outcome = history
         .iter()
         .find_map(|item| match item {

@@ -360,7 +360,7 @@ impl LocalEngine {
         effect_timeout: Option<Duration>,
     ) -> Result<Vec<ToolOutcome>, RunError> {
         let run_id = &state.run_id;
-        let pending = stepper.pending_tool_calls(state);
+        let pending = stepper.pending_tool_calls(state)?;
         if pending.is_empty() {
             return Err(RunError::Protocol(
                 "run is awaiting tools but has no pending calls".to_owned(),

@@ -7,12 +7,12 @@ use autra_core::{
     ToolOutcome, ToolSpec, Transition,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::context::{ContextBuilder, ContextRequest, SimpleContextBuilder};
 
 const REACT_ENGINE_ID: &str = "react";
 const REACT_SCHEMA_REVISION: u32 = 1;
+const UNINITIALIZED_ENGINE_ID: &str = "none";
 
 /// State owned by the ReAct engine and stored opaquely in `AgentState`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -23,26 +23,45 @@ struct ReactState {
     pending_tool_calls: Vec<ToolCallRequest>,
 }
 
-fn react_state(state: &AgentState) -> ReactState {
-    if state.engine_state.engine_id != REACT_ENGINE_ID {
-        return ReactState::default();
+fn try_react_state(state: &AgentState) -> Result<ReactState, StepError> {
+    let engine = &state.engine_state;
+    if engine.engine_id == UNINITIALIZED_ENGINE_ID {
+        return Ok(ReactState::default());
     }
-    serde_json::from_value(state.engine_state.data.clone()).unwrap_or_default()
+    if engine.engine_id != REACT_ENGINE_ID {
+        return Err(StepError::new(format!(
+            "engine state belongs to `{}`, not `{REACT_ENGINE_ID}`",
+            engine.engine_id
+        )));
+    }
+    match engine.schema_revision {
+        REACT_SCHEMA_REVISION => serde_json::from_value(engine.data.clone()).map_err(|error| {
+            StepError::new(format!(
+                "cannot decode react engine state revision {REACT_SCHEMA_REVISION}: {error}"
+            ))
+        }),
+        revision if revision > REACT_SCHEMA_REVISION => Err(StepError::new(format!(
+            "react engine state revision {revision} is newer than supported {REACT_SCHEMA_REVISION}"
+        ))),
+        revision => Err(StepError::new(format!(
+            "react engine state revision {revision} needs a migration that is not implemented"
+        ))),
+    }
 }
 
 fn store_react_state(next: &mut AgentState, react: ReactState) {
-    next.engine_state = EngineState::new(REACT_ENGINE_ID, REACT_SCHEMA_REVISION)
-        .with_data(serde_json::to_value(react).unwrap_or(Value::Null));
+    let data = serde_json::to_value(react).expect("react state must be serializable");
+    next.engine_state = EngineState::new(REACT_ENGINE_ID, REACT_SCHEMA_REVISION).with_data(data);
 }
 
 /// The conversation history of a ReAct run.
-pub fn react_history(state: &AgentState) -> Vec<HistoryItem> {
-    react_state(state).history
+pub fn react_history(state: &AgentState) -> Result<Vec<HistoryItem>, StepError> {
+    Ok(try_react_state(state)?.history)
 }
 
 /// Tool calls that ReAct has not yet received results for.
-pub fn react_pending_tool_calls(state: &AgentState) -> Vec<ToolCallRequest> {
-    react_state(state).pending_tool_calls
+pub fn react_pending_tool_calls(state: &AgentState) -> Result<Vec<ToolCallRequest>, StepError> {
+    Ok(try_react_state(state)?.pending_tool_calls)
 }
 
 /// Builds an EngineState for a ReAct checkpoint. Useful for resume fixtures.
@@ -54,7 +73,7 @@ pub fn react_engine_state(
         history,
         pending_tool_calls,
     })
-    .unwrap_or(Value::Null);
+    .expect("react state must be serializable");
     EngineState::new(REACT_ENGINE_ID, REACT_SCHEMA_REVISION).with_data(data)
 }
 
@@ -125,7 +144,7 @@ impl ReActStepper {
         output: &ModelOutput,
     ) -> Result<Transition, StepError> {
         Self::expect_phase(state, AgentPhase::AwaitingModel, "ModelResult")?;
-        let mut react = react_state(state);
+        let mut react = try_react_state(state)?;
         react.history.push(HistoryItem::Assistant {
             text: output.text.clone(),
             tool_calls: output.tool_calls.clone(),
@@ -188,7 +207,7 @@ impl ReActStepper {
         outcome: &ToolOutcome,
     ) -> Result<Transition, StepError> {
         Self::expect_phase(state, AgentPhase::AwaitingTool, "ToolResult")?;
-        let mut react = react_state(state);
+        let mut react = try_react_state(state)?;
         if !react
             .pending_tool_calls
             .iter()
@@ -230,8 +249,8 @@ impl ReActStepper {
 }
 
 impl AgentStepper for ReActStepper {
-    fn pending_tool_calls(&self, state: &AgentState) -> Vec<ToolCallRequest> {
-        react_state(state).pending_tool_calls
+    fn pending_tool_calls(&self, state: &AgentState) -> Result<Vec<ToolCallRequest>, StepError> {
+        react_pending_tool_calls(state)
     }
 
     fn initialize(&self, state: &mut AgentState, history: &[HistoryItem]) {
@@ -252,7 +271,7 @@ impl AgentStepper for ReActStepper {
         match &event.kind {
             EventKind::RunStarted { input } => {
                 Self::expect_phase(state, AgentPhase::Ready, "RunStarted")?;
-                let mut react = react_state(state);
+                let mut react = try_react_state(state)?;
                 react.history.push(HistoryItem::User(input.clone()));
                 let mut next = state.clone();
                 store_react_state(&mut next, react.clone());
@@ -277,7 +296,7 @@ impl AgentStepper for ReActStepper {
                 }
                 let mut next = state.clone();
                 next.budget.turns_used += 1;
-                let request = self.model_request(&react_state(state))?;
+                let request = self.model_request(&try_react_state(state)?)?;
                 Ok(Transition {
                     next,
                     intents: vec![EffectIntent::CallModel(request)],

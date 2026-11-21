@@ -25,9 +25,10 @@ pub trait AgentStepper: Send + Sync {
     fn initialize(&self, _state: &mut AgentState, _history: &[HistoryItem]) {}
 
     /// Tool calls the engine has accepted but not yet seen results for. A
-    /// non-ReAct engine may return an empty list.
-    fn pending_tool_calls(&self, _state: &AgentState) -> Vec<ToolCallRequest> {
-        Vec::new()
+    /// non-ReAct engine may return an empty list. Hosts must treat an error as
+    /// a corrupt or unsupported engine state rather than an empty list.
+    fn pending_tool_calls(&self, _state: &AgentState) -> Result<Vec<ToolCallRequest>, StepError> {
+        Ok(Vec::new())
     }
 }
 

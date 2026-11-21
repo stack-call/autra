@@ -1,6 +1,6 @@
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, BudgetSnapshot, Disposition, EffectIntent,
-    EventKind, ModelOutput, RunId,
+    EngineState, EventKind, ModelOutput, RunId,
 };
 use autra_harness::{ReActStepper, react_history};
 
@@ -23,7 +23,7 @@ fn run_started_requests_a_model_call() {
     assert_eq!(transition.next.phase, AgentPhase::AwaitingModel);
     assert_eq!(transition.next.budget.turns_used, 1);
     assert_eq!(transition.disposition, Disposition::Continue);
-    assert_eq!(react_history(&transition.next).len(), 1);
+    assert_eq!(react_history(&transition.next).unwrap().len(), 1);
     match &transition.intents[0] {
         EffectIntent::CallModel(spec) => {
             assert_eq!(spec.system.as_deref(), Some("be brief"));
@@ -51,7 +51,45 @@ fn final_model_result_completes_the_run() {
 
     assert_eq!(transition.next.phase, AgentPhase::Completed);
     assert_eq!(transition.next.final_answer.as_deref(), Some("done"));
-    assert_eq!(react_history(&transition.next).len(), 2);
+    assert_eq!(react_history(&transition.next).unwrap().len(), 2);
     assert!(transition.intents.is_empty());
     assert_eq!(transition.disposition, Disposition::Finished);
+}
+
+#[test]
+fn an_uninitialized_state_reads_as_empty_history() {
+    let state = AgentState::new(RunId::new("fresh"), BudgetSnapshot::new(4, 4));
+
+    assert!(react_history(&state).unwrap().is_empty());
+}
+
+#[test]
+fn corrupt_react_state_is_rejected() {
+    let mut state = AgentState::new(RunId::new("corrupt"), BudgetSnapshot::new(4, 4));
+    state.engine_state =
+        EngineState::new("react", 1).with_data(serde_json::json!({ "history": 3 }));
+
+    let error = react_history(&state).unwrap_err();
+
+    assert!(error.to_string().contains("cannot decode"));
+}
+
+#[test]
+fn a_newer_react_schema_is_rejected() {
+    let mut state = AgentState::new(RunId::new("future"), BudgetSnapshot::new(4, 4));
+    state.engine_state = EngineState::new("react", 2).with_data(serde_json::json!({}));
+
+    let error = react_history(&state).unwrap_err();
+
+    assert!(error.to_string().contains("newer"));
+}
+
+#[test]
+fn a_foreign_engine_state_is_rejected() {
+    let mut state = AgentState::new(RunId::new("foreign"), BudgetSnapshot::new(4, 4));
+    state.engine_state = EngineState::new("other", 1).with_data(serde_json::json!({}));
+
+    let error = react_history(&state).unwrap_err();
+
+    assert!(error.to_string().contains("belongs to"));
 }

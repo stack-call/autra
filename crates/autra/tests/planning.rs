@@ -64,7 +64,7 @@ async fn update_plan_populates_the_agent_plan() {
     assert_eq!(plan[0].status, PlanStatus::Completed);
     assert_eq!(plan[1].title, "edit");
     assert_eq!(plan[1].status, PlanStatus::InProgress);
-    let history = react_history(outcome.state());
+    let history = react_history(outcome.state()).unwrap();
     let tool = history
         .iter()
         .find_map(|item| match item {

@@ -105,7 +105,10 @@ impl AgentStepper for MiddlewareStepper {
         self.inner.initialize(state, history);
     }
 
-    fn pending_tool_calls(&self, state: &AgentState) -> Vec<ToolCallRequest> {
+    fn pending_tool_calls(
+        &self,
+        state: &AgentState,
+    ) -> Result<Vec<ToolCallRequest>, autra_core::StepError> {
         self.inner.pending_tool_calls(state)
     }
 

@@ -62,7 +62,7 @@ async fn agent_can_load_a_named_skill() {
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let history = react_history(outcome.state());
+    let history = react_history(outcome.state()).unwrap();
     let tool = history
         .iter()
         .find_map(|item| match item {

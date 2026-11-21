@@ -61,7 +61,7 @@ fn model_tool_calls_become_tool_effects_and_are_joined() {
         .unwrap();
     let state = transition.next;
     assert_eq!(state.phase, AgentPhase::AwaitingTool);
-    assert_eq!(react_pending_tool_calls(&state).len(), 2);
+    assert_eq!(react_pending_tool_calls(&state).unwrap().len(), 2);
     assert_eq!(state.budget.tool_calls_used, 2);
     assert_eq!(transition.intents.len(), 2);
     assert!(matches!(transition.intents[0], EffectIntent::CallTool(_)));
@@ -77,7 +77,7 @@ fn model_tool_calls_become_tool_effects_and_are_joined() {
         .unwrap();
     let state = transition.next;
     assert_eq!(state.phase, AgentPhase::AwaitingTool);
-    assert_eq!(react_pending_tool_calls(&state).len(), 1);
+    assert_eq!(react_pending_tool_calls(&state).unwrap().len(), 1);
     assert!(transition.intents.is_empty());
 
     let transition = stepper

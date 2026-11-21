@@ -67,6 +67,7 @@ fn model_with(calls: Vec<ToolCallRequest>) -> FakeModel {
 
 fn tool_outcomes(outcome: &autra_runtime::RunOutcome) -> Vec<autra_core::ToolOutcome> {
     react_history(outcome.state())
+        .unwrap()
         .into_iter()
         .filter_map(|item| match item {
             HistoryItem::Tool(tool) => Some(tool),

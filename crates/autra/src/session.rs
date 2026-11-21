@@ -113,7 +113,7 @@ impl Session {
             .await;
         match result {
             Ok(outcome) => {
-                self.history = react_history(outcome.state());
+                self.history = react_history(outcome.state()).map_err(RunError::Step)?;
                 self.last_run_id = Some(outcome.state().run_id.clone());
                 if let Some(store) = &self.store {
                     let status = match outcome.status() {

@@ -52,6 +52,9 @@ adapters. Memory, MCP and full Planning/Workflow remain future work.
 - Subagents run as ChildRuns with inherited cancellation and a budget reserved
   from the parent; nesting is limited to one level. Policy intersection and
   parent event forwarding are not implemented.
+- ReAct engine state carries `engine_id` and `schema_revision`. Corrupt,
+  foreign or newer engine state is rejected on read instead of silently
+  resetting to empty history; resume fails rather than continuing blind.
 - The CLI's `run`/`chat` commands register the workspace tools and require
   approval for `write_file` and `run_command` unless `--yes` is passed.
 

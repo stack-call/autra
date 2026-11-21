@@ -85,7 +85,7 @@ async fn runtime_uses_contract_and_execute() {
         .unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let history = react_history(outcome.state());
+    let history = react_history(outcome.state()).unwrap();
     let tool = history
         .iter()
         .find_map(|item| match item {

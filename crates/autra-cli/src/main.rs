@@ -1060,8 +1060,11 @@ async fn demo_command() -> ExitCode {
 }
 
 fn demo_tools_succeeded(outcome: &RunOutcome) -> bool {
+    let Ok(history) = autra_harness::react_history(outcome.state()) else {
+        return false;
+    };
     let succeeded = |name: &str| {
-        autra_harness::react_history(outcome.state()).iter().any(
+        history.iter().any(
             |item| matches!(item, HistoryItem::Tool(tool) if tool.name == name && !tool.is_error),
         )
     };

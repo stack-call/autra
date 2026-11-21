@@ -47,7 +47,7 @@ impl LocalEngine {
     where
         F: FnMut(&RunEvent),
     {
-        for call in stepper.pending_tool_calls(state) {
+        for call in stepper.pending_tool_calls(state)? {
             let Some(record) = effects.iter_mut().find(|record| {
                 record.kind == EffectKind::ToolCall
                     && record.call_id.as_deref() == Some(call.call_id.as_str())
