@@ -335,6 +335,9 @@ impl LocalEngine {
                             .save_run(&state)
                             .map_err(|error| RunError::Journal(error.to_string()))?;
                     }
+                    if let Some(observer) = &self.observer {
+                        observer.on_run_finished(&run_id, &state.phase);
+                    }
                     hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
                     hub_guard.finish();
                     return Err(RunError::Step(error));
@@ -347,7 +350,7 @@ impl LocalEngine {
             let mut model_requests: Vec<(EffectId, ModelCallSpec)> = Vec::new();
             for intent in intents {
                 if let Some(observer) = &self.observer {
-                    observer.on_effect_accepted(&run_id, &intent);
+                    observer.on_effect_proposed(&run_id, &intent);
                 }
                 let effect_id = EffectId::fresh();
                 let digest = digest_intent(&intent);
@@ -395,6 +398,11 @@ impl LocalEngine {
                     )
                     .map_err(|error| RunError::Journal(error.to_string()))?;
             }
+            if let Some(observer) = &self.observer {
+                for effect in &effects[first_new..] {
+                    observer.on_effect_committed(&run_id, effect);
+                }
+            }
             hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
 
             if let EventKind::ModelResult(output) = &event.kind {
@@ -414,9 +422,6 @@ impl LocalEngine {
                         });
                     }
                     tracing::info!(phase = ?state.phase, "agent run finished");
-                    if let Some(observer) = &self.observer {
-                        observer.on_run_finished(&run_id, &state.phase);
-                    }
                     if let Some(journal) = &self.journal {
                         journal
                             .save_run(&state)
@@ -426,6 +431,9 @@ impl LocalEngine {
                                 .record(&run_id, effect)
                                 .map_err(|error| RunError::Journal(error.to_string()))?;
                         }
+                    }
+                    if let Some(observer) = &self.observer {
+                        observer.on_run_finished(&run_id, &state.phase);
                     }
                     hub_guard.finish();
                     return Ok(RunOutcome::new(state, effects));
@@ -439,6 +447,16 @@ impl LocalEngine {
                         message: message.clone(),
                     });
                     tracing::warn!(message = %message, "agent run failed");
+                    if let Some(journal) = &self.journal {
+                        journal
+                            .save_run(&state)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                        for effect in &effects {
+                            journal
+                                .record(&run_id, effect)
+                                .map_err(|error| RunError::Journal(error.to_string()))?;
+                        }
+                    }
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
                     }
@@ -465,6 +483,7 @@ impl LocalEngine {
                     approver: approver.as_ref(),
                     effects: &mut effects,
                     budget: &budget,
+                    observer: self.observer.as_ref(),
                 };
                 self.execute_tool_batch(
                     tool_calls,
@@ -586,27 +605,50 @@ impl LocalEngine {
                             effect_mut(&mut effects, &effect_id)
                                 .apply_model_success(output.text.clone());
                         }
+                        if let Some(observer) = &self.observer {
+                            if let Some(record) =
+                                effects.iter().find(|record| record.id == effect_id)
+                            {
+                                observer.on_effect_resolved(&run_id, record);
+                            }
+                        }
                         output
                     }
-                    Ok(ModelStep::Cancelled) => continue,
+                    Ok(ModelStep::Cancelled) => {
+                        if let Some(observer) = &self.observer {
+                            if let Some(record) =
+                                effects.iter().find(|record| record.id == effect_id)
+                            {
+                                observer.on_effect_resolved(&run_id, record);
+                            }
+                        }
+                        continue;
+                    }
                     Err(error) => {
                         let message = error.to_string();
                         if self.journal.is_none() {
                             effect_mut(&mut effects, &effect_id)
                                 .apply_model_failure(message.clone());
                         }
+                        if let Some(observer) = &self.observer {
+                            if let Some(record) =
+                                effects.iter().find(|record| record.id == effect_id)
+                            {
+                                observer.on_effect_resolved(&run_id, record);
+                            }
+                        }
                         state.phase = AgentPhase::Failed;
                         state.last_error = Some(message.clone());
                         on_event(&RunEvent::RunFailed {
                             message: message.clone(),
                         });
-                        if let Some(observer) = &self.observer {
-                            observer.on_run_finished(&run_id, &state.phase);
-                        }
                         if let Some(journal) = &self.journal {
                             journal
                                 .save_run(&state)
                                 .map_err(|save_error| RunError::Journal(save_error.to_string()))?;
+                        }
+                        if let Some(observer) = &self.observer {
+                            observer.on_run_finished(&run_id, &state.phase);
                         }
                         hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
                         return Err(error);
@@ -650,6 +692,9 @@ impl LocalEngine {
                     // tool error, not an approval prompt.
                     sink.effect_mut(effect_id)
                         .set_status(EffectStatus::Authorized);
+                    if self.journal.is_none() {
+                        sink.emit_authorized(effect_id);
+                    }
                     approved[index] = Some((effect_id.clone(), call.clone()));
                     continue;
                 }
@@ -665,6 +710,7 @@ impl LocalEngine {
                         .map_err(|error| RunError::Journal(error.to_string()))?;
                 }
                 sink.emit_tool_result(&outcome);
+                sink.emit_rejected(effect_id);
                 outcomes[index] = Some(outcome);
                 continue;
             }
@@ -696,12 +742,16 @@ impl LocalEngine {
                             .map_err(|error| RunError::Journal(error.to_string()))?;
                     }
                     sink.emit_tool_result(&outcome);
+                    sink.emit_rejected(effect_id);
                     outcomes[index] = Some(outcome);
                     continue;
                 }
             }
             sink.effect_mut(effect_id)
                 .set_status(EffectStatus::Authorized);
+            if self.journal.is_none() {
+                sink.emit_authorized(effect_id);
+            }
             approved[index] = Some((effect_id.clone(), call.clone()));
         }
 
@@ -732,7 +782,7 @@ impl LocalEngine {
                 )
                 .await?;
             cancelled = was_cancelled;
-            for (index, outcome) in dispatched {
+            for (index, _, outcome) in dispatched {
                 outcomes[index] = Some(outcome);
             }
         } else if limit == 1 || approved_calls.len() == 1 {
@@ -758,6 +808,7 @@ impl LocalEngine {
                     .call_tool_with_context(&context, &call, effect_timeout)
                     .await;
                 sink.record_tool_outcome(&effect_id, known_tool, &outcome);
+                sink.emit_resolved(&effect_id);
                 sink.emit_tool_result(&outcome);
                 outcomes[index] = Some(outcome);
             }
@@ -802,6 +853,7 @@ impl LocalEngine {
                         RunError::Protocol(format!("tool task failed: {error}"))
                     })?;
                     sink.record_tool_outcome(&effect_id, known_tool, &outcome);
+                    sink.emit_resolved(&effect_id);
                     sink.emit_tool_result(&outcome);
                     outcomes[index] = Some(outcome);
                 }
@@ -832,7 +884,7 @@ impl LocalEngine {
         effect_timeout: Option<Duration>,
         cancel: &CancelFlag,
         sink: &mut BatchSink<'_, F>,
-    ) -> Result<(bool, Vec<(usize, ToolOutcome)>), RunError>
+    ) -> Result<(bool, Vec<(usize, EffectId, ToolOutcome)>), RunError>
     where
         F: FnMut(&RunEvent),
     {
@@ -847,6 +899,7 @@ impl LocalEngine {
             journal
                 .enqueue_effect(&run_id, &record)
                 .map_err(|error| RunError::Journal(error.to_string()))?;
+            sink.emit_authorized(effect_id);
             index_by_effect.insert(effect_id.clone(), *index);
         }
         let mut cancelled = false;
@@ -857,7 +910,7 @@ impl LocalEngine {
                     sink.start_tool_outcome(outcome);
                     sink.emit_tool_result(outcome);
                     if let Some(index) = index_by_effect.get(&result.effect_id) {
-                        dispatched.push((*index, outcome.clone()));
+                        dispatched.push((*index, result.effect_id.clone(), outcome.clone()));
                     }
                 }
                 DispatchOutcome::Cancelled => cancelled = true,
@@ -875,7 +928,7 @@ impl LocalEngine {
                     sink.start_tool_outcome(&outcome);
                     sink.emit_tool_result(&outcome);
                     if let Some(index) = index_by_effect.get(&result.effect_id) {
-                        dispatched.push((*index, outcome));
+                        dispatched.push((*index, result.effect_id.clone(), outcome));
                     }
                 }
                 DispatchOutcome::Model(_) => {}
@@ -905,6 +958,9 @@ impl LocalEngine {
             .map_err(|error| RunError::Journal(error.to_string()))?;
         }
         sync_effects(journal.journal(), &run_id, sink.effects)?;
+        for (_, effect_id, _) in &dispatched {
+            sink.emit_resolved(effect_id);
+        }
         Ok((cancelled || cancel.is_cancelled(), dispatched))
     }
 }
@@ -994,6 +1050,7 @@ struct BatchSink<'a, F> {
     approver: Option<&'a Arc<dyn Approver>>,
     effects: &'a mut Vec<EffectRecord>,
     budget: &'a BudgetHandle,
+    observer: Option<&'a Arc<dyn ObserverHook>>,
 }
 
 impl<'a, F> BatchSink<'a, F>
@@ -1049,6 +1106,30 @@ where
     ) {
         self.effect_mut(effect_id)
             .apply_tool_outcome(outcome, known_tool);
+    }
+
+    fn emit_authorized(&self, effect_id: &EffectId) {
+        if let Some(observer) = self.observer {
+            if let Some(record) = self.effects.iter().find(|record| &record.id == effect_id) {
+                observer.on_effect_authorized(self.run_id, record);
+            }
+        }
+    }
+
+    fn emit_rejected(&self, effect_id: &EffectId) {
+        if let Some(observer) = self.observer {
+            if let Some(record) = self.effects.iter().find(|record| &record.id == effect_id) {
+                observer.on_effect_rejected(self.run_id, record);
+            }
+        }
+    }
+
+    fn emit_resolved(&self, effect_id: &EffectId) {
+        if let Some(observer) = self.observer {
+            if let Some(record) = self.effects.iter().find(|record| &record.id == effect_id) {
+                observer.on_effect_resolved(self.run_id, record);
+            }
+        }
     }
 }
 

@@ -37,7 +37,7 @@ pub(crate) async fn run_program(
 ) -> Result<ProcessOutput, ToolError> {
     let mut command = tokio::process::Command::new(program);
     command
-        .current_dir(root)
+        .current_dir(native_path(root))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -55,37 +55,54 @@ pub(crate) async fn run_program(
         .stderr
         .take()
         .ok_or_else(|| ToolError::new("cannot capture stderr"))?;
-    let stdout_task = tokio::spawn(read_capped(stdout, CAPTURE_MAX_BYTES));
-    let stderr_task = tokio::spawn(read_capped(stderr, CAPTURE_MAX_BYTES));
 
-    match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(Ok(status)) => {
-            let stdout = stdout_task.await.unwrap_or_default();
-            let stderr = stderr_task.await.unwrap_or_default();
-            Ok(ProcessOutput {
-                code: status.code(),
-                stdout: String::from_utf8_lossy(&stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&stderr).into_owned(),
-            })
-        }
+    // Read both pipes to EOF before reaping. On Windows, waiting first can
+    // close the pipe handles while buffered output is still unread.
+    let wait = async {
+        let (stdout, stderr) = tokio::join!(
+            read_capped(stdout, CAPTURE_MAX_BYTES),
+            read_capped(stderr, CAPTURE_MAX_BYTES),
+        );
+        let status = child.wait().await?;
+        Ok::<_, std::io::Error>((status, stdout, stderr))
+    };
+    match tokio::time::timeout(timeout, wait).await {
+        Ok(Ok((status, stdout, stderr))) => Ok(ProcessOutput {
+            code: status.code(),
+            stdout: String::from_utf8_lossy(&stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        }),
         Ok(Err(error)) => {
             kill_tree(&mut child).await;
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
             Err(ToolError::new(format!(
                 "`{program}` failed to run: {error}"
             )))
         }
         Err(_) => {
             kill_tree(&mut child).await;
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
             Err(ToolError::outcome_unknown(format!(
                 "`{program}` timed out after {}s; it may still have changed the workspace",
                 timeout.as_secs()
             )))
         }
     }
+}
+
+/// Git for Windows and some native tools misbehave with verbatim (`\\?\`)
+/// working directories. The canonical root stays for path confinement; the
+/// child process receives the equivalent native path.
+fn native_path(path: &Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+            return std::path::PathBuf::from(format!(r"\\{rest}"));
+        }
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            return std::path::PathBuf::from(rest);
+        }
+    }
+    path.to_path_buf()
 }
 
 /// Reads at most `cap` bytes, draining the pipe so the child never blocks.

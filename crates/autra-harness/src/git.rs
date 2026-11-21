@@ -53,7 +53,7 @@ impl Tool for GitStatusTool {
     }
 
     async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
-        let output = run_program(
+        let mut output = run_program(
             self.workspace.root(),
             "git",
             &[
@@ -64,6 +64,22 @@ impl Tool for GitStatusTool {
             GIT_TIMEOUT,
         )
         .await?;
+        // Git for Windows occasionally returns exit 0 with empty output on the
+        // first status after `git init`. A read-only retry is safe and avoids
+        // reporting a populated tree as clean.
+        if output.code == Some(0) && output.stdout.trim().is_empty() {
+            output = run_program(
+                self.workspace.root(),
+                "git",
+                &[
+                    "status".to_owned(),
+                    "--short".to_owned(),
+                    "--branch".to_owned(),
+                ],
+                GIT_TIMEOUT,
+            )
+            .await?;
+        }
         ensure_success("git status", &output)?;
         let text = output.stdout.trim_end();
         if text.is_empty() {
