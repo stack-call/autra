@@ -1,5 +1,8 @@
 /target
 /target-review
+/.autra.db
+/.autra.db-shm
+/.autra.db-wal
 **/*.rs.bk
 .DS_Store
 .env

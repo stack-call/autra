@@ -95,7 +95,9 @@ impl ModelProvider for OpenAiCompatibleModel {
             .json(&body)
             .send()
             .await
-            .map_err(|error| ModelError::new(format!("model request failed: {error}")))?;
+            .map_err(|error| {
+                ModelError::new(format!("model request failed: {}", describe(&error)))
+            })?;
         let status = response.status();
         let text = response
             .text()
@@ -130,10 +132,13 @@ impl ModelProvider for OpenAiCompatibleModel {
             .client
             .post(&url)
             .bearer_auth(&self.config.api_key)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
             .json(&body)
             .send()
             .await
-            .map_err(|error| ModelError::new(format!("model request failed: {error}")))?;
+            .map_err(|error| {
+                ModelError::new(format!("model request failed: {}", describe(&error)))
+            })?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
@@ -166,6 +171,19 @@ impl ModelProvider for OpenAiCompatibleModel {
         }
         Ok(mapping::finish_stream(accumulator))
     }
+}
+
+fn describe(error: &reqwest::Error) -> String {
+    use std::error::Error;
+
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
 }
 
 impl std::fmt::Debug for OpenAiConfig {

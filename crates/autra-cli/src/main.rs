@@ -15,8 +15,9 @@ use autra_harness::{
     ListFilesTool, LocalWorkspace, ModelOutput, ReadFileTool, RunCommandTool, SearchTextTool,
     ToolCallRequest, ToolRegistry, WriteFileTool,
 };
-use autra_openai::OpenAiCompatibleModel;
+use autra_openai::{DEFAULT_BASE_URL, OpenAiCompatibleModel, OpenAiConfig};
 
+mod dotenv;
 mod tui;
 
 #[tokio::main]
@@ -90,7 +91,7 @@ async fn run_command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let options = options_for_model(flags.model.as_deref());
+    let options = options_for_flags(&flags);
 
     match execute(agent, &prompt, options).await {
         Ok(outcome) => {
@@ -152,7 +153,7 @@ async fn chat_command(args: &[String]) -> ExitCode {
         }
         None => Session::new(agent),
     };
-    let options = options_for_model(flags.model.as_deref());
+    let options = options_for_flags(&flags);
     let stdin = std::io::stdin();
     let mut line = String::new();
     let mut printer = EventPrinter::default();
@@ -207,9 +208,16 @@ async fn resume_command(args: &[String]) -> ExitCode {
         eprintln!("resume requires --journal <path>");
         return ExitCode::FAILURE;
     }
-    if flags.model.is_none() && !flags.local {
+    let model_name = match effective_model(&flags) {
+        Ok(name) => name,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if model_name.is_none() && !flags.local {
         eprintln!(
-            "resume requires --model <name> or --local: the journal does not store the provider"
+            "resume requires --model <name>, OPENAI_MODEL, or --local: the journal does not store the provider"
         );
         return ExitCode::FAILURE;
     }
@@ -221,7 +229,7 @@ async fn resume_command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let options = options_for_model(flags.model.as_deref());
+    let options = options_for_flags(&flags);
     let mut printer = EventPrinter::default();
 
     match agent
@@ -254,9 +262,16 @@ async fn outbox_command(args: &[String]) -> ExitCode {
         eprintln!("outbox requires --journal <path>");
         return ExitCode::FAILURE;
     }
-    if flags.model.is_none() && !flags.local {
+    let model_name = match effective_model(&flags) {
+        Ok(name) => name,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if model_name.is_none() && !flags.local {
         eprintln!(
-            "outbox requires --model <name> or --local: model effects need the run's provider"
+            "outbox requires --model <name>, OPENAI_MODEL, or --local: model effects need the run's provider"
         );
         return ExitCode::FAILURE;
     }
@@ -332,10 +347,14 @@ fn tui_command(args: &[String]) -> ExitCode {
     };
     let config = tui::TuiConfig {
         workspace: flags.workspace.clone().unwrap_or_else(|| ".".to_owned()),
-        model: flags
-            .model
-            .clone()
-            .unwrap_or_else(|| "local echo".to_owned()),
+        model: match effective_model(&flags) {
+            Ok(Some(name)) => name,
+            Ok(None) => "local echo".to_owned(),
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        },
         read_only: flags.read_only,
         auto_approve: flags.auto_approve,
         session,
@@ -469,7 +488,13 @@ async fn reconcile_command(args: &[String]) -> ExitCode {
         }
     };
     let run_id = RunId::new(run_id.clone());
-    let retry_models = flags.model.is_some();
+    let retry_models = match effective_model(&flags) {
+        Ok(name) => name.is_some(),
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
     match agent.reconcile_with(&run_id, retry_models).await {
         Ok(report) => {
             println!(
@@ -708,6 +733,48 @@ fn build_agent(flags: &Flags) -> Result<Agent, String> {
     build_agent_with_approver(flags, None)
 }
 
+/// Resolve the provider settings without changing the process environment.
+///
+/// Precedence: process environment, then `.env`, then the OpenAI default.
+fn model_from_env(name: &str) -> Result<OpenAiCompatibleModel, String> {
+    let dotenv = dotenv::DotEnv::load()?;
+    let api_key = dotenv::pick(
+        std::env::var("OPENAI_API_KEY").ok(),
+        dotenv.get("OPENAI_API_KEY"),
+    )
+    .filter(|value| !value.is_empty())
+    .ok_or_else(|| {
+        "OPENAI_API_KEY is not set (checked the process environment, .env and ~/.autra/.env)"
+            .to_owned()
+    })?;
+    let base_url = dotenv::pick(
+        std::env::var("OPENAI_BASE_URL").ok(),
+        dotenv.get("OPENAI_BASE_URL"),
+    )
+    .filter(|value| !value.is_empty())
+    .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned());
+
+    OpenAiCompatibleModel::new(OpenAiConfig::new(base_url, api_key, name))
+        .map_err(|error| error.to_string())
+}
+
+/// The model to use for this process: `--model`, then `OPENAI_MODEL` from the
+/// environment or `.env`. `--local` always forces the echo model.
+fn effective_model(flags: &Flags) -> Result<Option<String>, String> {
+    if flags.local {
+        return Ok(None);
+    }
+    if let Some(name) = &flags.model {
+        return Ok(Some(name.clone()));
+    }
+    let dotenv = dotenv::DotEnv::load()?;
+    Ok(dotenv::pick(
+        std::env::var("OPENAI_MODEL").ok(),
+        dotenv.get("OPENAI_MODEL"),
+    )
+    .filter(|value| !value.is_empty()))
+}
+
 fn build_agent_with_approver(
     flags: &Flags,
     approver: Option<Arc<dyn Approver>>,
@@ -737,10 +804,9 @@ fn build_agent_with_approver(
         .max_turns(24)
         .max_tool_calls(64)
         .max_parallel_tool_calls(4);
-    let builder = match flags.model.as_deref() {
-        Some(name) => {
-            builder.model(OpenAiCompatibleModel::from_env(name).map_err(|error| error.to_string())?)
-        }
+    let model_name = effective_model(flags)?;
+    let builder = match model_name.as_deref() {
+        Some(name) => builder.model(model_from_env(name)?),
         None => builder.model(EchoModel),
     };
     let builder = match approver {
@@ -765,8 +831,8 @@ fn build_agent_with_approver(
     builder.build().map_err(|error| error.to_string())
 }
 
-fn options_for_model(model_name: Option<&str>) -> RunOptions {
-    if model_name.is_some() {
+fn options_for_flags(flags: &Flags) -> RunOptions {
+    if effective_model(flags).is_ok_and(|model_name| model_name.is_some()) {
         RunOptions {
             effect_timeout: Some(std::time::Duration::from_secs(120)),
             ..RunOptions::default()
@@ -1028,14 +1094,24 @@ USAGE:
 
 OPTIONS:
   --workspace <dir>  workspace root (default ".")
-  --model <name>     OpenAI-compatible model; omit for the local echo model
+  --model <name>     OpenAI-compatible model; defaults to OPENAI_MODEL, then the local echo model
   --local            use the built-in local echo model explicitly
   --journal <path>   persist runs, events, effects, approvals and sessions to SQLite
   --session <id>     named chat or TUI session (requires --journal)
   --policy <path>    JSON tool/command policy
   --actor <name>     operator identity recorded on approvals
   --yes              auto-approve gated tools
-  --read-only        only expose read-only tools"#
+  --read-only        only expose read-only tools
+
+ENVIRONMENT:
+  OPENAI_API_KEY     required when a real model is used
+  OPENAI_BASE_URL    optional; default https://api.openai.com/v1
+  OPENAI_MODEL       default model when --model is omitted; --local still wins
+  AUTRA_ENV_FILE     explicit .env path; otherwise ./.env, then ~/.autra/.env
+
+The .env file may define OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL.
+Values from the process environment take precedence, and the file is never
+written."#
 }
 
 fn init_tracing() {

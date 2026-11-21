@@ -78,14 +78,48 @@ fn demo_fails_without_a_readme() {
 
 #[test]
 fn run_with_model_without_api_key_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_file = dir.path().join(".env");
+    std::fs::write(&env_file, "").unwrap();
     let output = autractl()
         .args(["run", "--model", "test-model", "hello"])
         .env_remove("OPENAI_API_KEY")
+        .env_remove("OPENAI_BASE_URL")
+        .env("AUTRA_ENV_FILE", &env_file)
         .output()
         .unwrap();
 
     assert!(!output.status.success());
     assert!(stderr(&output).contains("OPENAI_API_KEY"));
+}
+
+#[test]
+fn env_file_model_is_used_unless_local() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_file = dir.path().join(".env");
+    std::fs::write(&env_file, "OPENAI_MODEL=test-model\n").unwrap();
+
+    let output = autractl()
+        .args(["run", "hello"])
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("OPENAI_BASE_URL")
+        .env("AUTRA_ENV_FILE", &env_file)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("OPENAI_API_KEY"));
+
+    let local = autractl()
+        .args(["run", "--local", "hello"])
+        .env_remove("OPENAI_API_KEY")
+        .env("AUTRA_ENV_FILE", &env_file)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(local.status.success(), "stderr: {}", stderr(&local));
 }
 
 #[test]

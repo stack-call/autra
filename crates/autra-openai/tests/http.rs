@@ -82,6 +82,7 @@ async fn streams_content_deltas() {
     );
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
+        .and(header("accept", "text/event-stream"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
@@ -115,6 +116,7 @@ async fn streams_tool_call_fragments() {
     );
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
+        .and(header("accept", "text/event-stream"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")

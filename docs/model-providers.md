@@ -28,11 +28,27 @@ or provider-specific JSON.
 ```text
 OPENAI_API_KEY   required
 OPENAI_BASE_URL  optional; default https://api.openai.com/v1
+OPENAI_MODEL     optional; default model when --model is omitted
 ```
 
 ```bash
 OPENAI_API_KEY=... cargo run -p autra-cli -- run --model gpt-4o-mini "Explain this crate"
 ```
+
+The CLI also reads these values from a `.env` file so they do not have to be
+exported in every shell:
+
+```text
+./.env            checked first
+~/.autra/.env     fallback
+AUTRA_ENV_FILE    explicit path; must be readable
+```
+
+The file uses plain `KEY=VALUE` lines (comments and quoted values are
+accepted). Process environment values win over the file. When the file sets
+`OPENAI_MODEL`, `--model` becomes optional; `--local` still forces the echo
+model. The provider crate itself never reads files; the CLI resolves both
+sources and passes an explicit `OpenAiConfig` (ADR-0013).
 
 The same adapter targets DeepSeek, Moonshot, vLLM, Ollama, LM Studio and other
 OpenAI-compatible endpoints through `OPENAI_BASE_URL`.
