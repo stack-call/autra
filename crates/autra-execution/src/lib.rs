@@ -26,6 +26,7 @@ pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities};
 pub use journal::{
     DEFAULT_CLAIM_LEASE, DurableTransitionStore, EffectJournal, JournalError, OutboxEntry,
+    UNCLAIMED_CLAIM,
 };
 pub use model::{
     MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider, emit_complete_text,

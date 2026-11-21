@@ -108,12 +108,12 @@ impl EffectJournal for SpyJournal {
         Ok(rows)
     }
 
-    fn complete_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {
-        self.inner.complete_outbox(effect_id)
+    fn complete_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
+        self.inner.complete_outbox(effect_id, claim_id)
     }
 
-    fn release_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {
-        self.inner.release_outbox(effect_id)
+    fn release_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
+        self.inner.release_outbox(effect_id, claim_id)
     }
 }
 

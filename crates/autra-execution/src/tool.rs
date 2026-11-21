@@ -57,6 +57,8 @@ impl ToolOutput {
 pub struct ChildExecutionContext {
     pub journal: Option<Arc<dyn DurableTransitionStore>>,
     pub approver: Option<Arc<dyn Approver>>,
+    /// How many subagent levels already exist above the Run using this context.
+    pub depth: u32,
 }
 
 #[derive(Clone)]

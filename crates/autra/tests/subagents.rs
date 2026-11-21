@@ -132,7 +132,7 @@ fn schema_lists_registered_subagents() {
 }
 
 #[tokio::test]
-async fn spawn_subagent_does_not_charge_child_tools_to_parent() {
+async fn spawn_subagent_reserves_child_tools_from_the_parent() {
     let parent = Agent::builder("parent")
         .model(parent_model(vec![spawn_call(
             "call-1",
@@ -146,8 +146,10 @@ async fn spawn_subagent_does_not_charge_child_tools_to_parent() {
     let outcome = parent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    assert_eq!(outcome.state().budget.tool_calls_used, 1);
-    assert_eq!(outcome.state().budget.turns_used, 2);
+    // The parent spends one call on spawn_subagent and reserves four more for
+    // the child budget, so a subagent cannot amplify the parent allowance.
+    assert_eq!(outcome.state().budget.tool_calls_used, 5);
+    assert_eq!(outcome.state().budget.turns_used, 3);
 }
 
 #[tokio::test]

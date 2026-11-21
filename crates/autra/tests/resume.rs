@@ -9,7 +9,16 @@ use autra_core::{
     EffectKind, EffectRecord, EffectStatus, HistoryItem, ModelCallSpec, ModelOutput, RunId,
     ToolCallRequest, ToolCallSpec,
 };
-use autra_harness::{EchoModel, EchoTool, FakeModel, Tool, ToolError};
+use autra_harness::{EchoModel, EchoTool, FakeModel, ModelError, ModelProvider, Tool, ToolError};
+
+struct FailingModel;
+
+#[async_trait]
+impl ModelProvider for FailingModel {
+    async fn complete(&self, _request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
+        Err(ModelError::new("boom"))
+    }
+}
 
 struct SensitiveTool {
     calls: Arc<AtomicUsize>,
@@ -308,4 +317,34 @@ async fn resume_retries_a_read_only_dispatched_tool() {
     assert_eq!(tool.attempts.len(), 2);
     assert_eq!(tool.attempts[0].status, AttemptStatus::OutcomeUnknown);
     assert_eq!(tool.attempts[1].status, AttemptStatus::Succeeded);
+}
+
+#[tokio::test]
+async fn a_failed_model_is_persisted_and_not_retried() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("run-failed-model");
+    let state = base_state(&run_id, AgentPhase::AwaitingModel);
+    journal.save_run(&state).unwrap();
+    let effect = model_effect(EffectStatus::Authorized);
+    journal.record(&run_id, &effect).unwrap();
+    journal.enqueue_effect(&run_id, &effect).unwrap();
+
+    let agent = Agent::builder("resume")
+        .model(FailingModel)
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+
+    let first = agent.resume(&run_id).await.unwrap_err();
+    assert!(first.to_string().contains("boom"));
+
+    let stored = journal.load_run(&run_id).unwrap().unwrap();
+    assert_eq!(
+        stored.phase,
+        AgentPhase::Failed,
+        "the failure must be committed so resume does not loop"
+    );
+
+    let second = agent.resume(&run_id).await.unwrap_err();
+    assert!(second.to_string().contains("boom"));
 }

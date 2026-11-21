@@ -78,6 +78,75 @@ fn history_to_message(item: &HistoryItem) -> Value {
     }
 }
 
+/// Incremental SSE decoder.
+///
+/// Bytes are buffered until a complete line is available, so a multi-byte
+/// UTF-8 character split across network chunks is never corrupted. An event is
+/// dispatched on a blank line or at end of stream.
+#[derive(Default)]
+pub(crate) struct SseDecoder {
+    buffer: Vec<u8>,
+    data: String,
+}
+
+impl SseDecoder {
+    pub(crate) fn push(
+        &mut self,
+        chunk: &[u8],
+        events: &mut Vec<String>,
+    ) -> Result<(), ModelError> {
+        self.buffer.extend_from_slice(chunk);
+        while let Some(index) = self.buffer.iter().position(|byte| *byte == b'\n') {
+            let line: Vec<u8> = self.buffer.drain(..=index).collect();
+            let line = std::str::from_utf8(&line[..line.len() - 1]).map_err(|error| {
+                ModelError::new(format!("model stream is not valid UTF-8: {error}"))
+            })?;
+            self.line(line.trim_end_matches('\r'), events);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(&mut self, events: &mut Vec<String>) -> Result<(), ModelError> {
+        if !self.buffer.is_empty() {
+            let line = std::mem::take(&mut self.buffer);
+            let line = std::str::from_utf8(&line).map_err(|error| {
+                ModelError::new(format!("model stream is not valid UTF-8: {error}"))
+            })?;
+            self.line(line.trim_end_matches('\r'), events);
+        }
+        self.dispatch(events);
+        Ok(())
+    }
+
+    fn line(&mut self, line: &str, events: &mut Vec<String>) {
+        if line.is_empty() {
+            self.dispatch(events);
+        } else if let Some(rest) = line.strip_prefix("data:") {
+            let rest = rest.strip_prefix(' ').unwrap_or(rest);
+            if !self.data.is_empty() {
+                self.data.push('\n');
+            }
+            self.data.push_str(rest);
+        }
+    }
+
+    fn dispatch(&mut self, events: &mut Vec<String>) {
+        if !self.data.is_empty() {
+            events.push(std::mem::take(&mut self.data));
+        }
+    }
+}
+
+pub(crate) fn parse_response_body(text: &str) -> Result<ModelOutput, ModelError> {
+    let value: Value = serde_json::from_str(text).map_err(|error| {
+        ModelError::new(format!(
+            "invalid model response JSON: {error}: {}",
+            truncate(text, 500)
+        ))
+    })?;
+    parse_response(&value)
+}
+
 pub(crate) fn parse_response(value: &Value) -> Result<ModelOutput, ModelError> {
     let message = value
         .pointer("/choices/0/message")
@@ -355,4 +424,54 @@ pub(crate) fn finish_stream(accumulator: StreamAccumulator) -> ModelOutput {
         })
         .collect();
     ModelOutput { text, tool_calls }
+}
+
+#[cfg(test)]
+mod sse_tests {
+    use super::SseDecoder;
+
+    #[test]
+    fn decodes_a_multibyte_character_split_across_chunks() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n";
+        let split = body.find('你').expect("character") + 1;
+        let bytes = body.as_bytes();
+        let mut decoder = SseDecoder::default();
+        let mut events = Vec::new();
+
+        decoder.push(&bytes[..split], &mut events).unwrap();
+        assert!(events.is_empty());
+
+        decoder.push(&bytes[split..], &mut events).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("你好"));
+    }
+
+    #[test]
+    fn flushes_an_event_without_a_trailing_blank_line() {
+        let mut decoder = SseDecoder::default();
+        let mut events = Vec::new();
+
+        decoder
+            .push(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"tail\"}}]}",
+                &mut events,
+            )
+            .unwrap();
+        assert!(events.is_empty());
+
+        decoder.finish(&mut events).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0].contains("tail"));
+    }
+
+    #[test]
+    fn joins_multiple_data_lines() {
+        let mut decoder = SseDecoder::default();
+        let mut events = Vec::new();
+
+        decoder
+            .push(b"data: first\ndata: second\n\n", &mut events)
+            .unwrap();
+        assert_eq!(events, ["first\nsecond"]);
+    }
 }

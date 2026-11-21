@@ -34,12 +34,12 @@ fn outbox_survives_reopen_and_supports_claims() {
     assert_eq!(claimed[0].effect_id, effect.id);
     assert_eq!(claimed[0].attempts, 1);
 
-    journal.release_outbox(&effect.id).unwrap();
+    journal.release_outbox(&effect.id, "claim-1").unwrap();
     assert_eq!(
         journal.claim_due_effects(10, "claim-2").unwrap()[0].attempts,
         2
     );
-    journal.complete_outbox(&effect.id).unwrap();
+    journal.complete_outbox(&effect.id, "claim-2").unwrap();
     assert!(journal.claim_due_effects(10, "claim-3").unwrap().is_empty());
 }
 
@@ -70,4 +70,24 @@ fn an_expired_lease_can_be_reclaimed() {
         .unwrap();
     assert_eq!(reclaimed.len(), 1);
     assert_eq!(reclaimed[0].attempts, 2);
+
+    // The previous owner must not complete a row now owned by claim-3.
+    journal.complete_outbox(&effect.id, "claim-1").unwrap();
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM effect_outbox WHERE effect_id = ?1",
+            rusqlite::params![effect.id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+
+    journal.complete_outbox(&effect.id, "claim-3").unwrap();
+    assert!(
+        journal
+            .claim_due_effects_with_lease(10, "claim-4", Duration::from_secs(1))
+            .unwrap()
+            .is_empty()
+    );
 }

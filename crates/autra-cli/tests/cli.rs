@@ -123,6 +123,27 @@ fn env_file_model_is_used_unless_local() {
 }
 
 #[test]
+fn a_misspelled_policy_key_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let policy = dir.path().join("policy.json");
+    std::fs::write(&policy, r#"{"deny_command":["rm"]}"#).unwrap();
+
+    let output = autractl()
+        .args([
+            "run",
+            "--local",
+            "--policy",
+            policy.to_str().unwrap(),
+            "hello",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("unknown policy key"));
+}
+
+#[test]
 fn run_with_empty_model_name_fails() {
     let output = autractl()
         .args(["run", "--model", "", "hello"])

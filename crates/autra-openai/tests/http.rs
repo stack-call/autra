@@ -107,6 +107,30 @@ async fn streams_content_deltas() {
 }
 
 #[tokio::test]
+async fn non_event_stream_response_is_parsed_as_complete() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{ "message": { "content": "fallback" } }]
+        })))
+        .mount(&server)
+        .await;
+    let model =
+        OpenAiCompatibleModel::new(OpenAiConfig::new(server.uri(), "test-key", "test-model"))
+            .unwrap();
+    let mut deltas = Vec::new();
+
+    let output = model
+        .complete_streaming(&request(), &mut |delta| deltas.push(delta))
+        .await
+        .unwrap();
+
+    assert_eq!(deltas, ["fallback"]);
+    assert_eq!(output.text.as_deref(), Some("fallback"));
+}
+
+#[tokio::test]
 async fn streams_tool_call_fragments() {
     let server = MockServer::start().await;
     let body = concat!(

@@ -147,26 +147,52 @@ impl ModelProvider for OpenAiCompatibleModel {
                 mapping::truncate(&text, 500)
             )));
         }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.to_ascii_lowercase());
+        let looks_like_json = content_type
+            .as_deref()
+            .is_some_and(|value| value.contains("application/json") || value.contains("+json"));
+        if looks_like_json {
+            // Some gateways ignore `stream: true` and answer with a complete
+            // JSON body. Accept it rather than reporting an empty stream.
+            let text = response
+                .text()
+                .await
+                .map_err(|error| ModelError::new(format!("model response failed: {error}")))?;
+            let output = mapping::parse_response_body(&text)?;
+            if let Some(text) = &output.text {
+                on_delta(text.clone());
+            }
+            return Ok(output);
+        }
         let mut accumulator = mapping::StreamAccumulator::default();
+        let mut decoder = mapping::SseDecoder::default();
         let mut stream = response.bytes_stream();
-        let mut buffer = String::new();
         while let Some(chunk) = stream.next().await {
             let chunk =
                 chunk.map_err(|error| ModelError::new(format!("model stream failed: {error}")))?;
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
-            while let Some(index) = buffer.find('\n') {
-                let line: String = buffer[..index].trim_end_matches('\r').to_owned();
-                buffer.drain(..=index);
-                let Some(data) = line.strip_prefix("data:") else {
-                    continue;
-                };
-                let data = data.trim();
+            let mut events = Vec::new();
+            decoder.push(&chunk, &mut events)?;
+            for data in events {
                 if data == "[DONE]" {
                     return Ok(mapping::finish_stream(accumulator));
                 }
-                if let Some(delta) = mapping::apply_stream_data(data, &mut accumulator)? {
+                if let Some(delta) = mapping::apply_stream_data(&data, &mut accumulator)? {
                     on_delta(delta);
                 }
+            }
+        }
+        let mut events = Vec::new();
+        decoder.finish(&mut events)?;
+        for data in events {
+            if data == "[DONE]" {
+                return Ok(mapping::finish_stream(accumulator));
+            }
+            if let Some(delta) = mapping::apply_stream_data(&data, &mut accumulator)? {
+                on_delta(delta);
             }
         }
         Ok(mapping::finish_stream(accumulator))

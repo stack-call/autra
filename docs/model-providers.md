@@ -61,7 +61,12 @@ OpenAI-compatible endpoints through `OPENAI_BASE_URL`.
 - response text → `ModelOutput.text`;
 - response tool calls → `ToolCallRequest` with the provider's call id;
 - object-shaped `arguments` are serialized to a JSON string;
-- non-2xx and malformed JSON → `ModelError` with a truncated body.
+- non-2xx and malformed JSON → `ModelError` with a truncated body;
+- SSE bytes are decoded incrementally, so a UTF-8 character split across
+  network chunks is not corrupted and a final event without a trailing newline
+  is still processed;
+- a gateway that ignores `stream: true` and answers with `application/json` is
+  accepted as a complete response.
 
 An empty assistant message is allowed and completes the Run with no answer.
 

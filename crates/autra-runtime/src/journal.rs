@@ -15,6 +15,7 @@ pub struct MemoryJournal {
     runs: Arc<Mutex<BTreeMap<RunId, AgentState>>>,
     events: Arc<Mutex<BTreeMap<RunId, Vec<AcceptedEvent>>>>,
     outbox: Arc<Mutex<BTreeMap<EffectId, OutboxEntry>>>,
+    claims: Arc<Mutex<BTreeMap<EffectId, String>>>,
     approvals: Arc<Mutex<BTreeMap<EffectId, ApprovalRecord>>>,
 }
 
@@ -112,12 +113,20 @@ impl EffectJournal for MemoryJournal {
     fn claim_due_effects(
         &self,
         limit: usize,
-        _claim_id: &str,
+        claim_id: &str,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
         let mut outbox = self.outbox.lock().expect("journal lock poisoned");
+        let mut claims = self.claims.lock().expect("journal lock poisoned");
+        let ids: Vec<EffectId> = outbox
+            .values()
+            .take(limit)
+            .map(|entry| entry.effect_id.clone())
+            .collect();
         let mut claimed = Vec::new();
-        for entry in outbox.values_mut().take(limit) {
+        for id in ids {
+            let entry = outbox.get_mut(&id).expect("outbox entry");
             entry.attempts += 1;
+            claims.insert(id.clone(), claim_id.to_owned());
             claimed.push(entry.clone());
         }
         Ok(claimed)
@@ -127,30 +136,51 @@ impl EffectJournal for MemoryJournal {
         &self,
         run_id: &RunId,
         limit: usize,
-        _claim_id: &str,
+        claim_id: &str,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
         let mut outbox = self.outbox.lock().expect("journal lock poisoned");
-        let mut claimed = Vec::new();
-        for entry in outbox
-            .values_mut()
+        let mut claims = self.claims.lock().expect("journal lock poisoned");
+        let ids: Vec<EffectId> = outbox
+            .values()
             .filter(|entry| &entry.run_id == run_id)
             .take(limit)
-        {
+            .map(|entry| entry.effect_id.clone())
+            .collect();
+        let mut claimed = Vec::new();
+        for id in ids {
+            let entry = outbox.get_mut(&id).expect("outbox entry");
             entry.attempts += 1;
+            claims.insert(id.clone(), claim_id.to_owned());
             claimed.push(entry.clone());
         }
         Ok(claimed)
     }
 
-    fn complete_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {
-        self.outbox
-            .lock()
-            .expect("journal lock poisoned")
-            .remove(effect_id);
+    fn complete_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
+        let mut claims = self.claims.lock().expect("journal lock poisoned");
+        let owns = match claims.get(effect_id) {
+            Some(owner) => owner == claim_id,
+            None => claim_id.is_empty(),
+        };
+        if owns {
+            claims.remove(effect_id);
+            self.outbox
+                .lock()
+                .expect("journal lock poisoned")
+                .remove(effect_id);
+        }
         Ok(())
     }
 
-    fn release_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {
+    fn release_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
+        let mut claims = self.claims.lock().expect("journal lock poisoned");
+        let owns = match claims.get(effect_id) {
+            Some(owner) => owner == claim_id,
+            None => claim_id.is_empty(),
+        };
+        if owns {
+            claims.remove(effect_id);
+        }
         Ok(())
     }
 }

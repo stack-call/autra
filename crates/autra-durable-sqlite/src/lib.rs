@@ -361,21 +361,22 @@ impl EffectJournal for SqliteEffectJournal {
         self.claim(limit, Some(run_id), claim_id, lease)
     }
 
-    fn complete_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {
+    fn complete_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
         let connection = self
             .connection
             .lock()
             .map_err(|_| JournalError::new("journal lock poisoned"))?;
         connection
             .execute(
-                "DELETE FROM effect_outbox WHERE effect_id = ?1",
-                params![effect_id.as_str()],
+                "DELETE FROM effect_outbox
+                 WHERE effect_id = ?1 AND (claim_id IS NULL OR claim_id = ?2)",
+                params![effect_id.as_str(), claim_id],
             )
             .map_err(|error| JournalError::new(format!("cannot complete effect: {error}")))?;
         Ok(())
     }
 
-    fn release_outbox(&self, effect_id: &EffectId) -> Result<(), JournalError> {
+    fn release_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
         let connection = self
             .connection
             .lock()
@@ -383,8 +384,8 @@ impl EffectJournal for SqliteEffectJournal {
         connection
             .execute(
                 "UPDATE effect_outbox SET claim_id = NULL, claim_deadline = NULL
-                 WHERE effect_id = ?1",
-                params![effect_id.as_str()],
+                 WHERE effect_id = ?1 AND (claim_id IS NULL OR claim_id = ?2)",
+                params![effect_id.as_str(), claim_id],
             )
             .map_err(|error| JournalError::new(format!("cannot release effect: {error}")))?;
         Ok(())

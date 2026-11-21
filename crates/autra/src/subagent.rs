@@ -145,16 +145,28 @@ impl Tool for SubagentTool {
             .clone()
             .unwrap_or_else(|| context.run_id.clone());
         let cancel = context.cancel.clone().unwrap_or_default();
-        // A child Run has its own budget. Cap its tool allowance by what the
-        // parent has left, but do not charge the parent: the spawn itself is
-        // one parent tool call, and child tool calls belong to the child.
-        let child_tool_calls = context
-            .budget
+        // A child Run has its own budget, carved out of the parent's so a
+        // subagent cannot silently amplify the conversation's allowance.
+        let depth = context
+            .child_execution
             .as_ref()
-            .map(|budget| 4_u32.min(budget.remaining_tool_calls()))
-            .unwrap_or(4);
-        let child_budget = BudgetSnapshot::new(4, child_tool_calls);
-        let execution = context.child_execution.clone().unwrap_or_default();
+            .map_or(0, |execution| execution.depth);
+        if depth >= 1 {
+            return Err(ToolError::new(
+                "subagent nesting limit reached: a subagent cannot spawn another subagent",
+            ));
+        }
+        let child_budget = match context.budget.as_ref() {
+            Some(budget) => {
+                let requested = 4_u32.min(budget.remaining_tool_calls());
+                budget.reserve_child(4, requested).ok_or_else(|| {
+                    ToolError::new("parent budget exhausted: cannot dedicate a child budget")
+                })?
+            }
+            None => BudgetSnapshot::new(4, 4),
+        };
+        let mut execution = context.child_execution.clone().unwrap_or_default();
+        execution.depth = depth + 1;
         let outcome = subagent
             .agent
             .run_as_child_with(

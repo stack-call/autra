@@ -278,13 +278,14 @@ impl OutboxDispatcher {
     where
         F: FnMut(&DispatchResult),
     {
+        let claim_id = next_claim_id("local-dispatcher");
         let entries = journal.claim_due_effects_for_run_with_lease(
             run_id,
             options.limit,
-            "local-dispatcher",
+            &claim_id,
             options.lease,
         )?;
-        dispatch_entries(journal, entries, options, dispatcher, on_result).await
+        dispatch_entries(journal, entries, options, dispatcher, &claim_id, on_result).await
     }
 
     /// Drain due outbox rows across all Runs. Rows whose lease expired are
@@ -323,10 +324,22 @@ impl OutboxDispatcher {
     where
         F: FnMut(&DispatchResult),
     {
+        let claim_id = next_claim_id("outbox-drain");
         let entries =
-            journal.claim_due_effects_with_lease(options.limit, "outbox-drain", options.lease)?;
-        dispatch_entries(journal, entries, options, dispatcher, on_result).await
+            journal.claim_due_effects_with_lease(options.limit, &claim_id, options.lease)?;
+        dispatch_entries(journal, entries, options, dispatcher, &claim_id, on_result).await
     }
+}
+
+fn next_claim_id(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{prefix}-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 async fn dispatch_entries<F>(
@@ -334,6 +347,7 @@ async fn dispatch_entries<F>(
     entries: Vec<OutboxEntry>,
     options: DispatchOptions<'_>,
     dispatcher: &dyn Dispatcher,
+    claim_id: &str,
     mut on_result: F,
 ) -> Result<Vec<DispatchResult>, JournalError>
 where
@@ -347,6 +361,7 @@ where
             entry,
             dispatcher,
             &options,
+            claim_id,
         ));
     }
     let mut stream =
@@ -366,13 +381,14 @@ async fn dispatch_entry(
     entry: &OutboxEntry,
     dispatcher: &dyn Dispatcher,
     options: &DispatchOptions<'_>,
+    claim_id: &str,
 ) -> Result<DispatchResult, JournalError> {
     let mut effects = journal.load(run_id)?;
     let Some(record) = effects
         .iter_mut()
         .find(|record| record.id == entry.effect_id)
     else {
-        let _ = journal.release_outbox(&entry.effect_id);
+        let _ = journal.release_outbox(&entry.effect_id, claim_id);
         return Err(JournalError::new(format!(
             "effect record `{}` not found",
             entry.effect_id
@@ -384,7 +400,7 @@ async fn dispatch_entry(
         | EffectStatus::Rejected
         | EffectStatus::OutcomeUnknown
         | EffectStatus::CancelledBeforeDispatch => {
-            journal.complete_outbox(&entry.effect_id)?;
+            journal.complete_outbox(&entry.effect_id, claim_id)?;
             return Ok(DispatchResult {
                 effect_id: entry.effect_id.clone(),
                 outcome: DispatchOutcome::AlreadyResolved,
@@ -398,7 +414,7 @@ async fn dispatch_entry(
                 Some("the effect was in flight when its claim lease ended".to_owned()),
             );
             journal.record(run_id, record)?;
-            journal.complete_outbox(&entry.effect_id)?;
+            journal.complete_outbox(&entry.effect_id, claim_id)?;
             return Ok(DispatchResult {
                 effect_id: entry.effect_id.clone(),
                 outcome: DispatchOutcome::Interrupted,
@@ -412,12 +428,19 @@ async fn dispatch_entry(
         .map(CancelFlag::is_cancelled)
         .unwrap_or(false)
     {
-        return finish_entry(journal, run_id, entry, DispatchOutcome::Cancelled, true);
+        return finish_entry(
+            journal,
+            run_id,
+            entry,
+            DispatchOutcome::Cancelled,
+            true,
+            claim_id,
+        );
     }
     let intent: EffectIntent = match serde_json::from_str(&entry.intent_json) {
         Ok(intent) => intent,
         Err(error) => {
-            let _ = journal.release_outbox(&entry.effect_id);
+            let _ = journal.release_outbox(&entry.effect_id, claim_id);
             return Err(JournalError::new(format!(
                 "cannot decode effect intent: {error}"
             )));
@@ -427,7 +450,7 @@ async fn dispatch_entry(
         EffectIntent::CallModel(_) => true,
         EffectIntent::CallTool(spec) => dispatcher.knows_tool(&spec.call.name),
     };
-    mark_dispatched(journal, run_id, entry)?;
+    mark_dispatched(journal, run_id, entry, claim_id)?;
     let outcome = match &intent {
         EffectIntent::CallModel(spec) => {
             let result = match options.delta.clone() {
@@ -457,20 +480,21 @@ async fn dispatch_entry(
             )
         }
     };
-    finish_entry(journal, run_id, entry, outcome, known_tool)
+    finish_entry(journal, run_id, entry, outcome, known_tool, claim_id)
 }
 
 fn mark_dispatched(
     journal: &dyn EffectJournal,
     run_id: &RunId,
     entry: &OutboxEntry,
+    claim_id: &str,
 ) -> Result<(), JournalError> {
     let mut effects = journal.load(run_id)?;
     let Some(record) = effects
         .iter_mut()
         .find(|record| record.id == entry.effect_id)
     else {
-        let _ = journal.release_outbox(&entry.effect_id);
+        let _ = journal.release_outbox(&entry.effect_id, claim_id);
         return Err(JournalError::new(format!(
             "effect record `{}` not found",
             entry.effect_id
@@ -478,7 +502,7 @@ fn mark_dispatched(
     };
     record.set_status(EffectStatus::Dispatched);
     if let Err(error) = journal.record(run_id, record) {
-        let _ = journal.release_outbox(&entry.effect_id);
+        let _ = journal.release_outbox(&entry.effect_id, claim_id);
         return Err(error);
     }
     Ok(())
@@ -490,13 +514,14 @@ fn finish_entry(
     entry: &OutboxEntry,
     outcome: DispatchOutcome,
     known_tool: bool,
+    claim_id: &str,
 ) -> Result<DispatchResult, JournalError> {
     let mut effects = journal.load(run_id)?;
     let Some(record) = effects
         .iter_mut()
         .find(|record| record.id == entry.effect_id)
     else {
-        let _ = journal.release_outbox(&entry.effect_id);
+        let _ = journal.release_outbox(&entry.effect_id, claim_id);
         return Err(JournalError::new(format!(
             "effect record `{}` not found",
             entry.effect_id
@@ -504,10 +529,10 @@ fn finish_entry(
     };
     apply_outcome(record, &outcome, known_tool);
     if let Err(error) = journal.record(run_id, record) {
-        let _ = journal.release_outbox(&entry.effect_id);
+        let _ = journal.release_outbox(&entry.effect_id, claim_id);
         return Err(error);
     }
-    journal.complete_outbox(&entry.effect_id)?;
+    journal.complete_outbox(&entry.effect_id, claim_id)?;
     Ok(DispatchResult {
         effect_id: entry.effect_id.clone(),
         outcome,

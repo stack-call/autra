@@ -114,6 +114,7 @@ async fn a_child_can_inherit_a_journal_and_be_resumed() {
     let execution = ChildExecutionContext {
         journal: Some(shared),
         approver: None,
+        depth: 0,
     };
     let parent = RunId::new("parent-run");
 
@@ -197,6 +198,7 @@ async fn a_child_can_inherit_an_approver() {
     let execution = ChildExecutionContext {
         journal: None,
         approver: Some(Arc::new(AutoApprove)),
+        depth: 0,
     };
 
     let outcome = child

@@ -97,17 +97,20 @@ pub trait EffectJournal: Send + Sync {
         self.claim_due_effects_for_run(run_id, limit, claim_id)
     }
 
-    fn complete_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {
+    fn complete_outbox(&self, _effect_id: &EffectId, _claim_id: &str) -> Result<(), JournalError> {
         Ok(())
     }
 
-    fn release_outbox(&self, _effect_id: &EffectId) -> Result<(), JournalError> {
+    fn release_outbox(&self, _effect_id: &EffectId, _claim_id: &str) -> Result<(), JournalError> {
         Ok(())
     }
 }
 
 /// Default lease for a claimed outbox row.
 pub const DEFAULT_CLAIM_LEASE: Duration = Duration::from_secs(30);
+
+/// Claim id for completing a row that was never claimed by a dispatcher.
+pub const UNCLAIMED_CLAIM: &str = "";
 
 /// A journal that can commit a transition atomically with its effects.
 ///

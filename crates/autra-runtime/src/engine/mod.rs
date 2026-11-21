@@ -20,7 +20,7 @@ use autra_core::{
 use autra_execution::{
     Approver, ChildExecutionContext, DurableTransitionStore, EffectJournal, ObserverHook,
     PolicyChain, PolicyDecision, RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot,
-    ToolContext, ToolPolicy, ToolRegistry,
+    ToolContext, ToolPolicy, ToolRegistry, UNCLAIMED_CLAIM,
 };
 use tracing::Instrument;
 
@@ -323,6 +323,11 @@ impl LocalEngine {
                     on_event(&RunEvent::RunFailed {
                         message: message.clone(),
                     });
+                    if let Some(journal) = &self.journal {
+                        journal
+                            .save_run(&state)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                    }
                     hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
                     hub_guard.finish();
                     return Err(RunError::Step(error));
@@ -474,7 +479,7 @@ impl LocalEngine {
                             .record(&run_id, record)
                             .map_err(|error| RunError::Journal(error.to_string()))?;
                         journal
-                            .complete_outbox(&effect_id)
+                            .complete_outbox(&effect_id, UNCLAIMED_CLAIM)
                             .map_err(|error| RunError::Journal(error.to_string()))?;
                     }
                     queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
@@ -568,6 +573,11 @@ impl LocalEngine {
                         if let Some(observer) = &self.observer {
                             observer.on_run_finished(&run_id, &state.phase);
                         }
+                        if let Some(journal) = &self.journal {
+                            journal
+                                .save_run(&state)
+                                .map_err(|save_error| RunError::Journal(save_error.to_string()))?;
+                        }
                         hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
                         return Err(error);
                     }
@@ -592,6 +602,7 @@ impl LocalEngine {
         let child_execution = ChildExecutionContext {
             journal: self.journal.clone(),
             approver: self.approver.clone(),
+            depth: 0,
         };
         let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
         let mut approved: Vec<Option<(EffectId, ToolCallRequest)>> = vec![None; calls.len()];
@@ -820,9 +831,24 @@ impl LocalEngine {
                     }
                 }
                 DispatchOutcome::Cancelled => cancelled = true,
-                DispatchOutcome::Model(_)
-                | DispatchOutcome::AlreadyResolved
-                | DispatchOutcome::Interrupted => {}
+                DispatchOutcome::AlreadyResolved | DispatchOutcome::Interrupted => {
+                    let Ok(records) = journal.load(&run_id) else {
+                        return;
+                    };
+                    let Some(record) = records.iter().find(|record| record.id == result.effect_id)
+                    else {
+                        return;
+                    };
+                    let Some(outcome) = tool_outcome_from_record(record) else {
+                        return;
+                    };
+                    sink.start_tool_outcome(&outcome);
+                    sink.emit_tool_result(&outcome);
+                    if let Some(index) = index_by_effect.get(&result.effect_id) {
+                        dispatched.push((*index, outcome));
+                    }
+                }
+                DispatchOutcome::Model(_) => {}
             };
             let options = DispatchOptions {
                 limit: approved.len(),
@@ -834,6 +860,7 @@ impl LocalEngine {
                 child_execution: Some(ChildExecutionContext {
                     journal: self.journal.clone(),
                     approver: self.approver.clone(),
+                    depth: 0,
                 }),
                 delta: None,
             };
@@ -850,6 +877,43 @@ impl LocalEngine {
         sync_effects(journal.journal(), &run_id, sink.effects)?;
         Ok((cancelled || cancel.is_cancelled(), dispatched))
     }
+}
+
+fn tool_outcome_from_record(record: &EffectRecord) -> Option<ToolOutcome> {
+    let call_id = record.call_id.clone()?;
+    let name = record.tool_name.clone()?;
+    let (content, is_error, outcome_unknown) = match record.status {
+        EffectStatus::Committed => (record.result.clone().unwrap_or_default(), false, false),
+        EffectStatus::Failed | EffectStatus::Rejected => (
+            record
+                .error
+                .clone()
+                .unwrap_or_else(|| "the effect failed".to_owned()),
+            true,
+            false,
+        ),
+        EffectStatus::OutcomeUnknown => (
+            record
+                .error
+                .clone()
+                .unwrap_or_else(|| "the effect outcome is unknown".to_owned()),
+            true,
+            true,
+        ),
+        EffectStatus::CancelledBeforeDispatch => (
+            "the effect was cancelled before dispatch".to_owned(),
+            true,
+            false,
+        ),
+        _ => return None,
+    };
+    Some(ToolOutcome {
+        call_id,
+        name,
+        content,
+        is_error,
+        outcome_unknown,
+    })
 }
 
 struct HubGuard {
@@ -1039,7 +1103,7 @@ fn mark_cancelled_before_dispatch<F: FnMut(&RunEvent)>(
                     .record(&run_id, record)
                     .map_err(|error| RunError::Journal(error.to_string()))?;
                 journal
-                    .complete_outbox(&record.id)
+                    .complete_outbox(&record.id, UNCLAIMED_CLAIM)
                     .map_err(|error| RunError::Journal(error.to_string()))?;
             }
         }
@@ -1073,7 +1137,7 @@ fn cancel_staged_effects(
                     .record(run_id, record)
                     .map_err(|error| RunError::Journal(error.to_string()))?;
                 journal
-                    .complete_outbox(&record.id)
+                    .complete_outbox(&record.id, UNCLAIMED_CLAIM)
                     .map_err(|error| RunError::Journal(error.to_string()))?;
             }
         }

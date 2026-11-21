@@ -18,6 +18,9 @@ const RUN_COMMAND_SCHEMA: &str = r#"{"type":"object","properties":{"command":{"t
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_TIMEOUT_SECS: u64 = 300;
 const MAX_OUTPUT_BYTES: usize = 32 * 1024;
+/// Hard cap per stream while draining. The caller still truncates to its own
+/// smaller limit; this only prevents unbounded memory growth.
+const CAPTURE_MAX_BYTES: usize = 256 * 1024;
 
 pub(crate) struct ProcessOutput {
     pub code: Option<i32>,
@@ -40,23 +43,107 @@ pub(crate) async fn run_program(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    let child = command
+    sanitize_environment(&mut command);
+    let mut child = command
         .spawn()
         .map_err(|error| ToolError::new(format!("cannot start `{program}`: {error}")))?;
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(output)) => Ok(ProcessOutput {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        }),
-        Ok(Err(error)) => Err(ToolError::new(format!(
-            "`{program}` failed to run: {error}"
-        ))),
-        Err(_) => Err(ToolError::outcome_unknown(format!(
-            "`{program}` timed out after {}s; it may still have changed the workspace",
-            timeout.as_secs()
-        ))),
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ToolError::new("cannot capture stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| ToolError::new("cannot capture stderr"))?;
+    let stdout_task = tokio::spawn(read_capped(stdout, CAPTURE_MAX_BYTES));
+    let stderr_task = tokio::spawn(read_capped(stderr, CAPTURE_MAX_BYTES));
+
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => {
+            let stdout = stdout_task.await.unwrap_or_default();
+            let stderr = stderr_task.await.unwrap_or_default();
+            Ok(ProcessOutput {
+                code: status.code(),
+                stdout: String::from_utf8_lossy(&stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            })
+        }
+        Ok(Err(error)) => {
+            kill_tree(&mut child).await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            Err(ToolError::new(format!(
+                "`{program}` failed to run: {error}"
+            )))
+        }
+        Err(_) => {
+            kill_tree(&mut child).await;
+            let _ = stdout_task.await;
+            let _ = stderr_task.await;
+            Err(ToolError::outcome_unknown(format!(
+                "`{program}` timed out after {}s; it may still have changed the workspace",
+                timeout.as_secs()
+            )))
+        }
     }
+}
+
+/// Reads at most `cap` bytes, draining the pipe so the child never blocks.
+async fn read_capped<R>(mut reader: R, cap: usize) -> Vec<u8>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut collected = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        match reader.read(&mut buffer).await {
+            Ok(0) => break,
+            Ok(read) => {
+                if collected.len() < cap {
+                    let remaining = cap - collected.len();
+                    collected.extend_from_slice(&buffer[..read.min(remaining)]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    collected
+}
+
+/// Commands must not inherit credentials from the agent process.
+fn sanitize_environment(command: &mut tokio::process::Command) {
+    let inherited: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
+        .filter(|(key, _)| !is_sensitive_key(key))
+        .collect();
+    command.env_clear();
+    command.envs(inherited);
+}
+
+fn is_sensitive_key(key: &std::ffi::OsStr) -> bool {
+    let key = key.to_string_lossy().to_ascii_uppercase();
+    key.contains("KEY")
+        || key.contains("TOKEN")
+        || key.contains("SECRET")
+        || key.contains("PASSWORD")
+        || key.contains("CREDENTIAL")
+        || key.ends_with("_AUTH")
+}
+
+async fn kill_tree(child: &mut tokio::process::Child) {
+    #[cfg(windows)]
+    {
+        if let Some(pid) = child.id() {
+            let _ = tokio::process::Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+        }
+    }
+    let _ = child.kill().await;
 }
 
 pub(crate) fn truncate_output(text: &str, max_bytes: usize) -> String {

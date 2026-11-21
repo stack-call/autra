@@ -272,9 +272,14 @@ impl AgentStepper for ReActStepper {
             EventKind::ToolResult(outcome) => self.on_tool_result(state, outcome),
             EventKind::ResumeRequested => {
                 Self::expect_phase(state, AgentPhase::AwaitingModel, "ResumeRequested")?;
+                if !state.budget.turn_available() {
+                    return Ok(Self::failed(state.clone(), "max turns exceeded"));
+                }
+                let mut next = state.clone();
+                next.budget.turns_used += 1;
                 let request = self.model_request(&react_state(state))?;
                 Ok(Transition {
-                    next: state.clone(),
+                    next,
                     intents: vec![EffectIntent::CallModel(request)],
                     disposition: Disposition::Continue,
                 })

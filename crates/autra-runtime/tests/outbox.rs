@@ -26,11 +26,11 @@ fn outbox_enqueue_claim_release_complete() {
     assert_eq!(claimed[0].effect_id, effect.id);
     assert_eq!(claimed[0].attempts, 1);
 
-    journal.release_outbox(&effect.id).unwrap();
+    journal.release_outbox(&effect.id, "claim-1").unwrap();
     let reclaimed = journal.claim_due_effects(10, "claim-2").unwrap();
     assert_eq!(reclaimed[0].attempts, 2);
 
-    journal.complete_outbox(&effect.id).unwrap();
+    journal.complete_outbox(&effect.id, "claim-2").unwrap();
     assert!(journal.claim_due_effects(10, "claim-3").unwrap().is_empty());
 }
 
@@ -49,4 +49,26 @@ fn only_authorized_effects_are_enqueued() {
     journal.enqueue_effect(&run_id, &effect).unwrap();
 
     assert!(journal.claim_due_effects(10, "claim").unwrap().is_empty());
+}
+
+#[test]
+fn a_stale_claim_cannot_complete_or_release_the_row() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("run-stale");
+    let effect = authorized_effect();
+
+    journal.enqueue_effect(&run_id, &effect).unwrap();
+    journal.claim_due_effects(10, "claim-1").unwrap();
+    // Simulate lease expiry: a second worker reclaims the same row.
+    journal.claim_due_effects(10, "claim-2").unwrap();
+
+    journal.complete_outbox(&effect.id, "claim-1").unwrap();
+    assert_eq!(
+        journal.claim_due_effects(10, "claim-2").unwrap().len(),
+        1,
+        "a stale claim must not remove the row"
+    );
+
+    journal.complete_outbox(&effect.id, "claim-2").unwrap();
+    assert!(journal.claim_due_effects(10, "claim-4").unwrap().is_empty());
 }

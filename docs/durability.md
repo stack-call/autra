@@ -103,10 +103,12 @@ The parent does not coordinate child recovery, and an interrupted
 `spawn_subagent` remains an unknown outcome rather than being retried.
 
 Outbox claims carry a 30-second lease. `Agent::drain_outbox` and
-`autractl outbox` reclaim due rows. A reclaimed row whose record is already
-terminal is only cleaned up, and a reclaimed row whose record is `Dispatched`
-becomes `OutcomeUnknown` rather than executing a second time. This closes the
-crash window between recording an outcome and deleting its outbox row.
+`autractl outbox` reclaim due rows. Completing or releasing a row requires the
+current claim id, so a worker whose lease expired cannot remove an effect now
+owned by another worker. A reclaimed row whose record is already terminal is
+only cleaned up, and a reclaimed row whose record is `Dispatched` becomes
+`OutcomeUnknown` rather than executing a second time. This closes the crash
+window between recording an outcome and deleting its outbox row.
 
 There is no background retry loop. Approval decisions persist and
 `Agent::reconcile` retries safe `OutcomeUnknown` effects, but there is no

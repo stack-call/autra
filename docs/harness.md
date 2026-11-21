@@ -11,7 +11,7 @@ implemented.
 | Context management | `ContextBuilder`, `SimpleContextBuilder`, character budget | Character proxy; no tokenizer or summarization |
 | Skills | `SkillRegistry`, `load_skill` | Loading does not grant permissions |
 | Planning | `update_plan`, `Agent::plan()` | In-memory per Agent; no planner engine |
-| Restricted Subagents | `spawn_subagent`, named child Agents | Runtime ChildRun identity, inherited cancellation and an independent budget; automatic parent budget settlement and parent event forwarding pending |
+| Restricted Subagents | `spawn_subagent`, named child Agents | Runtime ChildRun identity, inherited cancellation, a budget reserved from the parent and a one-level nesting limit; policy intersection and parent event forwarding pending |
 | Workspace Tools | `read_file`, `list_files`, `search_text`, `git_status`, `git_diff`, `edit_file`, `write_file`, `run_command` | Writes and commands require approval; `run_command` is not a sandbox |
 | Tracing | `agent.session.turn`, `agent.run`, `gen_ai.model.call`, `agent.tool.execute` | No OTel exporter |
 | Basic Evaluation | `autra-eval` task report | Outcome-based; not runtime fault evidence |
@@ -49,8 +49,9 @@ adapters. Memory, MCP and full Planning/Workflow remain future work.
 - Sessions and plans are in memory. Approvals persist with a policy revision, a
   claimed actor and an expiry timestamp; actor identity is not verified.
 - Runs carry optional Session/Turn ids; `SessionStore` and `TurnRecord` are implemented (in-memory and SQLite), but `SessionManager` and a multi-client snapshot protocol are not.
-- Subagents run as ChildRuns with inherited cancellation and an independent
-  budget; parent budget settlement and parent event forwarding are not automatic.
+- Subagents run as ChildRuns with inherited cancellation and a budget reserved
+  from the parent; nesting is limited to one level. Policy intersection and
+  parent event forwarding are not implemented.
 - The CLI's `run`/`chat` commands register the workspace tools and require
   approval for `write_file` and `run_command` unless `--yes` is passed.
 

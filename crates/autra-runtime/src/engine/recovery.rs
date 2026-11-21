@@ -9,7 +9,7 @@ use autra_core::{
 };
 use autra_execution::{
     DurableTransitionStore, PolicyDecision, ReconciliationReport, RunError, RunEvent, RunOptions,
-    RunOutcome, RunSnapshot, UnresolvedEffect,
+    RunOutcome, RunSnapshot, UNCLAIMED_CLAIM, UnresolvedEffect,
 };
 
 use crate::approval::digest_intent;
@@ -300,7 +300,7 @@ impl LocalEngine {
                 .record(&state.run_id, record)
                 .map_err(|error| RunError::Journal(error.to_string()))?;
             journal
-                .complete_outbox(&record.id)
+                .complete_outbox(&record.id, UNCLAIMED_CLAIM)
                 .map_err(|error| RunError::Journal(error.to_string()))?;
         }
         Ok(())
@@ -420,7 +420,7 @@ impl LocalEngine {
                             .record(run_id, record)
                             .map_err(|error| RunError::Journal(error.to_string()))?;
                         journal
-                            .complete_outbox(&record.id)
+                            .complete_outbox(&record.id, UNCLAIMED_CLAIM)
                             .map_err(|error| RunError::Journal(error.to_string()))?;
                     }
                 }

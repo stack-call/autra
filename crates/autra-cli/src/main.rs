@@ -373,8 +373,23 @@ fn load_rule_policy(path: &str) -> Result<RulePolicy, String> {
         .map_err(|error| format!("cannot read policy `{path}`: {error}"))?;
     let value: serde_json::Value = serde_json::from_str(&text)
         .map_err(|error| format!("cannot parse policy `{path}`: {error}"))?;
-    if value.get("allow_tools").is_some() {
-        return Err("policy `allow_tools` is not supported: Allow is the default".to_owned());
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("policy `{path}` must be a JSON object"))?;
+    for key in object.keys() {
+        match key.as_str() {
+            "ask_tools" | "deny_tools" | "deny_commands" => {}
+            "allow_tools" => {
+                return Err(
+                    "policy `allow_tools` is not supported: Allow is the default".to_owned(),
+                );
+            }
+            other => {
+                return Err(format!(
+                    "unknown policy key `{other}`; supported keys are `ask_tools`, `deny_tools` and `deny_commands`"
+                ));
+            }
+        }
     }
     let mut policy = RulePolicy::new(format!("file:{path}"));
     for name in string_list(&value, "ask_tools")? {
