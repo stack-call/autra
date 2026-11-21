@@ -102,7 +102,9 @@ Every extension group should declare:
 
 The complete proposal — four layers, middleware split, plugin lifecycle,
 scopes, permission rules and delivery order — is in
-[`extension-architecture-v1.md`](extension-architecture-v1.md). The summary
+[`extension-architecture-v1.md`](extension-architecture-v1.md). The runtime
+side of that proposal, including the lifecycle/middleware split and coordinator
+decomposition, is in [`runtime-evolution.md`](runtime-evolution.md). The summary
 below is the short version.
 
 The current implementation covers capability registration through Builders and

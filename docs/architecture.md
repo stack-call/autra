@@ -12,6 +12,11 @@ Autra is described by two orthogonal views:
 The two views share the same domain objects (Session, Turn, Run, Effect) but
 answer different questions.
 
+A design review of the runtime's own evolution — coordinator decomposition,
+lifecycle versus execution middleware, and the timing of committed events — is
+recorded in [`runtime-evolution.md`](runtime-evolution.md). It is a proposal,
+not current behavior.
+
 ## Three collaborating systems
 
 | System | Question | Owns | Does not own |
