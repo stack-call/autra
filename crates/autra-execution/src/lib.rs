@@ -33,7 +33,7 @@ pub use model::{
 };
 pub use policy::{PolicyChain, PolicyDecision, PolicyRequest, ToolPolicy, baseline_decision};
 pub use reconcile::{ReconciliationReport, UnresolvedEffect};
-pub use run::{RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot, RunStatus};
+pub use run::{RecoveryReport, RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot, RunStatus};
 pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
     SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus,

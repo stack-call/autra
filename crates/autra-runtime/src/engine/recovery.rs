@@ -8,8 +8,8 @@ use autra_core::{
     ToolCallSpec, ToolOutcome,
 };
 use autra_execution::{
-    DurableTransitionStore, PolicyDecision, ReconciliationReport, RunError, RunEvent, RunOptions,
-    RunOutcome, RunSnapshot, UNCLAIMED_CLAIM, UnresolvedEffect,
+    DurableTransitionStore, PolicyDecision, ReconciliationReport, RecoveryReport, RunError,
+    RunEvent, RunOptions, RunOutcome, RunSnapshot, UNCLAIMED_CLAIM, UnresolvedEffect,
 };
 
 use crate::approval::digest_intent;
@@ -143,6 +143,51 @@ impl LocalEngine {
 
         self.drive(stepper, state, queue, effects, options, on_event)
             .await
+    }
+
+    /// Resume every run parked at a recoverable checkpoint, up to `limit`.
+    ///
+    /// Runs that are already terminal or failed are skipped. A failure in one
+    /// run does not stop the pass; it is counted in the report and logged.
+    pub async fn recover_once(
+        &self,
+        stepper: Arc<dyn AgentStepper>,
+        limit: usize,
+    ) -> Result<RecoveryReport, RunError> {
+        let journal = self
+            .journal
+            .as_ref()
+            .ok_or_else(|| RunError::Protocol("recovery requires a journal".to_owned()))?;
+        let run_ids = journal
+            .list_run_ids()
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        let mut report = RecoveryReport::default();
+        for run_id in run_ids.into_iter().take(limit) {
+            report.scanned += 1;
+            let Some(state) = journal
+                .load_run(&run_id)
+                .map_err(|error| RunError::Journal(error.to_string()))?
+            else {
+                continue;
+            };
+            if !matches!(
+                state.phase,
+                AgentPhase::AwaitingTool | AgentPhase::AwaitingModel
+            ) {
+                continue;
+            }
+            match self
+                .resume_with_options(stepper.clone(), &run_id, RunOptions::default(), |_| {})
+                .await
+            {
+                Ok(_) => report.resumed += 1,
+                Err(error) => {
+                    report.failed += 1;
+                    tracing::warn!(%run_id, %error, "background recovery failed");
+                }
+            }
+        }
+        Ok(report)
     }
 
     /// Retry effects whose outcome is unknown when their effect class makes a

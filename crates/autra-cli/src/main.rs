@@ -37,6 +37,7 @@ async fn main() -> ExitCode {
         Some("tui") => tui_command(&args[1..]),
         Some("effects") => effects_command(&args[1..]),
         Some("reconcile") => reconcile_command(&args[1..]).await,
+        Some("daemon") => daemon_command(&args[1..]).await,
         Some("approve") => approval_command(&args[1..], ApprovalDecision::Approved),
         Some("reject") => approval_command(&args[1..], ApprovalDecision::Rejected),
         Some("demo") => demo_command().await,
@@ -59,6 +60,8 @@ struct Flags {
     policy: Option<String>,
     actor: Option<String>,
     context_chars: Option<usize>,
+    once: bool,
+    interval_secs: Option<u64>,
     unknown_only: bool,
     local: bool,
     rest: Vec<String>,
@@ -533,6 +536,54 @@ async fn reconcile_command(args: &[String]) -> ExitCode {
     }
 }
 
+async fn daemon_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "daemon") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if !flags.rest.is_empty() {
+        eprintln!(
+            "usage: autractl daemon --journal <path> [--model <name>] [--workspace <dir>] [--interval-secs <n>] [--once]"
+        );
+        return ExitCode::FAILURE;
+    }
+    if flags.journal.is_none() {
+        eprintln!("daemon requires --journal <path>");
+        return ExitCode::FAILURE;
+    }
+    if effective_model(&flags).ok().flatten().is_none() && !flags.local {
+        eprintln!("[daemon] no model configured; AwaitingModel runs will use the echo model");
+    }
+    let approver: Option<Arc<dyn Approver>> = if flags.auto_approve {
+        None
+    } else {
+        Some(Arc::new(RejectApprovals))
+    };
+    let agent = match build_agent_with_approver(&flags, approver) {
+        Ok(agent) => agent,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let interval = std::time::Duration::from_secs(flags.interval_secs.unwrap_or(5));
+    loop {
+        match agent.recover_once(32).await {
+            Ok(report) if report.scanned > 0 => println!(
+                "[daemon] scanned={} resumed={} failed={}",
+                report.scanned, report.resumed, report.failed
+            ),
+            Ok(_) => {}
+            Err(error) => eprintln!("[daemon] recovery failed: {error}"),
+        }
+        if flags.once {
+            break;
+        }
+        tokio::time::sleep(interval).await;
+    }
+    ExitCode::SUCCESS
+}
+
 fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {
     let command = match decision {
         ApprovalDecision::Approved => "approve",
@@ -674,6 +725,8 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         policy: None,
         actor: None,
         context_chars: None,
+        once: false,
+        interval_secs: None,
         unknown_only: false,
         local: false,
         rest: Vec::new(),
@@ -733,6 +786,21 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
                 }
             },
             "--unknown" => flags.unknown_only = true,
+            "--once" => flags.once = true,
+            "--interval-secs" => match iter.next() {
+                Some(value) => match value.parse::<u64>() {
+                    Ok(seconds) if seconds > 0 => flags.interval_secs = Some(seconds),
+                    _ => {
+                        eprintln!("--interval-secs requires a positive integer");
+                        usage();
+                        return Err(());
+                    }
+                },
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
             "--context-chars" => match iter.next() {
                 Some(value) => match value.parse::<usize>() {
                     Ok(chars) if chars > 0 => flags.context_chars = Some(chars),
@@ -883,6 +951,21 @@ struct AutoApprove;
 impl Approver for AutoApprove {
     async fn approve(&self, _request: &ApprovalRequest) -> ApprovalDecision {
         ApprovalDecision::Approved
+    }
+}
+
+/// Used by the daemon unless `--yes` is passed: background recovery must not
+/// approve new tool effects on its own.
+struct RejectApprovals;
+
+#[async_trait::async_trait]
+impl Approver for RejectApprovals {
+    async fn approve(&self, request: &ApprovalRequest) -> ApprovalDecision {
+        eprintln!(
+            "[daemon] rejected approval for {} ({})",
+            request.tool_name, request.call_id
+        );
+        ApprovalDecision::Rejected
     }
 }
 
@@ -1142,6 +1225,7 @@ USAGE:
   autractl snapshot --journal <path> <run-id>
   autractl effects --journal <path> [--unknown] <run-id>
   autractl reconcile --journal <path> [--model <name>] [--workspace <dir>] [--policy <path>] <run-id>
+  autractl daemon --journal <path> [--model <name>] [--workspace <dir>] [--interval-secs <n>] [--once]
   autractl approve|reject --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>
   autractl demo
   autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
@@ -1159,6 +1243,8 @@ OPTIONS:
   --yes              auto-approve gated tools
   --read-only        only expose read-only tools
   --context-chars <n> cap the model context (system, tools and history)
+  --interval-secs <n> daemon polling interval (default 5)
+  --once             run a single recovery pass and exit
 
 ENVIRONMENT:
   OPENAI_API_KEY     required when a real model is used

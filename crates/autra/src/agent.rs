@@ -19,7 +19,7 @@ use autra_runtime::{
     ChildHandle, ChildSpec, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine, RunHub,
 };
 
-pub use autra_execution::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
+pub use autra_execution::{RecoveryReport, RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
 
 #[derive(Debug, Error)]
 pub enum BuildError {
@@ -178,6 +178,13 @@ impl Agent {
         )
         .join()
         .await
+    }
+
+    /// Resume every run parked at a recoverable checkpoint, up to `limit`.
+    pub async fn recover_once(&self, limit: usize) -> Result<RecoveryReport, RunError> {
+        self.engine
+            .recover_once(self.stepper_for_run(), limit)
+            .await
     }
 
     /// Retry OutcomeUnknown effects whose class makes a retry safe.

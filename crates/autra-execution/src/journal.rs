@@ -37,6 +37,12 @@ pub trait EffectJournal: Send + Sync {
         Ok(None)
     }
 
+    /// Run ids that may need recovery. Hosts without a run index may return an
+    /// empty list.
+    fn list_run_ids(&self) -> Result<Vec<RunId>, JournalError> {
+        Ok(Vec::new())
+    }
+
     fn commit_event(
         &self,
         run_id: &RunId,

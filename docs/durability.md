@@ -115,7 +115,10 @@ only cleaned up, and a reclaimed row whose record is `Dispatched` becomes
 `OutcomeUnknown` rather than executing a second time. This closes the crash
 window between recording an outcome and deleting its outbox row.
 
-There is no background retry loop. Approval decisions persist and
+A polling daemon (`autractl daemon --journal <path>`) scans the journal and
+resumes runs parked at `AwaitingTool` or `AwaitingModel`, skipping terminal
+states. By default it rejects new approvals unless `--yes` is passed. It is an
+opt-in process, not part of the library runtime. Approval decisions persist and
 `Agent::reconcile` retries safe `OutcomeUnknown` effects, but there is no
 automatic daemon. Resume assumes the same Agent configuration, tools and
 workspace as the original run. A timed-out tool is marked `outcome_unknown`;

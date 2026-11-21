@@ -15,11 +15,12 @@ pub use autra_execution::{
     EffectJournal, ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities, JournalError,
     LOCAL_POLICY_REVISION, MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider,
     ObserverHook, OutboxEntry, PolicyChain, PolicyDecision, PolicyRequest, ReconciliationReport,
-    RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot, RunStatus, SANDBOX_PROTOCOL_VERSION,
-    SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError, SandboxHandle,
-    SandboxOutput, SandboxSpec, SandboxStatus, SessionRecord, SessionStore, SessionStoreError,
-    TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor, ToolError, ToolInput,
-    ToolOutput, ToolPolicy, ToolRegistry, TurnRecord, TurnStatus, digest_arguments, now_unix_ms,
+    RecoveryReport, RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot, RunStatus,
+    SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
+    SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus, SessionRecord, SessionStore,
+    SessionStoreError, TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor,
+    ToolError, ToolInput, ToolOutput, ToolPolicy, ToolRegistry, TurnRecord, TurnStatus,
+    digest_arguments, now_unix_ms,
 };
 pub use autra_harness::{react_engine_state, react_history, react_pending_tool_calls};
 pub use autra_runtime::{

@@ -35,6 +35,14 @@ pub enum RunStatus {
     Cancelled,
 }
 
+/// Summary of one background recovery pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub scanned: usize,
+    pub resumed: usize,
+    pub failed: usize,
+}
+
 #[derive(Clone, Default)]
 pub struct RunOptions {
     pub cancel: CancelFlag,

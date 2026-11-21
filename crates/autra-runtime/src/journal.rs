@@ -54,6 +54,16 @@ impl EffectJournal for MemoryJournal {
             .cloned())
     }
 
+    fn list_run_ids(&self) -> Result<Vec<RunId>, JournalError> {
+        Ok(self
+            .runs
+            .lock()
+            .expect("journal lock poisoned")
+            .keys()
+            .cloned()
+            .collect())
+    }
+
     fn commit_event(
         &self,
         run_id: &RunId,

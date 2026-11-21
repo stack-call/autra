@@ -24,6 +24,28 @@ fn help_lists_commands() {
     assert!(output_text.contains("autractl chat"));
     assert!(output_text.contains("autractl demo"));
     assert!(output_text.contains("autractl tools"));
+    assert!(output_text.contains("autractl daemon"));
+}
+
+#[test]
+fn daemon_requires_a_journal() {
+    let output = autractl().args(["daemon", "--once"]).output().unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("requires --journal"));
+}
+
+#[test]
+fn daemon_once_on_an_empty_journal_succeeds() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("daemon.db");
+
+    let output = autractl()
+        .args(["daemon", "--journal", journal.to_str().unwrap(), "--once"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
 }
 
 #[test]

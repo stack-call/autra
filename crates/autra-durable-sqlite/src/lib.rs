@@ -232,6 +232,26 @@ impl EffectJournal for SqliteEffectJournal {
         Ok(Some(state))
     }
 
+    fn list_run_ids(&self) -> Result<Vec<RunId>, JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let mut statement = connection
+            .prepare("SELECT run_id FROM runs")
+            .map_err(|error| JournalError::new(format!("cannot list runs: {error}")))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| JournalError::new(format!("cannot list runs: {error}")))?;
+        let mut run_ids = Vec::new();
+        for row in rows {
+            run_ids.push(RunId::new(row.map_err(|error| {
+                JournalError::new(format!("cannot read run id: {error}"))
+            })?));
+        }
+        Ok(run_ids)
+    }
+
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError> {
         let connection = self
             .connection

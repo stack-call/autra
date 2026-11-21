@@ -17,7 +17,7 @@ autra-harness = { path = "../autra-harness", features = ["process"] }
 autra-openai = { path = "../autra-openai" }
 autra = { path = "../autra" }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 ratatui = "0.29"
 crossterm = "0.28"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

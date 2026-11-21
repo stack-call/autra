@@ -73,6 +73,7 @@ After building, the binary is `autractl` (or prefix with
 - `autractl effects --journal <path> [--unknown] <run-id>` — list a Run's effects.
 - `autractl reconcile --journal <path> [--model <name>] <run-id>` — retry safe `OutcomeUnknown` effects.
 - `autractl outbox --journal <path> --model <name>` — drain due outbox rows, reclaiming expired leases.
+- `autractl daemon --journal <path> [--once] [--interval-secs <n>]` — poll the journal and resume parked runs.
 - `autractl demo` — deterministic list-files, read-README demo.
 - `autractl tools` — list the built-in tools.
 
