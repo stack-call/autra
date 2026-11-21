@@ -1,7 +1,7 @@
 use autra_core::{HistoryItem, ModelCallSpec, ToolSpec};
 use thiserror::Error;
 
-const TRUNCATE_TO: usize = 512;
+const BUDGET_MARKER: &str = "\n[context budget]";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SkillSummary {
@@ -70,7 +70,13 @@ impl ContextBuilder for SimpleContextBuilder {
 
         let mut messages = request.history.to_vec();
         if let Some(max_chars) = self.max_chars {
-            compact_content(&mut messages, max_chars);
+            let base = system.chars().count() + tool_chars(request.tools);
+            if base >= max_chars {
+                return Err(ContextError::new(format!(
+                    "context budget {max_chars} cannot fit the system prompt and tool schemas ({base} chars)"
+                )));
+            }
+            compact_content(&mut messages, max_chars - base)?;
         }
 
         Ok(ModelCallSpec {
@@ -81,38 +87,78 @@ impl ContextBuilder for SimpleContextBuilder {
     }
 }
 
-fn compact_content(messages: &mut [HistoryItem], max_chars: usize) {
+fn tool_chars(tools: &[ToolSpec]) -> usize {
+    tools
+        .iter()
+        .map(|tool| {
+            tool.name.chars().count()
+                + tool.description.chars().count()
+                + tool.input_schema.chars().count()
+        })
+        .sum()
+}
+
+fn compact_content(messages: &mut [HistoryItem], max_chars: usize) -> Result<(), ContextError> {
+    let mut iterations = 0;
     while content_len(messages) > max_chars {
-        let mut changed = false;
-        for item in messages.iter_mut() {
-            if let HistoryItem::Tool(outcome) = item {
-                if outcome.content.chars().count() > TRUNCATE_TO
-                    && !outcome.content.contains("[context budget]")
-                {
-                    truncate(&mut outcome.content);
-                    changed = true;
-                    break;
-                }
-            }
-        }
-        if !changed {
-            for item in messages.iter_mut() {
-                if let HistoryItem::Assistant {
-                    text: Some(text), ..
-                } = item
-                {
-                    if text.chars().count() > TRUNCATE_TO && !text.contains("[context budget]") {
-                        truncate(text);
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if !changed {
+        iterations += 1;
+        if iterations > 10_000 {
             break;
         }
+        let excess = content_len(messages) - max_chars;
+        if !shrink_largest(messages, excess) {
+            return Err(ContextError::new(format!(
+                "context budget exceeded: {} chars > {max_chars}",
+                content_len(messages)
+            )));
+        }
     }
+    Ok(())
+}
+
+/// Shrink the largest truncatable item by at least `excess` characters.
+fn shrink_largest(messages: &mut [HistoryItem], excess: usize) -> bool {
+    let mut best: Option<(usize, usize)> = None;
+    for (index, item) in messages.iter().enumerate() {
+        let length = match item {
+            HistoryItem::User(text) if !text.contains(BUDGET_MARKER) => text.chars().count(),
+            HistoryItem::Assistant {
+                text: Some(text), ..
+            } if !text.contains(BUDGET_MARKER) => text.chars().count(),
+            HistoryItem::Tool(outcome) if !outcome.content.contains(BUDGET_MARKER) => {
+                outcome.content.chars().count()
+            }
+            _ => 0,
+        };
+        if length > best.map_or(0, |(_, current)| current) {
+            best = Some((index, length));
+        }
+    }
+    let Some((index, length)) = best else {
+        return false;
+    };
+    let target = length
+        .saturating_sub(excess)
+        .max(BUDGET_MARKER.chars().count());
+    match &mut messages[index] {
+        HistoryItem::User(text) => truncate_to(text, target),
+        HistoryItem::Assistant {
+            text: Some(text), ..
+        } => truncate_to(text, target),
+        HistoryItem::Tool(outcome) => truncate_to(&mut outcome.content, target),
+        _ => return false,
+    }
+    true
+}
+
+fn truncate_to(text: &mut String, max_chars: usize) {
+    if text.chars().count() <= max_chars {
+        return;
+    }
+    let keep = max_chars.saturating_sub(BUDGET_MARKER.chars().count());
+    let mut truncated: String = text.chars().take(keep).collect();
+    truncated.push_str(BUDGET_MARKER);
+    *text = truncated;
 }
 
 fn content_len(messages: &[HistoryItem]) -> usize {
@@ -132,12 +178,6 @@ fn content_len(messages: &[HistoryItem]) -> usize {
             HistoryItem::Tool(outcome) => outcome.content.chars().count(),
         })
         .sum()
-}
-
-fn truncate(text: &mut String) {
-    let mut truncated: String = text.chars().take(TRUNCATE_TO).collect();
-    truncated.push_str("\n[context budget]");
-    *text = truncated;
 }
 
 #[cfg(test)]
@@ -199,5 +239,43 @@ mod tests {
             }
             other => panic!("expected a tool item, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_long_user_message_is_truncated_to_fit() {
+        let builder = SimpleContextBuilder::default().with_max_chars(64);
+        let history = vec![HistoryItem::User("a".repeat(2000))];
+
+        let request = builder
+            .build(ContextRequest {
+                instructions: None,
+                history: &history,
+                tools: &[],
+            })
+            .unwrap();
+
+        match &request.messages[0] {
+            HistoryItem::User(text) => {
+                assert!(text.chars().count() <= 64);
+                assert!(text.contains("[context budget]"));
+            }
+            other => panic!("expected a user item, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_system_prompt_counts_toward_the_budget() {
+        let builder = SimpleContextBuilder::default().with_max_chars(8);
+        let history = vec![HistoryItem::User("hello".to_owned())];
+
+        let error = builder
+            .build(ContextRequest {
+                instructions: Some("instructions that do not fit"),
+                history: &history,
+                tools: &[],
+            })
+            .unwrap_err();
+
+        assert!(error.to_string().contains("cannot fit"));
     }
 }

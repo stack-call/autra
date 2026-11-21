@@ -58,6 +58,7 @@ struct Flags {
     session: Option<String>,
     policy: Option<String>,
     actor: Option<String>,
+    context_chars: Option<usize>,
     unknown_only: bool,
     local: bool,
     rest: Vec<String>,
@@ -672,6 +673,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         session: None,
         policy: None,
         actor: None,
+        context_chars: None,
         unknown_only: false,
         local: false,
         rest: Vec::new(),
@@ -731,6 +733,20 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
                 }
             },
             "--unknown" => flags.unknown_only = true,
+            "--context-chars" => match iter.next() {
+                Some(value) => match value.parse::<usize>() {
+                    Ok(chars) if chars > 0 => flags.context_chars = Some(chars),
+                    _ => {
+                        eprintln!("--context-chars requires a positive integer");
+                        usage();
+                        return Err(());
+                    }
+                },
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
             "--local" => flags.local = true,
             "--yes" | "-y" => flags.auto_approve = true,
             "--read-only" => flags.read_only = true,
@@ -819,6 +835,10 @@ fn build_agent_with_approver(
         .max_turns(24)
         .max_tool_calls(64)
         .max_parallel_tool_calls(4);
+    let builder = match flags.context_chars {
+        Some(max_chars) => builder.context_budget_chars(max_chars),
+        None => builder,
+    };
     let model_name = effective_model(flags)?;
     let builder = match model_name.as_deref() {
         Some(name) => builder.model(model_from_env(name)?),
@@ -1117,6 +1137,7 @@ OPTIONS:
   --actor <name>     operator identity recorded on approvals
   --yes              auto-approve gated tools
   --read-only        only expose read-only tools
+  --context-chars <n> cap the model context (system, tools and history)
 
 ENVIRONMENT:
   OPENAI_API_KEY     required when a real model is used

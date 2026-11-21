@@ -34,7 +34,7 @@ adapters. Memory, MCP and full Planning/Workflow remain future work.
 
 - ReAct Stepper and local execution host.
 - Sequential and bounded parallel tool batches.
-- Budgets, cooperative cancellation and optional Effect timeouts.
+- Budgets, cooperative cancellation (an in-flight model request is aborted) and optional Effect timeouts.
 - Approval bound to Run, call, tool and argument digest.
 - In-memory Sessions with multiple turns.
 - OpenAI-compatible provider with SSE streaming and non-streaming completions.

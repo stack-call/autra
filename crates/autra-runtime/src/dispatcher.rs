@@ -331,6 +331,26 @@ impl OutboxDispatcher {
     }
 }
 
+pub(crate) async fn await_with_cancel<F, T>(future: F, cancel: Option<&CancelFlag>) -> Option<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    let Some(cancel) = cancel else {
+        return Some(future.await);
+    };
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => return Some(result),
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                if cancel.is_cancelled() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
 fn next_claim_id(prefix: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -456,11 +476,38 @@ async fn dispatch_entry(
             let result = match options.delta.clone() {
                 Some(sink) => {
                     let mut on_delta = move |text: String| sink(text);
-                    dispatcher
-                        .call_model_streaming(spec, options.timeout, &mut on_delta)
-                        .await
+                    let call =
+                        dispatcher.call_model_streaming(spec, options.timeout, &mut on_delta);
+                    match await_with_cancel(call, options.cancel).await {
+                        Some(result) => result,
+                        None => {
+                            return finish_entry(
+                                journal,
+                                run_id,
+                                entry,
+                                DispatchOutcome::Cancelled,
+                                known_tool,
+                                claim_id,
+                            );
+                        }
+                    }
                 }
-                None => dispatcher.call_model(spec, options.timeout).await,
+                None => {
+                    let call = dispatcher.call_model(spec, options.timeout);
+                    match await_with_cancel(call, options.cancel).await {
+                        Some(result) => result,
+                        None => {
+                            return finish_entry(
+                                journal,
+                                run_id,
+                                entry,
+                                DispatchOutcome::Cancelled,
+                                known_tool,
+                                claim_id,
+                            );
+                        }
+                    }
+                }
             };
             DispatchOutcome::Model(result)
         }

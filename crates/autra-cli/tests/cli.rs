@@ -123,6 +123,17 @@ fn env_file_model_is_used_unless_local() {
 }
 
 #[test]
+fn context_chars_requires_a_positive_integer() {
+    let output = autractl()
+        .args(["run", "--local", "--context-chars", "0", "hello"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("positive integer"));
+}
+
+#[test]
 fn a_misspelled_policy_key_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let policy = dir.path().join("policy.json");

@@ -323,3 +323,40 @@ async fn cancel_during_final_model_call_completes_the_run() {
     assert_eq!(outcome.status(), RunStatus::Completed);
     assert_eq!(outcome.answer(), Some("finished"));
 }
+
+struct HangingModel;
+
+#[async_trait]
+impl ModelProvider for HangingModel {
+    async fn complete(&self, _request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        Ok(final_answer("too late"))
+    }
+}
+
+#[tokio::test]
+async fn cancelling_interrupts_an_in_flight_model_call() {
+    let cancel = CancelFlag::new();
+    let agent = Agent::builder("cancel-model")
+        .model(HangingModel)
+        .build()
+        .unwrap();
+    let options = RunOptions {
+        cancel: cancel.clone(),
+        ..RunOptions::default()
+    };
+    let cancel_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        cancel.cancel();
+    });
+    let started = std::time::Instant::now();
+
+    let outcome = agent.run_with_options("go", options, |_| {}).await.unwrap();
+    cancel_task.await.unwrap();
+
+    assert_eq!(outcome.status(), RunStatus::Cancelled);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "cancellation must not wait for the model timeout"
+    );
+}

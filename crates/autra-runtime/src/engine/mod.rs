@@ -15,7 +15,8 @@ use std::time::Duration;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, BudgetHandle, BudgetSnapshot, CancelFlag,
     Disposition, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, EventKind,
-    HistoryItem, ModelCallSpec, RunId, ToolCallRequest, ToolOutcome, TransitionProposal,
+    HistoryItem, ModelCallSpec, ModelOutput, RunId, ToolCallRequest, ToolOutcome,
+    TransitionProposal,
 };
 use autra_execution::{
     Approver, ChildExecutionContext, DurableTransitionStore, EffectJournal, ObserverHook,
@@ -28,13 +29,19 @@ use crate::approval::{ApprovalDecision, digest_intent};
 use crate::child::{ChildHandle, ChildSpec};
 use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
-    OutboxDispatcher,
+    OutboxDispatcher, await_with_cancel,
 };
 use crate::hub::RunHub;
 use streaming::{await_with_deltas, delta_channel};
 
 /// Drives one Run: accepts events, commits transitions, executes effects and
 /// resumes committed checkpoints.
+#[derive(Clone)]
+enum ModelStep {
+    Output(ModelOutput),
+    Cancelled,
+}
+
 #[derive(Clone)]
 pub struct LocalEngine {
     dispatcher: Arc<dyn Dispatcher>,
@@ -502,7 +509,7 @@ impl LocalEngine {
                                 limit: 1,
                                 max_parallel: 1,
                                 timeout: effect_timeout,
-                                cancel: None,
+                                cancel: Some(&options.cancel),
                                 lease: DEFAULT_CLAIM_LEASE,
                                 budget: None,
                                 child_execution: None,
@@ -528,7 +535,10 @@ impl LocalEngine {
                                     )
                                 })?;
                             match result.outcome {
-                                DispatchOutcome::Model(output) => output.map_err(RunError::Model),
+                                DispatchOutcome::Model(output) => {
+                                    output.map(ModelStep::Output).map_err(RunError::Model)
+                                }
+                                DispatchOutcome::Cancelled => Ok(ModelStep::Cancelled),
                                 _ => Err(RunError::Protocol(
                                     "the model effect produced a non-model outcome".to_owned(),
                                 )),
@@ -543,22 +553,35 @@ impl LocalEngine {
                                 effect_timeout,
                                 &mut emit,
                             );
-                            await_with_deltas(call, &mut deltas, &mut on_event)
-                                .await
-                                .map_err(RunError::Model)
+                            match await_with_cancel(
+                                await_with_deltas(call, &mut deltas, &mut on_event),
+                                Some(&options.cancel),
+                            )
+                            .await
+                            {
+                                Some(result) => {
+                                    result.map(ModelStep::Output).map_err(RunError::Model)
+                                }
+                                None => {
+                                    effect_mut(&mut effects, &effect_id)
+                                        .set_status(EffectStatus::CancelledBeforeDispatch);
+                                    Ok(ModelStep::Cancelled)
+                                }
+                            }
                         }
                     }
                 }
                 .instrument(model_span)
                 .await;
                 let output = match output_result {
-                    Ok(output) => {
+                    Ok(ModelStep::Output(output)) => {
                         if self.journal.is_none() {
                             effect_mut(&mut effects, &effect_id)
                                 .apply_model_success(output.text.clone());
                         }
                         output
                     }
+                    Ok(ModelStep::Cancelled) => continue,
                     Err(error) => {
                         let message = error.to_string();
                         if self.journal.is_none() {
