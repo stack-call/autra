@@ -343,7 +343,12 @@ impl LocalEngine {
                     return Err(RunError::Step(error));
                 }
             };
-            let (intents, disposition) = accept_local(&mut state, transition, expected_version);
+            let TransitionProposal {
+                mut next,
+                intents,
+                disposition,
+            } = transition;
+            next.state_version = expected_version + 1;
 
             let first_new = effects.len();
             let mut tool_calls: Vec<(EffectId, ToolCallRequest)> = Vec::new();
@@ -393,11 +398,14 @@ impl LocalEngine {
                         &run_id,
                         expected_version,
                         &event,
-                        &state,
+                        &next,
                         &effects[first_new..],
                     )
                     .map_err(|error| RunError::Journal(error.to_string()))?;
             }
+            // Apply only after the authoritative transition succeeded. If the
+            // commit fails, the in-memory state is left untouched.
+            state = next;
             if let Some(observer) = &self.observer {
                 for effect in &effects[first_new..] {
                     observer.on_effect_committed(&run_id, effect);
@@ -422,16 +430,6 @@ impl LocalEngine {
                         });
                     }
                     tracing::info!(phase = ?state.phase, "agent run finished");
-                    if let Some(journal) = &self.journal {
-                        journal
-                            .save_run(&state)
-                            .map_err(|error| RunError::Journal(error.to_string()))?;
-                        for effect in &effects {
-                            journal
-                                .record(&run_id, effect)
-                                .map_err(|error| RunError::Journal(error.to_string()))?;
-                        }
-                    }
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
                     }
@@ -447,16 +445,6 @@ impl LocalEngine {
                         message: message.clone(),
                     });
                     tracing::warn!(message = %message, "agent run failed");
-                    if let Some(journal) = &self.journal {
-                        journal
-                            .save_run(&state)
-                            .map_err(|error| RunError::Journal(error.to_string()))?;
-                        for effect in &effects {
-                            journal
-                                .record(&run_id, effect)
-                                .map_err(|error| RunError::Journal(error.to_string()))?;
-                        }
-                    }
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
                     }
@@ -1220,16 +1208,6 @@ fn mark_cancelled_before_dispatch<F: FnMut(&RunEvent)>(
         }
     }
     Ok(())
-}
-
-fn accept_local(
-    state: &mut AgentState,
-    proposal: TransitionProposal,
-    expected_version: u64,
-) -> (Vec<EffectIntent>, Disposition) {
-    *state = proposal.next;
-    state.state_version = expected_version + 1;
-    (proposal.intents, proposal.disposition)
 }
 
 fn cancel_staged_effects(
