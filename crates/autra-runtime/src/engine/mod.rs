@@ -236,7 +236,9 @@ impl LocalEngine {
         }
         let mut state = AgentState::new(run_id.clone(), budget);
         state.parent_run_id = parent_run_id;
+        let before_initialize = state.clone();
         stepper.initialize(&mut state, &history);
+        validator::validate_initialized(&before_initialize, &state)?;
         if let Some(hub) = &self.hub {
             hub.start(RunSnapshot::from_state(&state, 0, 0));
         }

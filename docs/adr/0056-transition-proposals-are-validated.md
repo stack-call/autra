@@ -33,7 +33,10 @@ The Runtime validates every proposal before recording Effects or committing:
   terminal phases only to themselves.
 - `Failed` must carry `last_error`.
 
-A rejected proposal fails the Run before any Effect is dispatched.
+The same identity, budget and `Ready` phase rules are checked after
+`AgentStepper::initialize`, so engine initialisation cannot rewrite the Run's
+identity or budget. A rejected proposal or initialisation fails the Run before
+any Effect is dispatched.
 
 ## Consequences
 

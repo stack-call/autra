@@ -7,6 +7,33 @@
 use autra_core::{AgentPhase, AgentState};
 use autra_execution::RunError;
 
+pub(super) fn validate_initialized(
+    current: &AgentState,
+    next: &AgentState,
+) -> Result<(), RunError> {
+    if next.run_id != current.run_id {
+        return Err(invalid("initialize must not change the run id"));
+    }
+    if next.parent_run_id != current.parent_run_id {
+        return Err(invalid("initialize must not change the parent run id"));
+    }
+    if next.session_id != current.session_id || next.turn_id != current.turn_id {
+        return Err(invalid(
+            "initialize must not change session or turn identity",
+        ));
+    }
+    if next.state_version != current.state_version {
+        return Err(invalid("initialize must not change state_version"));
+    }
+    if next.budget != current.budget {
+        return Err(invalid("initialize must not change the budget"));
+    }
+    if next.phase != AgentPhase::Ready {
+        return Err(invalid("initialize must leave the run in Ready"));
+    }
+    Ok(())
+}
+
 pub(super) fn validate(
     current: &AgentState,
     next: &AgentState,

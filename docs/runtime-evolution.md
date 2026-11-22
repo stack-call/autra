@@ -5,6 +5,13 @@ implemented.** This page records a design review of extension placement and
 Runtime structure. It does not change the execution semantics in
 [`execution-model.md`](execution-model.md) or [`durability.md`](durability.md).
 
+**Implementation update:** the lifecycle split and its commit-time ordering, the
+prepare/commit/apply boundary, and the `EffectExecutor` extraction are now
+implemented. The execution middleware chain and the remaining coordinator
+decomposition are still proposals. See
+[`extension-system-review.md`](extension-system-review.md) for the current
+security and consistency review.
+
 ## Decision summary
 
 Two dimensions are often conflated:

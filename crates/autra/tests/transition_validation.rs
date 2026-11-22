@@ -86,3 +86,37 @@ async fn a_transition_must_follow_the_phase_graph() {
             .contains("illegal phase transition")
     );
 }
+
+struct BadInitialize;
+
+#[async_trait]
+impl AgentStepper for BadInitialize {
+    fn initialize(&self, state: &mut AgentState, _history: &[autra_core::HistoryItem]) {
+        state.run_id = RunId::new("other-run");
+    }
+
+    fn transition(
+        &self,
+        state: &AgentState,
+        _event: &AcceptedEvent,
+    ) -> Result<TransitionProposal, StepError> {
+        Ok(TransitionProposal {
+            next: state.clone(),
+            intents: Vec::new(),
+            disposition: Disposition::Continue,
+        })
+    }
+}
+
+#[tokio::test]
+async fn initialize_cannot_change_the_run_identity() {
+    let agent = Agent::builder("invalid-initialize")
+        .model(EchoModel)
+        .stepper(BadInitialize)
+        .build()
+        .unwrap();
+
+    let error = agent.run("go").await.unwrap_err().to_string();
+
+    assert!(error.contains("initialize must not change the run id"));
+}

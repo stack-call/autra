@@ -14,8 +14,10 @@ answer different questions.
 
 A design review of the runtime's own evolution — coordinator decomposition,
 lifecycle versus execution middleware, and the timing of committed events — is
-recorded in [`runtime-evolution.md`](runtime-evolution.md). It is a proposal,
-not current behavior.
+recorded in [`runtime-evolution.md`](runtime-evolution.md). The current
+extension security, trust boundaries and remaining gaps are in
+[`extension-system-review.md`](extension-system-review.md). Both are proposals
+unless a section explicitly says otherwise.
 
 ## Three collaborating systems
 
