@@ -264,4 +264,27 @@ impl DurableTransitionStore for MemoryJournal {
         }
         Ok(())
     }
+
+    fn commit_terminal(
+        &self,
+        run_id: &RunId,
+        expected_version: u64,
+        state: &AgentState,
+    ) -> Result<(), JournalError> {
+        if state.state_version != expected_version + 1 {
+            return Err(JournalError::new(format!(
+                "terminal state version {} does not follow {expected_version}",
+                state.state_version
+            )));
+        }
+        let mut runs = self.runs.lock().expect("journal lock poisoned");
+        let current = runs.get(run_id).map_or(0, |state| state.state_version);
+        if current != expected_version {
+            return Err(JournalError::new(format!(
+                "state version conflict for run `{run_id}`: expected {expected_version}, found {current}"
+            )));
+        }
+        runs.insert(run_id.clone(), state.clone());
+        Ok(())
+    }
 }

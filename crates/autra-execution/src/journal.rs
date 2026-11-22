@@ -139,4 +139,18 @@ pub trait DurableTransitionStore: EffectJournal {
         state: &AgentState,
         new_effects: &[EffectRecord],
     ) -> Result<(), JournalError>;
+
+    /// Commit a terminal state without introducing a new accepted event.
+    ///
+    /// Used for runtime failures that happen outside a stepper transition, such
+    /// as a model transport error. Hosts that support optimistic concurrency
+    /// must reject a stale `expected_version` instead of overwriting state.
+    fn commit_terminal(
+        &self,
+        _run_id: &RunId,
+        _expected_version: u64,
+        state: &AgentState,
+    ) -> Result<(), JournalError> {
+        self.save_run(state)
+    }
 }

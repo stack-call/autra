@@ -111,6 +111,11 @@ Recovery also checks engine-owned state: a checkpoint whose `engine_id` is not
 the active stepper, whose `schema_revision` is newer, or whose payload cannot
 be decoded fails the resume. It is never replaced with an empty history.
 
+Failure paths that happen outside a stepper transition (for example a model
+transport error) use `commit_terminal` with the expected `state_version` rather
+than an unconditional `save_run`. A stale terminal commit is rejected, so a
+failed coordinator cannot overwrite a newer state.
+
 Outbox claims carry a 30-second lease. `Agent::drain_outbox` and
 `autractl outbox` reclaim due rows. Completing or releasing a row requires the
 current claim id, so a worker whose lease expired cannot remove an effect now

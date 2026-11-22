@@ -587,4 +587,79 @@ impl DurableTransitionStore for SqliteEffectJournal {
             .map_err(|error| JournalError::new(format!("cannot commit journal: {error}")))?;
         Ok(())
     }
+
+    fn commit_terminal(
+        &self,
+        run_id: &RunId,
+        expected_version: u64,
+        state: &AgentState,
+    ) -> Result<(), JournalError> {
+        if state.state_version != expected_version + 1 {
+            return Err(JournalError::new(format!(
+                "terminal state version {} does not follow {expected_version}",
+                state.state_version
+            )));
+        }
+        let payload = serde_json::to_string(state)
+            .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let transaction = connection.transaction().map_err(|error| {
+            JournalError::new(format!("cannot begin terminal transaction: {error}"))
+        })?;
+        let current: Option<i64> = transaction
+            .query_row(
+                "SELECT state_version FROM runs WHERE run_id = ?1",
+                params![run_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| JournalError::new(format!("cannot read run version: {error}")))?;
+        match current {
+            Some(version) if version as u64 == expected_version => {
+                transaction
+                    .execute(
+                        "UPDATE runs SET state_json = ?1, state_version = ?2,
+                         updated_at = CURRENT_TIMESTAMP
+                         WHERE run_id = ?3 AND state_version = ?4",
+                        params![
+                            payload,
+                            state.state_version as i64,
+                            run_id.as_str(),
+                            expected_version as i64
+                        ],
+                    )
+                    .map_err(|error| {
+                        JournalError::new(format!("cannot commit terminal state: {error}"))
+                    })?;
+            }
+            None if expected_version == 0 => {
+                transaction
+                    .execute(
+                        "INSERT INTO runs (run_id, state_json, state_version)
+                         VALUES (?1, ?2, ?3)",
+                        params![run_id.as_str(), payload, state.state_version as i64],
+                    )
+                    .map_err(|error| {
+                        JournalError::new(format!("cannot insert terminal state: {error}"))
+                    })?;
+            }
+            Some(version) => {
+                return Err(JournalError::new(format!(
+                    "state version conflict for run `{run_id}`: expected {expected_version}, found {version}"
+                )));
+            }
+            None => {
+                return Err(JournalError::new(format!(
+                    "state version conflict for run `{run_id}`: expected {expected_version}, found none"
+                )));
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|error| JournalError::new(format!("cannot commit terminal state: {error}")))?;
+        Ok(())
+    }
 }

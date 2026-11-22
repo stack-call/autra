@@ -1,6 +1,8 @@
-use autra_core::{EffectId, EffectKind, EffectRecord, EffectStatus, RunId};
+use autra_core::{
+    AgentPhase, AgentState, BudgetSnapshot, EffectId, EffectKind, EffectRecord, EffectStatus, RunId,
+};
 use autra_durable_sqlite::SqliteEffectJournal;
-use autra_execution::EffectJournal;
+use autra_execution::{DurableTransitionStore, EffectJournal};
 use tempfile::tempdir;
 
 fn authorized_effect() -> EffectRecord {
@@ -123,4 +125,29 @@ fn a_newer_schema_version_is_rejected() {
     let error = SqliteEffectJournal::open(&path).err().expect("must fail");
 
     assert!(error.to_string().contains("newer"));
+}
+
+#[test]
+fn terminal_commits_use_the_expected_version() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("terminal.db");
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    let run_id = RunId::new("terminal");
+    let mut state = AgentState::new(run_id.clone(), BudgetSnapshot::new(4, 4));
+    state.phase = AgentPhase::Failed;
+    state.last_error = Some("boom".to_owned());
+    state.state_version = 1;
+
+    journal.commit_terminal(&run_id, 0, &state).unwrap();
+
+    let stored = journal.load_run(&run_id).unwrap().unwrap();
+    assert_eq!(stored.phase, AgentPhase::Failed);
+    assert_eq!(stored.state_version, 1);
+
+    let mut stale = state.clone();
+    stale.state_version = 2;
+    assert!(
+        journal.commit_terminal(&run_id, 0, &stale).is_err(),
+        "a stale terminal commit must not overwrite newer state"
+    );
 }

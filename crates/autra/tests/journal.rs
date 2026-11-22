@@ -7,7 +7,8 @@ use autra::{
     EffectJournal, JournalError, MemoryJournal,
 };
 use autra_core::{
-    AcceptedEvent, AgentState, EffectId, EffectRecord, EventKind, ModelCallSpec, ModelOutput, RunId,
+    AcceptedEvent, AgentPhase, AgentState, BudgetSnapshot, EffectId, EffectRecord, EventKind,
+    ModelCallSpec, ModelOutput, RunId,
 };
 use autra_harness::{EchoModel, ModelError, ModelProvider};
 
@@ -127,5 +128,28 @@ async fn a_failed_commit_does_not_apply_state_or_dispatch() {
         calls.load(Ordering::SeqCst),
         0,
         "no Effect may be dispatched after a failed commit"
+    );
+}
+
+#[tokio::test]
+async fn terminal_commits_use_the_expected_version() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("terminal");
+    let mut state = AgentState::new(run_id.clone(), BudgetSnapshot::new(4, 4));
+    state.phase = AgentPhase::Failed;
+    state.last_error = Some("boom".to_owned());
+    state.state_version = 1;
+
+    journal.commit_terminal(&run_id, 0, &state).unwrap();
+
+    let stored = journal.load_run(&run_id).unwrap().unwrap();
+    assert_eq!(stored.phase, AgentPhase::Failed);
+    assert_eq!(stored.state_version, 1);
+
+    let mut stale = state.clone();
+    stale.state_version = 2;
+    assert!(
+        journal.commit_terminal(&run_id, 0, &stale).is_err(),
+        "a stale terminal commit must not overwrite newer state"
     );
 }

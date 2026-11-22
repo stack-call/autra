@@ -32,6 +32,7 @@ Proposal → Validation → Commit
 | Plan 按 Run 隔离 | ✅ | `PlanStore`、`Agent::plan_for(&RunId)`，ADR-0055 |
 | Lifecycle 拆分与时序 | ✅ | `on_effect_proposed` / `committed` / `authorized` / `rejected` / `resolved`；committed 在 `commit_transition` 之后 |
 | 先提交后应用状态 | ✅ | `drive` 先 `commit_transition`，成功后才 `state = next` |
+| 失败/终态版本化提交 | ✅ | `commit_terminal` 使用 `expected_version` CAS，ADR-0057 |
 | EffectExecutor 提取 | ✅ | 工具/模型执行控制移入 `engine/executor.rs` |
 | 审批参数摘要绑定 | ✅ | `digest_intent` 绑定到 `ApprovalRequest` 与 `EffectRecord` |
 | ReAct 状态版本拒绝 | ✅ | 异构/更高 revision/损坏状态返回 `StepError`，不回退为空历史 |

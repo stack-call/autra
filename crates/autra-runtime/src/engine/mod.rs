@@ -318,12 +318,13 @@ impl LocalEngine {
                     let message = error.to_string();
                     state.phase = AgentPhase::Failed;
                     state.last_error = Some(message.clone());
+                    state.state_version = expected_version + 1;
                     on_event(&RunEvent::RunFailed {
                         message: message.clone(),
                     });
                     if let Some(journal) = &self.journal {
                         journal
-                            .save_run(&state)
+                            .commit_terminal(&run_id, expected_version, &state)
                             .map_err(|error| RunError::Journal(error.to_string()))?;
                     }
                     if let Some(observer) = &self.observer {
@@ -344,10 +345,11 @@ impl LocalEngine {
                 let message = error.to_string();
                 state.phase = AgentPhase::Failed;
                 state.last_error = Some(message.clone());
+                state.state_version = expected_version + 1;
                 on_event(&RunEvent::RunFailed { message });
                 if let Some(journal) = &self.journal {
                     journal
-                        .save_run(&state)
+                        .commit_terminal(&run_id, expected_version, &state)
                         .map_err(|save_error| RunError::Journal(save_error.to_string()))?;
                 }
                 if let Some(observer) = &self.observer {
@@ -519,12 +521,14 @@ impl LocalEngine {
                     }
                     Err(error) => {
                         let message = error.to_string();
+                        let current_version = state.state_version;
                         state.phase = AgentPhase::Failed;
                         state.last_error = Some(message.clone());
+                        state.state_version = current_version + 1;
                         on_event(&RunEvent::RunFailed { message });
                         if let Some(journal) = &self.journal {
                             journal
-                                .save_run(&state)
+                                .commit_terminal(&run_id, current_version, &state)
                                 .map_err(|save_error| RunError::Journal(save_error.to_string()))?;
                         }
                         if let Some(observer) = &self.observer {
