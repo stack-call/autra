@@ -341,7 +341,14 @@ impl LocalEngine {
                 disposition,
             } = transition;
             next.state_version = expected_version + 1;
-            if let Err(error) = validator::validate(&state, &next, expected_version) {
+            if let Err(error) = validator::validate(
+                &state,
+                &next,
+                expected_version,
+                &event,
+                disposition,
+                &intents,
+            ) {
                 let message = error.to_string();
                 state.phase = AgentPhase::Failed;
                 state.last_error = Some(message.clone());

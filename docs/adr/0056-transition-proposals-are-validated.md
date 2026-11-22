@@ -32,6 +32,17 @@ The Runtime validates every proposal before recording Effects or committing:
   `AwaitingTool -> {AwaitingTool, AwaitingModel, Completed, Failed, Cancelled}`,
   terminal phases only to themselves.
 - `Failed` must carry `last_error`.
+- The accepted event must be legal for the current phase: `RunStarted` only in
+  `Ready`, `ModelResult` only in `AwaitingModel`, `ToolResult` only in
+  `AwaitingTool`, `ResumeRequested` only in `AwaitingModel`, and
+  `CancelRequested` only in a non-terminal phase.
+- Disposition must match the next phase: `Finished` ends completed or cancelled,
+  `Failed` ends failed, and `Continue` stays non-terminal.
+- Intent shape: at most one model call per transition; a model intent requires
+  `AwaitingModel`; tool intents require `AwaitingTool`; tool call ids are
+  non-empty and unique; a cancelled transition proposes no new intents.
+- Budget accounting is checked against the proposal: the increase in
+  `tool_calls_used` must equal the number of tool intents.
 
 The same identity, budget and `Ready` phase rules are checked after
 `AgentStepper::initialize`, so engine initialisation cannot rewrite the Run's

@@ -27,7 +27,7 @@ Proposal → Validation → Commit
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| Transition Validator | ✅ | `crates/autra-runtime/src/engine/validator.rs`，ADR-0056 |
+| Transition Validator | ✅ | `engine/validator.rs`，ADR-0056；含 event/phase、disposition、intent 与预算一致性 |
 | 初始化状态校验 | ✅ | `validator::validate_initialized`；`initialize` 不能改身份/预算/phase |
 | Plan 按 Run 隔离 | ✅ | `PlanStore`、`Agent::plan_for(&RunId)`，ADR-0055 |
 | Lifecycle 拆分与时序 | ✅ | `on_effect_proposed` / `committed` / `authorized` / `rejected` / `resolved`；committed 在 `commit_transition` 之后 |
