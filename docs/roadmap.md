@@ -44,7 +44,7 @@ MCP Client is an M3 experience item; MCP Gateway/Server stays in M8.
 - Tool approval bound to Run, call, tool and argument digest; guarded write_file.
 - In-memory Sessions with sequential turns, history seeding and Run session/turn identity; SQLite-backed `SessionStore` with turn records and restore.
 - ContextBuilder seam with a character budget and on-demand Skills.
-- Tool-backed in-memory planning via `update_plan` and `Agent::plan()`.
+- Tool-backed in-memory planning via `update_plan` and `Agent::plan_for(&RunId)`.
 - Restricted subagents as named child Agents behind `spawn_subagent`.
 - `tracing` spans for Sessions, Runs, model calls and tool calls.
 - Basic outcome evaluation in `autra-eval`.

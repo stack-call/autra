@@ -8,6 +8,7 @@ mod executor;
 mod policy;
 mod recovery;
 mod streaming;
+mod validator;
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -337,6 +338,23 @@ impl LocalEngine {
                 disposition,
             } = transition;
             next.state_version = expected_version + 1;
+            if let Err(error) = validator::validate(&state, &next, expected_version) {
+                let message = error.to_string();
+                state.phase = AgentPhase::Failed;
+                state.last_error = Some(message.clone());
+                on_event(&RunEvent::RunFailed { message });
+                if let Some(journal) = &self.journal {
+                    journal
+                        .save_run(&state)
+                        .map_err(|save_error| RunError::Journal(save_error.to_string()))?;
+                }
+                if let Some(observer) = &self.observer {
+                    observer.on_run_finished(&run_id, &state.phase);
+                }
+                hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
+                hub_guard.finish();
+                return Err(error);
+            }
 
             let first_new = effects.len();
             let mut tool_calls: Vec<(EffectId, ToolCallRequest)> = Vec::new();

@@ -30,7 +30,7 @@ pub use middleware::{
 pub use model::{
     EchoModel, FakeModel, MODEL_PROTOCOL_VERSION, ModelCapabilities, ModelError, ModelProvider,
 };
-pub use planning::{PlanItem, PlanStatus, SharedPlan, UpdatePlanTool};
+pub use planning::{PlanItem, PlanStatus, PlanStore, SharedPlan, UpdatePlanTool};
 pub use react::{ReActStepper, react_engine_state, react_history, react_pending_tool_calls};
 pub use skills::{LoadSkillTool, Skill, SkillRegistry};
 pub use tools::{

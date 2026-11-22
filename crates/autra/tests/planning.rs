@@ -58,7 +58,7 @@ async fn update_plan_populates_the_agent_plan() {
     let outcome = agent.run("go").await.unwrap();
 
     assert_eq!(outcome.answer(), Some("done"));
-    let plan = agent.plan().unwrap();
+    let plan = agent.plan_for(&outcome.state().run_id).unwrap();
     assert_eq!(plan.len(), 2);
     assert_eq!(plan[0].title, "inspect");
     assert_eq!(plan[0].status, PlanStatus::Completed);

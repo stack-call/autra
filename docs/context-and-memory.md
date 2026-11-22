@@ -27,7 +27,9 @@ cannot fit, or tool-call arguments alone exceed the budget, building the request
 fails instead of sending an oversized prompt. It is a character proxy, not a
 tokenizer. Skills are loaded through `load_skill`, which does not grant
 permissions. Planning is a separate tool-backed checklist: `update_plan` replaces an
-in-memory plan and `Agent::plan()` exposes it. There is no retrieval memory yet.
+in-memory plan and `Agent::plan_for(&RunId)` exposes it. The plan is Run-scoped;
+concurrent Runs on one Agent cannot overwrite each other. There is no retrieval
+memory yet.
 
 ## Planned layers
 

@@ -32,7 +32,7 @@ Tests observe public behaviour, not private helpers.
 8. **Context and Skills** (`autra-harness`): context assembly, budget
    truncation with preserved items and an end-to-end `load_skill` call.
 9. **Planning** (`autra-runtime`): the update_plan tool, rendered statuses and
-   `Agent::plan()` after a Run.
+   `Agent::plan_for(&RunId)` after a Run.
 10. **Subagents** (`autra-runtime`): a named child answer, unknown child and
     child failure as an error outcome.
 11. **Tracing** (`autra-runtime`): the run-start event is captured with

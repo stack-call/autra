@@ -1,6 +1,6 @@
 //! Product facade over the local execution engine.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use autra_core::{AgentStepper, BudgetSnapshot, CancelFlag, HistoryItem, RunId};
@@ -10,7 +10,7 @@ use autra_execution::{
 };
 use autra_harness::{
     ContextBuilder, LoadSkillTool, MiddlewareStepper, ModelMiddleware, ModelRequestTransform,
-    PlanItem, ReActStepper, SharedPlan, SimpleContextBuilder, Skill, SkillRegistry, UpdatePlanTool,
+    PlanItem, PlanStore, ReActStepper, SimpleContextBuilder, Skill, SkillRegistry, UpdatePlanTool,
 };
 use thiserror::Error;
 
@@ -32,7 +32,7 @@ pub struct Agent {
     instructions: Option<String>,
     skills: SkillRegistry,
     context_budget_chars: Option<usize>,
-    plan: Option<SharedPlan>,
+    plan: Option<PlanStore>,
     context_builder: Option<Arc<dyn ContextBuilder>>,
     stepper: Option<Arc<dyn AgentStepper>>,
     middleware: ModelMiddleware,
@@ -48,10 +48,8 @@ impl Agent {
         &self.name
     }
 
-    pub fn plan(&self) -> Option<Vec<PlanItem>> {
-        self.plan
-            .as_ref()
-            .map(|plan| plan.lock().expect("plan lock poisoned").clone())
+    pub fn plan_for(&self, run_id: &RunId) -> Option<Vec<PlanItem>> {
+        self.plan.as_ref().and_then(|plan| plan.get(run_id))
     }
 
     pub async fn run(&self, input: &str) -> Result<RunOutcome, RunError> {
@@ -425,7 +423,7 @@ impl AgentBuilder {
             tools.register(SubagentTool::new(self.subagents.clone()));
         }
         let (instructions, plan) = if self.planning {
-            let plan: SharedPlan = Arc::new(Mutex::new(Vec::new()));
+            let plan = PlanStore::new();
             tools.register(UpdatePlanTool::new(plan.clone()));
             let instructions = match self.instructions {
                 Some(instructions) => format!(

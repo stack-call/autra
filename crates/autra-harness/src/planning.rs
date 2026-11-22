@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use autra_core::{EffectClass, ToolSpec};
+use autra_core::{EffectClass, RunId, ToolSpec};
+use autra_execution::{ToolContext, ToolInput, ToolOutput};
 use serde::Deserialize;
 
 use crate::tools::{Tool, ToolError};
@@ -40,19 +42,51 @@ pub struct PlanItem {
     pub status: PlanStatus,
 }
 
-pub type SharedPlan = Arc<Mutex<Vec<PlanItem>>>;
+/// Run-scoped plan storage.
+///
+/// A plan belongs to one Run; two Runs sharing an Agent must not overwrite each
+/// other. Persistence, if needed, belongs in an explicit Run/Session state
+/// protocol rather than this in-memory map.
+#[derive(Clone, Default)]
+pub struct PlanStore {
+    plans: Arc<Mutex<HashMap<RunId, Vec<PlanItem>>>>,
+}
+
+impl PlanStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, run_id: &RunId) -> Option<Vec<PlanItem>> {
+        self.plans
+            .lock()
+            .expect("plan lock poisoned")
+            .get(run_id)
+            .cloned()
+    }
+
+    pub fn replace(&self, run_id: &RunId, plan: Vec<PlanItem>) {
+        self.plans
+            .lock()
+            .expect("plan lock poisoned")
+            .insert(run_id.clone(), plan);
+    }
+}
+
+/// Compatibility alias for callers that named the old shared plan type.
+pub type SharedPlan = PlanStore;
 
 pub struct UpdatePlanTool {
-    plan: SharedPlan,
+    plans: PlanStore,
 }
 
 impl UpdatePlanTool {
-    pub fn new(plan: SharedPlan) -> Self {
-        Self { plan }
+    pub fn new(plans: PlanStore) -> Self {
+        Self { plans }
     }
 
-    pub fn plan(&self) -> Vec<PlanItem> {
-        self.plan.lock().expect("plan lock poisoned").clone()
+    pub fn plan(&self, run_id: &RunId) -> Option<Vec<PlanItem>> {
+        self.plans.get(run_id)
     }
 }
 
@@ -83,8 +117,18 @@ impl Tool for UpdatePlanTool {
         EffectClass::ReadOnly
     }
 
-    async fn call(&self, arguments: &str) -> Result<String, ToolError> {
-        let args: UpdatePlanArgs = serde_json::from_str(arguments)
+    async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
+        Err(ToolError::new(
+            "update_plan requires a run context and cannot be called directly",
+        ))
+    }
+
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let args: UpdatePlanArgs = serde_json::from_str(&input.arguments)
             .map_err(|error| ToolError::new(format!("invalid update_plan arguments: {error}")))?;
         let mut plan = Vec::with_capacity(args.items.len());
         for item in args.items {
@@ -97,8 +141,8 @@ impl Tool for UpdatePlanTool {
             });
         }
         let rendered = render(&plan);
-        *self.plan.lock().expect("plan lock poisoned") = plan;
-        Ok(rendered)
+        self.plans.replace(&context.run_id, plan);
+        Ok(ToolOutput::text(rendered))
     }
 }
 
@@ -115,27 +159,51 @@ fn render(items: &[PlanItem]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlanItem, PlanStatus, UpdatePlanTool};
+    use super::{PlanItem, PlanStatus, PlanStore, UpdatePlanTool};
     use crate::tools::Tool;
-    use std::sync::{Arc, Mutex};
+    use autra_core::RunId;
+    use autra_execution::{ToolContext, ToolInput};
+
+    fn context(run_id: &str) -> ToolContext {
+        ToolContext {
+            run_id: RunId::new(run_id),
+            call_id: "call-1".to_owned(),
+            parent_run_id: None,
+            cancel: None,
+            budget: None,
+            child_execution: None,
+        }
+    }
+
+    async fn update(tool: &UpdatePlanTool, run_id: &str, arguments: &str) -> String {
+        tool.execute(
+            ToolInput {
+                arguments: arguments.to_owned(),
+            },
+            context(run_id),
+        )
+        .await
+        .unwrap()
+        .content
+    }
 
     #[tokio::test]
     async fn replaces_and_renders_the_plan() {
-        let plan = Arc::new(Mutex::new(Vec::new()));
-        let tool = UpdatePlanTool::new(plan.clone());
+        let plans = PlanStore::new();
+        let tool = UpdatePlanTool::new(plans.clone());
 
-        let output = tool
-            .call(
-                r#"{"items":[{"title":"read","status":"completed"},{"title":"write","status":"in_progress"}]}"#,
-            )
-            .await
-            .unwrap();
+        let output = update(
+            &tool,
+            "run-1",
+            r#"{"items":[{"title":"read","status":"completed"},{"title":"write","status":"in_progress"}]}"#,
+        )
+        .await;
 
         assert!(output.contains("- [x] read"));
         assert!(output.contains("- [~] write"));
         assert_eq!(
-            tool.plan(),
-            vec![
+            tool.plan(&RunId::new("run-1")),
+            Some(vec![
                 PlanItem {
                     title: "read".to_owned(),
                     status: PlanStatus::Completed
@@ -144,27 +212,58 @@ mod tests {
                     title: "write".to_owned(),
                     status: PlanStatus::InProgress
                 }
-            ]
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn plans_are_isolated_per_run() {
+        let plans = PlanStore::new();
+        let tool = UpdatePlanTool::new(plans.clone());
+
+        update(
+            &tool,
+            "run-1",
+            r#"{"items":[{"title":"one","status":"pending"}]}"#,
+        )
+        .await;
+        update(
+            &tool,
+            "run-2",
+            r#"{"items":[{"title":"two","status":"completed"}]}"#,
+        )
+        .await;
+
+        assert_eq!(
+            tool.plan(&RunId::new("run-1")).unwrap()[0].title,
+            "one".to_owned()
+        );
+        assert_eq!(
+            tool.plan(&RunId::new("run-2")).unwrap()[0].title,
+            "two".to_owned()
         );
     }
 
     #[tokio::test]
     async fn empty_plan_is_explicit() {
-        let plan = Arc::new(Mutex::new(Vec::new()));
-        let tool = UpdatePlanTool::new(plan);
+        let tool = UpdatePlanTool::new(PlanStore::new());
 
-        let output = tool.call(r#"{"items":[]}"#).await.unwrap();
+        let output = update(&tool, "run-1", r#"{"items":[]}"#).await;
 
         assert_eq!(output, "(empty plan)");
     }
 
     #[tokio::test]
     async fn invalid_status_is_an_error() {
-        let plan = Arc::new(Mutex::new(Vec::new()));
-        let tool = UpdatePlanTool::new(plan);
+        let tool = UpdatePlanTool::new(PlanStore::new());
 
         let error = tool
-            .call(r#"{"items":[{"title":"x","status":"later"}]}"#)
+            .execute(
+                ToolInput {
+                    arguments: r#"{"items":[{"title":"x","status":"later"}]}"#.to_owned(),
+                },
+                context("run-1"),
+            )
             .await
             .unwrap_err();
 
