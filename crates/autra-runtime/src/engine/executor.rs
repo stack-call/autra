@@ -1,0 +1,606 @@
+//! Tool execution control: policy, approval, bounded concurrency, timeouts and
+//! result recording. The run loop owns state transitions; this module only
+//! executes Effects that were already committed.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use autra_core::{
+    BudgetHandle, CancelFlag, EffectId, EffectRecord, EffectStatus, ModelCallSpec, ModelOutput,
+    RunId, ToolCallRequest, ToolOutcome,
+};
+use autra_execution::{
+    Approver, ChildExecutionContext, DurableTransitionStore, ObserverHook, RunError, RunEvent,
+};
+use tracing::Instrument;
+
+use super::streaming::{await_with_deltas, delta_channel};
+use crate::dispatcher::{
+    DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, OutboxDispatcher,
+    await_with_cancel,
+};
+
+use super::{LocalEngine, emit_tool_result};
+
+pub(super) enum ModelStep {
+    Output(ModelOutput),
+    Cancelled,
+}
+
+pub(super) struct ModelExecutionContext<'a, F> {
+    pub on_event: &'a mut F,
+    pub run_id: &'a RunId,
+    pub effects: &'a mut Vec<EffectRecord>,
+    pub observer: Option<&'a Arc<dyn ObserverHook>>,
+    pub cancel: &'a CancelFlag,
+    pub effect_timeout: Option<Duration>,
+    pub turn: u32,
+}
+
+pub(super) struct ToolBatchContext<'a, F> {
+    pub on_event: &'a mut F,
+    pub run_id: &'a RunId,
+    pub approver: Option<&'a Arc<dyn Approver>>,
+    pub effects: &'a mut Vec<EffectRecord>,
+    pub budget: &'a BudgetHandle,
+    pub observer: Option<&'a Arc<dyn ObserverHook>>,
+}
+
+impl<'a, F> ToolBatchContext<'a, F>
+where
+    F: FnMut(&RunEvent),
+{
+    fn emit_stream(&mut self, event: &RunEvent) {
+        (self.on_event)(event);
+    }
+
+    fn start_tool(&mut self, call: &ToolCallRequest) {
+        self.emit_stream(&RunEvent::ToolCallStarted {
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+        });
+    }
+
+    fn emit_tool_result(&mut self, outcome: &ToolOutcome) {
+        emit_tool_result(&mut *self.on_event, outcome);
+    }
+
+    fn start_tool_outcome(&mut self, outcome: &ToolOutcome) {
+        self.emit_stream(&RunEvent::ToolCallStarted {
+            call_id: outcome.call_id.clone(),
+            name: outcome.name.clone(),
+        });
+    }
+
+    fn effect_mut(&mut self, effect_id: &EffectId) -> &mut EffectRecord {
+        self.effects
+            .iter_mut()
+            .find(|record| &record.id == effect_id)
+            .expect("effect record must exist")
+    }
+
+    fn record_tool_outcome(
+        &mut self,
+        effect_id: &EffectId,
+        known_tool: bool,
+        outcome: &ToolOutcome,
+    ) {
+        self.effect_mut(effect_id)
+            .apply_tool_outcome(outcome, known_tool);
+    }
+
+    fn emit_authorized(&self, effect_id: &EffectId) {
+        if let Some(observer) = self.observer {
+            if let Some(record) = self.effects.iter().find(|record| &record.id == effect_id) {
+                observer.on_effect_authorized(self.run_id, record);
+            }
+        }
+    }
+
+    fn emit_rejected(&self, effect_id: &EffectId) {
+        if let Some(observer) = self.observer {
+            if let Some(record) = self.effects.iter().find(|record| &record.id == effect_id) {
+                observer.on_effect_rejected(self.run_id, record);
+            }
+        }
+    }
+
+    fn emit_resolved(&self, effect_id: &EffectId) {
+        if let Some(observer) = self.observer {
+            if let Some(record) = self.effects.iter().find(|record| &record.id == effect_id) {
+                observer.on_effect_resolved(self.run_id, record);
+            }
+        }
+    }
+}
+
+pub(super) struct ToolBatchOutcome {
+    pub outcomes: Vec<ToolOutcome>,
+    pub cancelled: bool,
+}
+
+pub(super) struct EffectExecutor<'a> {
+    engine: &'a LocalEngine,
+}
+
+impl<'a> EffectExecutor<'a> {
+    pub(super) fn new(engine: &'a LocalEngine) -> Self {
+        Self { engine }
+    }
+
+    pub(super) async fn execute_model<F>(
+        &self,
+        effect_id: &EffectId,
+        request: &ModelCallSpec,
+        ctx: &mut ModelExecutionContext<'_, F>,
+    ) -> Result<ModelStep, RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        let on_event = &mut *ctx.on_event;
+        let run_id = ctx.run_id;
+        let effects = &mut *ctx.effects;
+        let observer = ctx.observer;
+        let cancel = ctx.cancel;
+        let effect_timeout = ctx.effect_timeout;
+        let turn = ctx.turn;
+
+        if cancel.is_cancelled() {
+            let record = super::effect_mut(effects, effect_id);
+            record.set_status(EffectStatus::CancelledBeforeDispatch);
+            if let Some(journal) = &self.engine.journal {
+                journal
+                    .record(run_id, record)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                journal
+                    .complete_outbox(effect_id, autra_execution::UNCLAIMED_CLAIM)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+            }
+            return Ok(ModelStep::Cancelled);
+        }
+
+        super::effect_mut(effects, effect_id).set_status(EffectStatus::Authorized);
+        on_event(&RunEvent::ModelCallStarted { turn });
+        if let Some(observer) = observer {
+            observer.on_model_request(run_id, turn);
+        }
+        let model_span = tracing::info_span!("gen_ai.model.call", turn);
+        let output_result = async {
+            let (delta, mut deltas) = delta_channel();
+            match &self.engine.journal {
+                Some(journal) => {
+                    let options = DispatchOptions {
+                        limit: 1,
+                        max_parallel: 1,
+                        timeout: effect_timeout,
+                        cancel: Some(cancel),
+                        lease: DEFAULT_CLAIM_LEASE,
+                        budget: None,
+                        child_execution: None,
+                        delta: Some(delta),
+                    };
+                    let dispatch = OutboxDispatcher::run_once_for_run_with(
+                        journal.as_ref(),
+                        run_id,
+                        options,
+                        self.engine.dispatcher.as_ref(),
+                        |_| {},
+                    );
+                    let results = await_with_deltas(dispatch, &mut deltas, on_event)
+                        .await
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    super::sync_effects(journal.as_ref(), run_id, effects)?;
+                    let result = results
+                        .into_iter()
+                        .find(|result| result.effect_id == *effect_id)
+                        .ok_or_else(|| {
+                            RunError::Protocol(
+                                "the claimed model effect produced no outcome".to_owned(),
+                            )
+                        })?;
+                    match result.outcome {
+                        DispatchOutcome::Model(output) => {
+                            output.map(ModelStep::Output).map_err(RunError::Model)
+                        }
+                        DispatchOutcome::Cancelled => Ok(ModelStep::Cancelled),
+                        _ => Err(RunError::Protocol(
+                            "the model effect produced a non-model outcome".to_owned(),
+                        )),
+                    }
+                }
+                None => {
+                    super::effect_mut(effects, effect_id).set_status(EffectStatus::Dispatched);
+                    let mut emit = move |text: String| delta(text);
+                    let call = self.engine.dispatcher.call_model_streaming(
+                        request,
+                        effect_timeout,
+                        &mut emit,
+                    );
+                    match await_with_cancel(
+                        await_with_deltas(call, &mut deltas, on_event),
+                        Some(cancel),
+                    )
+                    .await
+                    {
+                        Some(result) => result.map(ModelStep::Output).map_err(RunError::Model),
+                        None => {
+                            super::effect_mut(effects, effect_id)
+                                .set_status(EffectStatus::CancelledBeforeDispatch);
+                            Ok(ModelStep::Cancelled)
+                        }
+                    }
+                }
+            }
+        }
+        .instrument(model_span)
+        .await;
+
+        match output_result {
+            Ok(ModelStep::Output(output)) => {
+                if let Some(usage) = output.usage {
+                    on_event(&RunEvent::ModelUsage {
+                        prompt_tokens: usage.prompt_tokens,
+                        completion_tokens: usage.completion_tokens,
+                        total_tokens: usage.total_tokens,
+                    });
+                }
+                if self.engine.journal.is_none() {
+                    super::effect_mut(effects, effect_id).apply_model_success(output.text.clone());
+                }
+                if let Some(observer) = observer {
+                    if let Some(record) = effects.iter().find(|record| record.id == *effect_id) {
+                        observer.on_effect_resolved(run_id, record);
+                    }
+                }
+                Ok(ModelStep::Output(output))
+            }
+            Ok(ModelStep::Cancelled) => {
+                if let Some(observer) = observer {
+                    if let Some(record) = effects.iter().find(|record| record.id == *effect_id) {
+                        observer.on_effect_resolved(run_id, record);
+                    }
+                }
+                Ok(ModelStep::Cancelled)
+            }
+            Err(error) => {
+                if self.engine.journal.is_none() {
+                    super::effect_mut(effects, effect_id).apply_model_failure(error.to_string());
+                }
+                if let Some(observer) = observer {
+                    if let Some(record) = effects.iter().find(|record| record.id == *effect_id) {
+                        observer.on_effect_resolved(run_id, record);
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
+    pub(super) async fn execute_tool_batch<F>(
+        &self,
+        calls: Vec<(EffectId, ToolCallRequest)>,
+        limit: u32,
+        effect_timeout: Option<Duration>,
+        cancel: &autra_core::CancelFlag,
+        ctx: &mut ToolBatchContext<'_, F>,
+    ) -> Result<ToolBatchOutcome, RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        let limit = limit.max(1) as usize;
+        let run_id = ctx.run_id.clone();
+        let child_execution = ChildExecutionContext {
+            journal: self.engine.journal.clone(),
+            approver: self.engine.approver.clone(),
+            depth: 0,
+        };
+        let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
+        let mut approved: Vec<Option<(EffectId, ToolCallRequest)>> = vec![None; calls.len()];
+        let mut cancelled = false;
+
+        for (index, (effect_id, call)) in calls.iter().enumerate() {
+            if cancel.is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            let decision = match self.engine.policy_decision(&run_id, call) {
+                Some(decision) => decision,
+                None => {
+                    // Unknown tools are dispatched so the outcome is a normal
+                    // tool error, not an approval prompt.
+                    ctx.effect_mut(effect_id)
+                        .set_status(EffectStatus::Authorized);
+                    if self.engine.journal.is_none() {
+                        ctx.emit_authorized(effect_id);
+                    }
+                    approved[index] = Some((effect_id.clone(), call.clone()));
+                    continue;
+                }
+            };
+            if decision == autra_execution::PolicyDecision::Deny {
+                let outcome = super::policy_denied_outcome(call, &self.engine.policy.revision());
+                let record = ctx.effect_mut(effect_id);
+                record.set_status(EffectStatus::Rejected);
+                record.error = Some(outcome.content.clone());
+                if let Some(journal) = &self.engine.journal {
+                    journal
+                        .record(&run_id, record)
+                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                }
+                ctx.emit_tool_result(&outcome);
+                ctx.emit_rejected(effect_id);
+                outcomes[index] = Some(outcome);
+                continue;
+            }
+            if decision == autra_execution::PolicyDecision::Ask {
+                ctx.effect_mut(effect_id)
+                    .set_status(EffectStatus::AwaitingApproval);
+                let request = self.engine.approval_request(ctx.run_id, effect_id, call);
+                ctx.emit_stream(&RunEvent::ApprovalRequested {
+                    call_id: request.call_id.clone(),
+                    tool_name: request.tool_name.clone(),
+                    argument_digest: request.argument_digest.clone(),
+                });
+                let decision = self
+                    .engine
+                    .resolve_approval(&request, effect_id, ctx.approver)
+                    .await?;
+                let is_approved = decision == crate::approval::ApprovalDecision::Approved;
+                ctx.emit_stream(&RunEvent::ApprovalDecided {
+                    call_id: request.call_id.clone(),
+                    approved: is_approved,
+                });
+                if !is_approved {
+                    let outcome = super::rejected_outcome(call);
+                    let record = ctx.effect_mut(effect_id);
+                    record.set_status(EffectStatus::Rejected);
+                    record.error = Some(outcome.content.clone());
+                    if let Some(journal) = &self.engine.journal {
+                        journal
+                            .record(&run_id, record)
+                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                    }
+                    ctx.emit_tool_result(&outcome);
+                    ctx.emit_rejected(effect_id);
+                    outcomes[index] = Some(outcome);
+                    continue;
+                }
+            }
+            ctx.effect_mut(effect_id)
+                .set_status(EffectStatus::Authorized);
+            if self.engine.journal.is_none() {
+                ctx.emit_authorized(effect_id);
+            }
+            approved[index] = Some((effect_id.clone(), call.clone()));
+        }
+
+        let approved_calls: Vec<(usize, EffectId, ToolCallRequest)> = approved
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, call)| call.map(|(effect_id, call)| (index, effect_id, call)))
+            .collect();
+
+        if cancelled {
+            mark_cancelled_before_dispatch(ctx, self.engine.journal.as_deref())?;
+            return Ok(ToolBatchOutcome {
+                outcomes: outcomes.into_iter().flatten().collect(),
+                cancelled,
+            });
+        }
+
+        if let Some(journal) = &self.engine.journal {
+            let (was_cancelled, dispatched) = self
+                .execute_claimed_tool_batch(
+                    journal.as_ref(),
+                    approved_calls,
+                    limit,
+                    effect_timeout,
+                    cancel,
+                    ctx,
+                )
+                .await?;
+            cancelled = was_cancelled;
+            for (index, _, outcome) in dispatched {
+                outcomes[index] = Some(outcome);
+            }
+        } else if limit == 1 || approved_calls.len() == 1 {
+            for (index, effect_id, call) in approved_calls {
+                if cancel.is_cancelled() {
+                    cancelled = true;
+                    break;
+                }
+                let known_tool = self.engine.tools.get(&call.name).is_some();
+                ctx.effect_mut(&effect_id)
+                    .set_status(EffectStatus::Dispatched);
+                ctx.start_tool(&call);
+                let context = autra_execution::ToolContext {
+                    run_id: ctx.run_id.clone(),
+                    call_id: call.call_id.clone(),
+                    parent_run_id: Some(ctx.run_id.clone()),
+                    cancel: Some(cancel.clone()),
+                    budget: Some(ctx.budget.clone()),
+                    child_execution: Some(child_execution.clone()),
+                };
+                let outcome = self
+                    .engine
+                    .dispatcher
+                    .call_tool_with_context(&context, &call, effect_timeout)
+                    .await;
+                ctx.record_tool_outcome(&effect_id, known_tool, &outcome);
+                ctx.emit_resolved(&effect_id);
+                ctx.emit_tool_result(&outcome);
+                outcomes[index] = Some(outcome);
+            }
+        } else {
+            for chunk in approved_calls.chunks(limit) {
+                let mut tasks = tokio::task::JoinSet::new();
+                for (index, effect_id, call) in chunk {
+                    if cancel.is_cancelled() {
+                        cancelled = true;
+                        break;
+                    }
+                    let known_tool = self.engine.tools.get(&call.name).is_some();
+                    ctx.effect_mut(effect_id)
+                        .set_status(EffectStatus::Dispatched);
+                    ctx.start_tool(call);
+                    let index = *index;
+                    let effect_id = effect_id.clone();
+                    let dispatcher = self.engine.dispatcher.clone();
+                    let call = call.clone();
+                    let run_id = ctx.run_id.clone();
+                    let context = autra_execution::ToolContext {
+                        run_id: run_id.clone(),
+                        call_id: call.call_id.clone(),
+                        parent_run_id: Some(run_id.clone()),
+                        cancel: Some(cancel.clone()),
+                        budget: Some(ctx.budget.clone()),
+                        child_execution: Some(child_execution.clone()),
+                    };
+                    tasks.spawn(async move {
+                        (
+                            index,
+                            effect_id,
+                            known_tool,
+                            dispatcher
+                                .call_tool_with_context(&context, &call, effect_timeout)
+                                .await,
+                        )
+                    });
+                }
+                while let Some(result) = tasks.join_next().await {
+                    let (index, effect_id, known_tool, outcome) = result.map_err(|error| {
+                        RunError::Protocol(format!("tool task failed: {error}"))
+                    })?;
+                    ctx.record_tool_outcome(&effect_id, known_tool, &outcome);
+                    ctx.emit_resolved(&effect_id);
+                    ctx.emit_tool_result(&outcome);
+                    outcomes[index] = Some(outcome);
+                }
+                if cancelled || cancel.is_cancelled() {
+                    cancelled = true;
+                    break;
+                }
+            }
+        }
+
+        if cancelled || cancel.is_cancelled() {
+            mark_cancelled_before_dispatch(ctx, self.engine.journal.as_deref())?;
+            cancelled = true;
+        }
+        Ok(ToolBatchOutcome {
+            outcomes: outcomes.into_iter().flatten().collect(),
+            cancelled,
+        })
+    }
+
+    async fn execute_claimed_tool_batch<F>(
+        &self,
+        journal: &dyn DurableTransitionStore,
+        approved: Vec<(usize, EffectId, ToolCallRequest)>,
+        limit: usize,
+        effect_timeout: Option<Duration>,
+        cancel: &autra_core::CancelFlag,
+        ctx: &mut ToolBatchContext<'_, F>,
+    ) -> Result<(bool, Vec<(usize, EffectId, ToolOutcome)>), RunError>
+    where
+        F: FnMut(&RunEvent),
+    {
+        let run_id = ctx.run_id.clone();
+        let budget = ctx.budget.clone();
+        let mut index_by_effect = std::collections::HashMap::new();
+        for (index, effect_id, _) in &approved {
+            let record = ctx.effect_mut(effect_id).clone();
+            journal
+                .record(&run_id, &record)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+            journal
+                .enqueue_effect(&run_id, &record)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+            ctx.emit_authorized(effect_id);
+            index_by_effect.insert(effect_id.clone(), *index);
+        }
+        let mut cancelled = false;
+        let mut dispatched = Vec::new();
+        {
+            let mut on_result = |result: &DispatchResult| match &result.outcome {
+                DispatchOutcome::Tool(outcome) => {
+                    ctx.start_tool_outcome(outcome);
+                    ctx.emit_tool_result(outcome);
+                    if let Some(index) = index_by_effect.get(&result.effect_id) {
+                        dispatched.push((*index, result.effect_id.clone(), outcome.clone()));
+                    }
+                }
+                DispatchOutcome::Cancelled => cancelled = true,
+                DispatchOutcome::AlreadyResolved | DispatchOutcome::Interrupted => {
+                    let Ok(records) = journal.load(&run_id) else {
+                        return;
+                    };
+                    let Some(record) = records.iter().find(|record| record.id == result.effect_id)
+                    else {
+                        return;
+                    };
+                    let Some(outcome) = super::tool_outcome_from_record(record) else {
+                        return;
+                    };
+                    ctx.start_tool_outcome(&outcome);
+                    ctx.emit_tool_result(&outcome);
+                    if let Some(index) = index_by_effect.get(&result.effect_id) {
+                        dispatched.push((*index, result.effect_id.clone(), outcome));
+                    }
+                }
+                DispatchOutcome::Model(_) => {}
+            };
+            let options = DispatchOptions {
+                limit: approved.len(),
+                max_parallel: limit.max(1),
+                timeout: effect_timeout,
+                cancel: Some(cancel),
+                lease: DEFAULT_CLAIM_LEASE,
+                budget: Some(budget),
+                child_execution: Some(ChildExecutionContext {
+                    journal: self.engine.journal.clone(),
+                    approver: self.engine.approver.clone(),
+                    depth: 0,
+                }),
+                delta: None,
+            };
+            OutboxDispatcher::run_once_for_run_with(
+                journal,
+                &run_id,
+                options,
+                self.engine.dispatcher.as_ref(),
+                &mut on_result,
+            )
+            .await
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        }
+        super::sync_effects(journal.journal(), &run_id, ctx.effects)?;
+        for (_, effect_id, _) in &dispatched {
+            ctx.emit_resolved(effect_id);
+        }
+        Ok((cancelled || cancel.is_cancelled(), dispatched))
+    }
+}
+
+fn mark_cancelled_before_dispatch<F: FnMut(&RunEvent)>(
+    ctx: &mut ToolBatchContext<'_, F>,
+    journal: Option<&dyn DurableTransitionStore>,
+) -> Result<(), RunError> {
+    for record in ctx.effects.iter_mut() {
+        if matches!(
+            record.status,
+            EffectStatus::Recorded | EffectStatus::AwaitingApproval | EffectStatus::Authorized
+        ) {
+            record.set_status(EffectStatus::CancelledBeforeDispatch);
+            if let Some(journal) = journal {
+                journal
+                    .record(ctx.run_id, record)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                journal
+                    .complete_outbox(&record.id, autra_execution::UNCLAIMED_CLAIM)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+            }
+        }
+    }
+    Ok(())
+}
