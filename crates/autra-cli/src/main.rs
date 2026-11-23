@@ -8,7 +8,7 @@ use autra_durable_sqlite::{SqliteEffectJournal, SqliteSessionStore};
 use autra::{
     Agent, ApprovalDecision, ApprovalRecord, ApprovalRequest, ApprovalStore, Approver,
     DEFAULT_APPROVAL_TTL, EffectJournal, LOCAL_POLICY_REVISION, RulePolicy, RunError, RunEvent,
-    RunOptions, RunOutcome, Session, SessionStore,
+    RunOptions, RunOutcome, SchedulerLimits, Session, SessionStore,
 };
 use autra_harness::{
     EchoModel, EchoTool, EditFileTool, FakeModel, GitDiffTool, GitStatusTool, HistoryItem,
@@ -60,6 +60,9 @@ struct Flags {
     policy: Option<String>,
     actor: Option<String>,
     context_chars: Option<usize>,
+    model_limit: Option<usize>,
+    tool_limit: Option<usize>,
+    process_limit: Option<usize>,
     once: bool,
     interval_secs: Option<u64>,
     unknown_only: bool,
@@ -732,7 +735,7 @@ fn snapshot_command(args: &[String]) -> ExitCode {
 fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
     let usage = || {
         eprintln!(
-            "usage: autractl {command} [--workspace <dir>] [--model <name>] [--journal <path>] [--yes] [--read-only]"
+            "usage: autractl {command} [--workspace <dir>] [--model <name>] [--journal <path>] [--model-limit <n>] [--tool-limit <n>] [--process-limit <n>] [--yes] [--read-only]"
         );
     };
     let mut flags = Flags {
@@ -745,6 +748,9 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         policy: None,
         actor: None,
         context_chars: None,
+        model_limit: None,
+        tool_limit: None,
+        process_limit: None,
         once: false,
         interval_secs: None,
         unknown_only: false,
@@ -812,6 +818,48 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
                     Ok(seconds) if seconds > 0 => flags.interval_secs = Some(seconds),
                     _ => {
                         eprintln!("--interval-secs requires a positive integer");
+                        usage();
+                        return Err(());
+                    }
+                },
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--model-limit" => match iter.next() {
+                Some(value) => match value.parse::<usize>() {
+                    Ok(limit) if limit > 0 => flags.model_limit = Some(limit),
+                    _ => {
+                        eprintln!("--model-limit requires a positive integer");
+                        usage();
+                        return Err(());
+                    }
+                },
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--tool-limit" => match iter.next() {
+                Some(value) => match value.parse::<usize>() {
+                    Ok(limit) if limit > 0 => flags.tool_limit = Some(limit),
+                    _ => {
+                        eprintln!("--tool-limit requires a positive integer");
+                        usage();
+                        return Err(());
+                    }
+                },
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--process-limit" => match iter.next() {
+                Some(value) => match value.parse::<usize>() {
+                    Ok(limit) if limit > 0 => flags.process_limit = Some(limit),
+                    _ => {
+                        eprintln!("--process-limit requires a positive integer");
                         usage();
                         return Err(());
                     }
@@ -926,6 +974,19 @@ fn build_agent_with_approver(
     let builder = match flags.context_chars {
         Some(max_chars) => builder.context_budget_chars(max_chars),
         None => builder,
+    };
+    let defaults = SchedulerLimits::default();
+    let builder = if flags.model_limit.is_some()
+        || flags.tool_limit.is_some()
+        || flags.process_limit.is_some()
+    {
+        builder.scheduler_limits(SchedulerLimits::new(
+            flags.model_limit.unwrap_or(defaults.model),
+            flags.tool_limit.unwrap_or(defaults.tool),
+            flags.process_limit.unwrap_or(defaults.process),
+        ))
+    } else {
+        builder
     };
     let model_name = effective_model(flags)?;
     let builder = match model_name.as_deref() {
@@ -1264,6 +1325,9 @@ OPTIONS:
   --policy <path>    JSON tool/command policy
   --actor <name>     operator identity recorded on approvals
   --yes              auto-approve gated tools
+  --model-limit <n>   global model concurrency (default 16)
+  --tool-limit <n>    global tool concurrency (default 64)
+  --process-limit <n> global process concurrency (default 8)
   --read-only        only expose read-only tools
   --context-chars <n> cap the model context (system, tools and history)
   --interval-secs <n> daemon polling interval (default 5)

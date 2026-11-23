@@ -654,3 +654,14 @@ fn tui_validates_flags_before_opening_the_terminal() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("usage: autractl tui"));
 }
+
+#[test]
+fn scheduler_limits_must_be_positive() {
+    let output = autractl()
+        .args(["run", "--local", "--model-limit", "0", "hello"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("--model-limit requires a positive integer"));
+}

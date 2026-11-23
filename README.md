@@ -124,6 +124,9 @@ append the result to the session history.
 | `--session <id>` | restore or create a named chat or TUI session (requires `--journal`) |
 | `--policy <path>` | JSON tool/command policy (`ask_tools`, `deny_tools`, `deny_commands`; Allow is the default) |
 | `--actor <name>` | operator identity recorded on approval requests |
+| `--model-limit <n>` | global model concurrency (default 16) |
+| `--tool-limit <n>` | global tool concurrency (default 64) |
+| `--process-limit <n>` | global process concurrency (default 8) |
 | `--yes`, `-y` | approve `write_file`, `edit_file` and `run_command` without prompting |
 | `--read-only` | expose only read-only tools (`list_files`, `read_file`, `search_text`, `git_status`, `git_diff`) |
 
