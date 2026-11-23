@@ -1,7 +1,8 @@
 # Runtime Evolution: Responsibility, Lifecycle and Execution Middleware
 
 **Status: design proposal. The target structures and APIs below are not
-implemented.** This page records a design review of extension placement and
+implemented.** See [`runtime-vnext.md`](runtime-vnext.md) for the broader
+Coordinator/Scheduler/Executor/Journal architecture this work contributes to. This page records a design review of extension placement and
 Runtime structure. It does not change the execution semantics in
 [`execution-model.md`](execution-model.md) or [`durability.md`](durability.md).
 

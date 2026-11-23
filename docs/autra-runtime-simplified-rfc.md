@@ -4,6 +4,8 @@
 > **基线**：`stack-call/autra` 的 `mvp-v1` 分支  
 > **目的**：拆分运行循环与真实 I/O，保留 Durable 能力，不提前建设分布式调度平台。  
 > **核心决策**：`RunLoop + EffectExecutor + 可选 Journal`。
+> **相关**：[`runtime-vnext.md`](runtime-vnext.md) 给出了更完整的
+> Coordinator / Scheduler / Executor / Journal / Recovery 目标架构与迁移路线。
 
 ## 1. 一句话设计
 

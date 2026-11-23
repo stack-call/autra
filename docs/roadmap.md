@@ -18,6 +18,16 @@ The first complete harness (§0.4) is reached at a basic level; see
 | M7 Restate PoC | Hosted execution, capability matrix, comparison | Pending |
 | M8 Demand-driven expansion | MCP Gateway/Server, Python SDK, API server, remote workers, plugin manager | Pending (plugin design in [`plugins.md`](plugins.md)) |
 
+Local single-machine, unsandboxed reliability is the next execution priority.
+The P0/P1 gaps (Effect ownership and lease fencing, recovery-daemon takeover,
+process-tree cancellation, atomic workspace writes and journal retention) are
+tracked in [`local-runtime-stability.md`](local-runtime-stability.md).
+
+The next runtime structure (Coordinator, TransitionCommitter, AuthorizationGate,
+ResultCollector, GlobalScheduler and RecoverySupervisor) is described in
+[`runtime-vnext.md`](runtime-vnext.md). It is a proposal, not a roadmap
+commitment.
+
 ### Dual-track view
 
 Execution reliability and Agent experience advance in parallel; neither waits for
