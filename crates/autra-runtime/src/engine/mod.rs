@@ -3,35 +3,29 @@
 //! It depends on core and execution contracts only; harness assembly belongs
 //! to the product facade.
 
-mod approval;
+mod coordinator;
 mod executor;
 mod lease;
-mod policy;
 mod recovery;
 mod streaming;
 mod validator;
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::approval::digest_intent;
 use crate::child::{ChildHandle, ChildSpec};
 use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchResult, Dispatcher, OutboxDispatcher,
 };
 use crate::hub::RunHub;
 use autra_core::{
-    AcceptedEvent, AgentPhase, AgentState, AgentStepper, BudgetHandle, BudgetSnapshot, CancelFlag,
-    Disposition, EffectId, EffectIntent, EffectKind, EffectRecord, EffectStatus, EventKind,
-    HistoryItem, ModelCallSpec, RunId, ToolCallRequest, ToolOutcome, TransitionProposal,
+    AgentStepper, BudgetSnapshot, CancelFlag, EffectId, EffectRecord, EffectStatus, HistoryItem,
+    RunId, ToolCallRequest, ToolOutcome,
 };
 use autra_execution::{
     Approver, DurableTransitionStore, EffectJournal, ObserverHook, PolicyChain, RunError, RunEvent,
-    RunOptions, RunOutcome, RunSnapshot, ToolPolicy, ToolRegistry, UNCLAIMED_CLAIM,
+    RunOptions, RunOutcome, ToolPolicy, ToolRegistry, UNCLAIMED_CLAIM,
 };
-use executor::{EffectExecutor, ModelExecutionContext, ModelStep, ToolBatchContext};
-use lease::RunLeaseGuard;
 
 /// Drives one Run: accepts events, commits transitions, executes effects and
 /// resumes committed checkpoints.
@@ -227,47 +221,6 @@ impl LocalEngine {
         ChildHandle::new(handle_run_id, handle_cancel, join, receiver)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn run_with_identity<F>(
-        &self,
-        run_id: RunId,
-        parent_run_id: Option<RunId>,
-        budget: BudgetSnapshot,
-        stepper: Arc<dyn AgentStepper>,
-        history: Vec<HistoryItem>,
-        input: String,
-        options: RunOptions,
-        mut on_event: F,
-    ) -> Result<RunOutcome, RunError>
-    where
-        F: FnMut(&RunEvent),
-    {
-        tracing::info!(run_id = %run_id, "agent run started");
-        let _lease = RunLeaseGuard::acquire(self.journal.clone(), &run_id, options.cancel.clone())?;
-        if let Some(observer) = &self.observer {
-            observer.on_run_started(&run_id);
-        }
-        let mut state = AgentState::new(run_id.clone(), budget);
-        state.parent_run_id = parent_run_id;
-        state.agent_profile = self.agent_profile.clone();
-        let before_initialize = state.clone();
-        stepper.initialize(&mut state, &history);
-        validator::validate_initialized(&before_initialize, &state)?;
-        if let Some(hub) = &self.hub {
-            hub.start(RunSnapshot::from_state(&state, 0, 0));
-        }
-        state.session_id = options.session_id.clone();
-        state.turn_id = options.turn_id.clone();
-        let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
-        let mut seq = 0_u64;
-        enqueue(&mut queue, &mut seq, EventKind::RunStarted { input });
-        on_event(&RunEvent::RunStarted {
-            run_id: run_id.clone(),
-        });
-        self.drive(stepper, state, queue, Vec::new(), options, on_event)
-            .await
-    }
-
     /// Continue a Run from its last committed checkpoint. Requires a journal.
     pub async fn drain_outbox(&self, limit: usize) -> Result<Vec<DispatchResult>, RunError> {
         let journal = self
@@ -325,285 +278,6 @@ impl LocalEngine {
         }
         Ok(results)
     }
-
-    async fn drive<F>(
-        &self,
-        stepper: Arc<dyn AgentStepper>,
-        mut state: AgentState,
-        mut queue: VecDeque<AcceptedEvent>,
-        mut effects: Vec<EffectRecord>,
-        options: RunOptions,
-        on_event: F,
-    ) -> Result<RunOutcome, RunError>
-    where
-        F: FnMut(&RunEvent),
-    {
-        let effect_timeout = options.effect_timeout.or(self.effect_timeout);
-        let parallel_limit = options
-            .max_parallel_tool_calls
-            .unwrap_or(self.max_parallel_tool_calls)
-            .max(1);
-        let approver = options.approver.clone().or_else(|| self.approver.clone());
-        let run_id = state.run_id.clone();
-        let hub = self.hub.clone();
-        let mut forward = on_event;
-        let mut on_event = |event: &RunEvent| {
-            if let Some(hub) = &hub {
-                hub.publish(&run_id, event);
-            }
-            forward(event);
-        };
-        let mut seq = queue.iter().map(|event| event.seq).max().unwrap_or(0);
-        let mut hub_guard = HubGuard::new(
-            self.hub.clone(),
-            RunSnapshot::from_state(&state, seq, effects.len()),
-        );
-        let mut cancel_queued = false;
-        loop {
-            if options.cancel.is_cancelled() {
-                queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
-            }
-
-            let event = queue
-                .pop_front()
-                .ok_or_else(|| RunError::Protocol("no accepted event to process".to_owned()))?;
-            let expected_version = state.state_version;
-            let transition = match stepper.transition(&state, &event) {
-                Ok(transition) => transition,
-                Err(error) => {
-                    let message = error.to_string();
-                    state.phase = AgentPhase::Failed;
-                    state.last_error = Some(message.clone());
-                    state.state_version = expected_version + 1;
-                    on_event(&RunEvent::RunFailed {
-                        message: message.clone(),
-                    });
-                    if let Some(journal) = &self.journal {
-                        journal
-                            .commit_terminal(&run_id, expected_version, &state)
-                            .map_err(|error| RunError::Journal(error.to_string()))?;
-                    }
-                    if let Some(observer) = &self.observer {
-                        observer.on_run_finished(&run_id, &state.phase);
-                    }
-                    hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
-                    hub_guard.finish();
-                    return Err(RunError::Step(error));
-                }
-            };
-            let TransitionProposal {
-                mut next,
-                intents,
-                disposition,
-            } = transition;
-            next.state_version = expected_version + 1;
-            if let Err(error) = validator::validate(
-                &state,
-                &next,
-                expected_version,
-                &event,
-                disposition,
-                &intents,
-            ) {
-                let message = error.to_string();
-                state.phase = AgentPhase::Failed;
-                state.last_error = Some(message.clone());
-                state.state_version = expected_version + 1;
-                on_event(&RunEvent::RunFailed { message });
-                if let Some(journal) = &self.journal {
-                    journal
-                        .commit_terminal(&run_id, expected_version, &state)
-                        .map_err(|save_error| RunError::Journal(save_error.to_string()))?;
-                }
-                if let Some(observer) = &self.observer {
-                    observer.on_run_finished(&run_id, &state.phase);
-                }
-                hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
-                hub_guard.finish();
-                return Err(error);
-            }
-
-            let first_new = effects.len();
-            let mut tool_calls: Vec<(EffectId, ToolCallRequest)> = Vec::new();
-            let mut model_requests: Vec<(EffectId, ModelCallSpec)> = Vec::new();
-            for intent in intents {
-                if let Some(observer) = &self.observer {
-                    observer.on_effect_proposed(&run_id, &intent);
-                }
-                let effect_id = EffectId::fresh();
-                let digest = digest_intent(&intent);
-                let intent_json = serde_json::to_string(&intent).unwrap_or_default();
-                let requires_approval = match &intent {
-                    EffectIntent::CallModel(_) => false,
-                    EffectIntent::CallTool(spec) => self.tool_needs_gate(&run_id, &spec.call),
-                };
-                let mut record = match &intent {
-                    EffectIntent::CallModel(_) => EffectRecord::new(
-                        effect_id.clone(),
-                        EffectKind::ModelCall,
-                        None,
-                        None,
-                        digest,
-                    ),
-                    EffectIntent::CallTool(spec) => EffectRecord::new(
-                        effect_id.clone(),
-                        EffectKind::ToolCall,
-                        Some(spec.call.name.clone()),
-                        Some(spec.call.call_id.clone()),
-                        digest,
-                    ),
-                }
-                .with_intent_json(intent_json);
-                record.set_status(if requires_approval {
-                    EffectStatus::AwaitingApproval
-                } else {
-                    EffectStatus::Authorized
-                });
-                effects.push(record);
-                match intent {
-                    EffectIntent::CallTool(spec) => tool_calls.push((effect_id, spec.call)),
-                    EffectIntent::CallModel(request) => model_requests.push((effect_id, request)),
-                }
-            }
-            if let Some(journal) = &self.journal {
-                journal
-                    .commit_transition(
-                        &run_id,
-                        expected_version,
-                        &event,
-                        &next,
-                        &effects[first_new..],
-                    )
-                    .map_err(|error| RunError::Journal(error.to_string()))?;
-            }
-            // Apply only after the authoritative transition succeeded. If the
-            // commit fails, the in-memory state is left untouched.
-            state = next;
-            if let Some(observer) = &self.observer {
-                for effect in &effects[first_new..] {
-                    observer.on_effect_committed(&run_id, effect);
-                }
-            }
-            hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
-
-            if let EventKind::ModelResult(output) = &event.kind {
-                on_event(&RunEvent::ModelResult {
-                    text: output.text.clone(),
-                    tool_calls: output.tool_calls.clone(),
-                });
-            }
-
-            match disposition {
-                Disposition::Finished => {
-                    if state.phase == AgentPhase::Cancelled {
-                        on_event(&RunEvent::RunCancelled);
-                    } else {
-                        on_event(&RunEvent::RunCompleted {
-                            answer: state.final_answer.clone(),
-                        });
-                    }
-                    tracing::info!(phase = ?state.phase, "agent run finished");
-                    if let Some(observer) = &self.observer {
-                        observer.on_run_finished(&run_id, &state.phase);
-                    }
-                    hub_guard.finish();
-                    return Ok(RunOutcome::new(state, effects));
-                }
-                Disposition::Failed => {
-                    let message = state
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| "run failed".to_owned());
-                    on_event(&RunEvent::RunFailed {
-                        message: message.clone(),
-                    });
-                    tracing::warn!(message = %message, "agent run failed");
-                    if let Some(observer) = &self.observer {
-                        observer.on_run_finished(&run_id, &state.phase);
-                    }
-                    hub_guard.finish();
-                    return Err(RunError::Failed(message));
-                }
-                Disposition::Continue => {}
-            }
-
-            if options.cancel.is_cancelled() {
-                cancel_staged_effects(&mut effects[first_new..], self.journal.as_deref(), &run_id)?;
-                queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
-                continue;
-            }
-
-            if !tool_calls.is_empty() {
-                let budget = BudgetHandle::new(state.budget.clone());
-                let mut context = ToolBatchContext {
-                    on_event: &mut on_event,
-                    run_id: &run_id,
-                    approver: approver.as_ref(),
-                    effects: &mut effects,
-                    budget: &budget,
-                    observer: self.observer.as_ref(),
-                };
-                let batch = EffectExecutor::new(self)
-                    .execute_tool_batch(
-                        tool_calls,
-                        parallel_limit,
-                        effect_timeout,
-                        &options.cancel,
-                        &mut context,
-                    )
-                    .await?;
-                for outcome in batch.outcomes {
-                    enqueue(&mut queue, &mut seq, EventKind::ToolResult(outcome));
-                }
-                if batch.cancelled {
-                    queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
-                }
-                state.budget = budget.snapshot();
-            }
-
-            for (effect_id, request) in model_requests {
-                let mut context = ModelExecutionContext {
-                    on_event: &mut on_event,
-                    run_id: &run_id,
-                    effects: &mut effects,
-                    observer: self.observer.as_ref(),
-                    cancel: &options.cancel,
-                    effect_timeout,
-                    turn: state.budget.turns_used,
-                };
-                match EffectExecutor::new(self)
-                    .execute_model(&effect_id, &request, &mut context)
-                    .await
-                {
-                    Ok(ModelStep::Output(output)) => {
-                        enqueue(&mut queue, &mut seq, EventKind::ModelResult(output));
-                    }
-                    Ok(ModelStep::Cancelled) => {
-                        queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
-                        break;
-                    }
-                    Err(error) => {
-                        let message = error.to_string();
-                        let current_version = state.state_version;
-                        state.phase = AgentPhase::Failed;
-                        state.last_error = Some(message.clone());
-                        state.state_version = current_version + 1;
-                        on_event(&RunEvent::RunFailed { message });
-                        if let Some(journal) = &self.journal {
-                            journal
-                                .commit_terminal(&run_id, current_version, &state)
-                                .map_err(|save_error| RunError::Journal(save_error.to_string()))?;
-                        }
-                        if let Some(observer) = &self.observer {
-                            observer.on_run_finished(&run_id, &state.phase);
-                        }
-                        hub_guard.update(RunSnapshot::from_state(&state, event.seq, effects.len()));
-                        return Err(error);
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn tool_outcome_from_record(record: &EffectRecord) -> Option<ToolOutcome> {
@@ -643,45 +317,6 @@ fn tool_outcome_from_record(record: &EffectRecord) -> Option<ToolOutcome> {
     })
 }
 
-struct HubGuard {
-    hub: Option<Arc<RunHub>>,
-    snapshot: RunSnapshot,
-    finished: bool,
-}
-
-impl HubGuard {
-    fn new(hub: Option<Arc<RunHub>>, snapshot: RunSnapshot) -> Self {
-        Self {
-            hub,
-            snapshot,
-            finished: false,
-        }
-    }
-
-    fn update(&mut self, snapshot: RunSnapshot) {
-        self.snapshot = snapshot.clone();
-        if let Some(hub) = &self.hub {
-            hub.update(snapshot);
-        }
-    }
-
-    fn finish(&mut self) {
-        if self.finished {
-            return;
-        }
-        if let Some(hub) = &self.hub {
-            hub.finish(self.snapshot.clone());
-        }
-        self.finished = true;
-    }
-}
-
-impl Drop for HubGuard {
-    fn drop(&mut self) {
-        self.finish();
-    }
-}
-
 fn sync_effects(
     journal: &dyn EffectJournal,
     run_id: &RunId,
@@ -696,28 +331,6 @@ fn sync_effects(
         }
     }
     Ok(())
-}
-
-fn enqueue(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, kind: EventKind) {
-    *seq += 1;
-    queue.push_back(AcceptedEvent { seq: *seq, kind });
-}
-
-fn queue_cancel(queue: &mut VecDeque<AcceptedEvent>, seq: &mut u64, cancel_queued: &mut bool) {
-    if !*cancel_queued {
-        enqueue(queue, seq, EventKind::CancelRequested);
-        *cancel_queued = true;
-    }
-}
-
-fn emit_tool_result<F: FnMut(&RunEvent)>(on_event: &mut F, outcome: &ToolOutcome) {
-    on_event(&RunEvent::ToolResult {
-        call_id: outcome.call_id.clone(),
-        name: outcome.name.clone(),
-        is_error: outcome.is_error,
-        outcome_unknown: outcome.outcome_unknown,
-        content: outcome.content.clone(),
-    });
 }
 
 fn policy_denied_outcome(call: &ToolCallRequest, revision: &str) -> ToolOutcome {

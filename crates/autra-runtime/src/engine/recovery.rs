@@ -15,8 +15,9 @@ use autra_execution::{
 use crate::approval::digest_intent;
 use crate::dispatcher::OutboxDispatcher;
 
+use super::LocalEngine;
+use super::coordinator::enqueue;
 use super::lease::RunLeaseGuard;
-use super::{LocalEngine, enqueue};
 
 impl LocalEngine {
     pub async fn resume<F>(

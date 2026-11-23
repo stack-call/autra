@@ -3,6 +3,10 @@
 > **状态**：设计提案。除“当前基线”明确标为已实现的部分外，本文描述的是目标结构，不是现有实现。
 > **基线**：`mvp-v1`，包含本地稳定性 P0（Run/Service lease、claim fencing、进程取消、原子写）。
 > **范围**：Local-first、单机优先、预留多进程与多机扩展。
+>
+> **实现进展**：第一轮模块拆分已落地，`engine/coordinator/` 负责 Run 推进、
+> TransitionCommitter、AuthorizationGate 和结果收集；`EffectExecutor` 保留。
+> GlobalScheduler、完整 ResultCollector、RecoverySupervisor 仍是提案。
 > **相关**：[运行时演进](runtime-evolution.md)、[简化架构 RFC](autra-runtime-simplified-rfc.md)、
 > [本地运行时稳定性](local-runtime-stability.md)、[执行模型](execution-model.md)、
 > [持久化](durability.md)、ADR-0058。

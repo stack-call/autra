@@ -20,7 +20,8 @@ use crate::dispatcher::{
     await_with_cancel,
 };
 
-use super::{LocalEngine, emit_tool_result};
+use super::LocalEngine;
+use super::coordinator::emit_tool_result;
 
 pub(super) enum ModelStep {
     Output(ModelOutput),

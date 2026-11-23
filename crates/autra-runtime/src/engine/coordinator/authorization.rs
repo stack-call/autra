@@ -1,3 +1,5 @@
+//! Authorization gate: policy decisions and approval resolution.
+
 use std::sync::Arc;
 
 use autra_core::{
@@ -6,15 +8,45 @@ use autra_core::{
 };
 use autra_execution::{
     ApprovalRecord, Approver, DEFAULT_APPROVAL_TTL, DurableTransitionStore, PolicyDecision,
-    RunError, RunEvent, now_unix_ms,
+    PolicyRequest, RunError, RunEvent, now_unix_ms,
 };
 
 use crate::approval::{ApprovalDecision, ApprovalRequest};
 
-use super::LocalEngine;
+use super::super::LocalEngine;
 
 impl LocalEngine {
-    pub(super) fn approval_request(
+    pub(in crate::engine) fn policy_decision(
+        &self,
+        run_id: &RunId,
+        call: &ToolCallRequest,
+    ) -> Option<PolicyDecision> {
+        self.tools.get(&call.name).map(|tool| {
+            let contract = tool.contract();
+            self.policy.decide(&PolicyRequest {
+                run_id,
+                tool_name: &call.name,
+                arguments: &call.arguments,
+                effect_class: contract.effect_class,
+                requires_approval: contract.requires_approval,
+            })
+        })
+    }
+
+    pub(in crate::engine) fn tool_needs_gate(
+        &self,
+        run_id: &RunId,
+        call: &ToolCallRequest,
+    ) -> bool {
+        matches!(
+            self.policy_decision(run_id, call),
+            Some(PolicyDecision::Ask | PolicyDecision::Deny)
+        )
+    }
+}
+
+impl LocalEngine {
+    pub(in crate::engine) fn approval_request(
         &self,
         run_id: &RunId,
         effect_id: &EffectId,
@@ -35,7 +67,7 @@ impl LocalEngine {
 
     /// Reuse a matching persisted decision, otherwise ask the approver and
     /// persist the new decision.
-    pub(super) async fn resolve_pending_approvals<F>(
+    pub(in crate::engine) async fn resolve_pending_approvals<F>(
         &self,
         journal: &dyn DurableTransitionStore,
         stepper: &dyn AgentStepper,
@@ -118,7 +150,7 @@ impl LocalEngine {
         Ok(())
     }
 
-    pub(super) async fn resolve_approval(
+    pub(in crate::engine) async fn resolve_approval(
         &self,
         request: &ApprovalRequest,
         effect_id: &EffectId,
@@ -150,7 +182,7 @@ impl LocalEngine {
         Ok(decision)
     }
 
-    pub(super) fn has_valid_approval(
+    pub(in crate::engine) fn has_valid_approval(
         &self,
         run_id: &RunId,
         effect_id: &EffectId,

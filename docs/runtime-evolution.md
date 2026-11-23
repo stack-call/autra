@@ -54,7 +54,8 @@ The non-negotiable boundary is not directory placement. It is this:
 
 | Concern | Today | Location |
 |---|---|---|
-| Run loop, transition, commit, dispatch, streaming, cancellation | one `LocalEngine::drive` | `crates/autra-runtime/src/engine/mod.rs` |
+| Run loop, transition commit, authorization, result collection | `LocalEngine` public API + `engine/coordinator` | `crates/autra-runtime/src/engine/coordinator/` |
+| Effect execution, streaming, cancellation | `EffectExecutor` / `Dispatcher` | `crates/autra-runtime/src/engine/executor.rs`, `dispatcher.rs` |
 | Model request transformation | `ModelRequestTransform` over `ModelRequestDraft` | `crates/autra-harness/src/middleware.rs` |
 | Lifecycle observation | `ObserverHook` (read-only, four stages) | `crates/autra-execution/src/hooks.rs` |
 | Execution boundary | `Dispatcher` / `OutboxDispatcher` | `crates/autra-runtime/src/dispatcher.rs` |
