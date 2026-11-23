@@ -16,7 +16,8 @@ use thiserror::Error;
 
 use crate::subagent::{SubagentRegistry, SubagentTool};
 use autra_runtime::{
-    ChildHandle, ChildSpec, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine, RunHub,
+    ChildHandle, ChildSpec, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine,
+    RecoverySupervisor, RunHub, SchedulerLimits,
 };
 
 pub use autra_execution::{RecoveryReport, RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
@@ -84,6 +85,12 @@ impl Agent {
         self.engine
             .run(stepper, history, input, options, on_event)
             .await
+    }
+
+    /// Build a recovery loop over this Agent's journal and stepper. The
+    /// supervisor claims a service lease before scanning.
+    pub fn recovery_supervisor(&self) -> RecoverySupervisor {
+        RecoverySupervisor::new(self.engine.clone(), self.stepper_for_run())
     }
 
     /// Continue a Run from its last committed checkpoint. Requires a journal.
@@ -241,6 +248,7 @@ pub struct AgentBuilder {
     max_turns: u32,
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
+    scheduler_limits: SchedulerLimits,
     approver: Option<Arc<dyn Approver>>,
     skills: SkillRegistry,
     context_budget_chars: Option<usize>,
@@ -269,6 +277,7 @@ impl AgentBuilder {
             max_turns: 8,
             max_tool_calls: 8,
             max_parallel_tool_calls: 1,
+            scheduler_limits: SchedulerLimits::default(),
             approver: None,
             skills: SkillRegistry::new(),
             context_budget_chars: None,
@@ -298,6 +307,13 @@ impl AgentBuilder {
 
     pub fn effect_timeout(mut self, effect_timeout: Duration) -> Self {
         self.effect_timeout = Some(effect_timeout);
+        self
+    }
+
+    /// Set the global Model / Tool / Process concurrency pools shared by every
+    /// Run driven by this Agent.
+    pub fn scheduler_limits(mut self, limits: SchedulerLimits) -> Self {
+        self.scheduler_limits = limits;
         self
     }
 
@@ -464,6 +480,7 @@ Maintain a short plan with `update_plan` and keep it current."
                 self.max_parallel_tool_calls,
             )
             .with_effect_timeout(self.effect_timeout)
+            .with_scheduler_limits(self.scheduler_limits)
             .with_agent_profile(agent_profile);
         if let Some(journal) = self.journal {
             engine = engine.with_journal(journal);

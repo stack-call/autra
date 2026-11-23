@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::{LocalWorkspace, Tool, ToolError};
 use async_trait::async_trait;
 use autra_core::{EffectClass, ToolSpec};
+use autra_execution::ToolResource;
 use serde::Deserialize;
 
 use crate::command::{ProcessOutput, run_program, truncate_output};
@@ -50,6 +51,10 @@ impl Tool for GitStatusTool {
 
     fn effect_class(&self) -> EffectClass {
         EffectClass::ReadOnly
+    }
+
+    fn resource(&self) -> ToolResource {
+        ToolResource::Process
     }
 
     async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
@@ -124,6 +129,10 @@ impl Tool for GitDiffTool {
 
     fn effect_class(&self) -> EffectClass {
         EffectClass::ReadOnly
+    }
+
+    fn resource(&self) -> ToolResource {
+        ToolResource::Process
     }
 
     async fn call(&self, arguments: &str) -> Result<String, ToolError> {

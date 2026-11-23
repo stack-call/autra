@@ -1,4 +1,5 @@
 use autra_core::{CancelFlag, EffectClass, RunId};
+use autra_execution::ToolResource;
 use autra_harness::{LocalWorkspace, RunCommandTool, Tool, ToolContext, ToolInput};
 use tempfile::tempdir;
 
@@ -11,6 +12,7 @@ async fn run_command_returns_exit_code_and_output() {
 
     assert!(tool.requires_approval());
     assert_eq!(tool.effect_class(), EffectClass::NonIdempotent);
+    assert_eq!(tool.resource(), ToolResource::Process);
     assert!(output.contains("exit code: 0"));
     assert!(output.contains("hello"));
 }

@@ -19,6 +19,7 @@ use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, OutboxDispatcher,
     await_with_cancel,
 };
+use crate::scheduler::ResourceKind;
 
 use super::LocalEngine;
 use super::coordinator::emit_tool_result;
@@ -179,6 +180,7 @@ impl<'a> EffectExecutor<'a> {
                         budget: None,
                         child_execution: None,
                         delta: Some(delta),
+                        scheduler: Some(self.engine.scheduler.clone()),
                     };
                     let dispatch = OutboxDispatcher::run_once_for_run_with(
                         journal.as_ref(),
@@ -210,6 +212,16 @@ impl<'a> EffectExecutor<'a> {
                     }
                 }
                 None => {
+                    let Some(permit) = self
+                        .engine
+                        .scheduler
+                        .acquire(ResourceKind::Model, Some(cancel))
+                        .await
+                    else {
+                        super::effect_mut(effects, effect_id)
+                            .set_status(EffectStatus::CancelledBeforeDispatch);
+                        return Ok(ModelStep::Cancelled);
+                    };
                     super::effect_mut(effects, effect_id).set_status(EffectStatus::Dispatched);
                     let mut emit = move |text: String| delta(text);
                     let call = self.engine.dispatcher.call_model_streaming(
@@ -217,6 +229,7 @@ impl<'a> EffectExecutor<'a> {
                         effect_timeout,
                         &mut emit,
                     );
+                    drop(permit);
                     match await_with_cancel(
                         await_with_deltas(call, &mut deltas, on_event),
                         Some(cancel),
@@ -411,6 +424,15 @@ impl<'a> EffectExecutor<'a> {
                     break;
                 }
                 let known_tool = self.engine.tools.get(&call.name).is_some();
+                let resource = match self.engine.dispatcher.tool_resource(&call.name) {
+                    autra_execution::ToolResource::Process => ResourceKind::Process,
+                    autra_execution::ToolResource::Tool => ResourceKind::Tool,
+                };
+                let Some(permit) = self.engine.scheduler.acquire(resource, Some(cancel)).await
+                else {
+                    cancelled = true;
+                    break;
+                };
                 ctx.effect_mut(&effect_id)
                     .set_status(EffectStatus::Dispatched);
                 ctx.start_tool(&call);
@@ -427,19 +449,29 @@ impl<'a> EffectExecutor<'a> {
                     .dispatcher
                     .call_tool_with_context(&context, &call, effect_timeout)
                     .await;
+                drop(permit);
                 ctx.record_tool_outcome(&effect_id, known_tool, &outcome);
                 ctx.emit_resolved(&effect_id);
                 ctx.emit_tool_result(&outcome);
                 outcomes[index] = Some(outcome);
             }
         } else {
+            let scheduler = self.engine.scheduler.clone();
             for chunk in approved_calls.chunks(limit) {
-                let mut tasks = tokio::task::JoinSet::new();
+                let mut prepared = Vec::new();
                 for (index, effect_id, call) in chunk {
                     if cancel.is_cancelled() {
                         cancelled = true;
                         break;
                     }
+                    let resource = match self.engine.dispatcher.tool_resource(&call.name) {
+                        autra_execution::ToolResource::Process => ResourceKind::Process,
+                        autra_execution::ToolResource::Tool => ResourceKind::Tool,
+                    };
+                    let Some(permit) = scheduler.acquire(resource, Some(cancel)).await else {
+                        cancelled = true;
+                        break;
+                    };
                     let known_tool = self.engine.tools.get(&call.name).is_some();
                     ctx.effect_mut(effect_id)
                         .set_status(EffectStatus::Dispatched);
@@ -457,15 +489,18 @@ impl<'a> EffectExecutor<'a> {
                         budget: Some(ctx.budget.clone()),
                         child_execution: Some(child_execution.clone()),
                     };
+                    prepared.push((
+                        index, effect_id, known_tool, call, context, permit, dispatcher,
+                    ));
+                }
+                let mut tasks = tokio::task::JoinSet::new();
+                for (index, effect_id, known_tool, call, context, permit, dispatcher) in prepared {
                     tasks.spawn(async move {
-                        (
-                            index,
-                            effect_id,
-                            known_tool,
-                            dispatcher
-                                .call_tool_with_context(&context, &call, effect_timeout)
-                                .await,
-                        )
+                        let outcome = dispatcher
+                            .call_tool_with_context(&context, &call, effect_timeout)
+                            .await;
+                        drop(permit);
+                        (index, effect_id, known_tool, outcome)
                     });
                 }
                 while let Some(result) = tasks.join_next().await {
@@ -564,6 +599,7 @@ impl<'a> EffectExecutor<'a> {
                     depth: 0,
                 }),
                 delta: None,
+                scheduler: Some(self.engine.scheduler.clone()),
             };
             OutboxDispatcher::run_once_for_run_with(
                 journal,

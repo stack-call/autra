@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use autra_core::{EffectId, RunId, SessionId};
+use autra_core::{CancelFlag, EffectId, RunId, SessionId};
 use autra_durable_sqlite::{SqliteEffectJournal, SqliteSessionStore};
 
 use autra::{
@@ -567,56 +567,41 @@ async fn daemon_command(args: &[String]) -> ExitCode {
         }
     };
     let interval = std::time::Duration::from_secs(flags.interval_secs.unwrap_or(5).max(1));
-    let service_lease = std::time::Duration::from_secs((interval.as_secs() * 3).max(30));
-    let Some(path) = flags.journal.as_ref() else {
-        eprintln!("daemon requires --journal <path>");
-        return ExitCode::FAILURE;
-    };
-    let lease_store = match SqliteEffectJournal::open(path) {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let owner = format!(
-        "daemon-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0)
-    );
-    if !matches!(
-        lease_store.claim_service("recovery-daemon", &owner, service_lease),
-        Ok(true)
-    ) {
-        eprintln!("[daemon] another daemon already owns this journal");
-        return ExitCode::FAILURE;
-    }
-    loop {
-        match agent.recover_once(32).await {
-            Ok(report) if report.scanned > 0 => println!(
+    let supervisor = agent
+        .recovery_supervisor()
+        .with_interval(interval)
+        .with_limit(32);
+    let print_report = |report: &autra::RecoveryReport| {
+        if report.scanned > 0 {
+            println!(
                 "[daemon] scanned={} resumed={} failed={} skipped={}",
                 report.scanned, report.resumed, report.failed, report.skipped
-            ),
-            Ok(_) => {}
-            Err(error) => eprintln!("[daemon] recovery failed: {error}"),
+            );
         }
-        if flags.once {
-            break;
-        }
-        tokio::time::sleep(interval).await;
-        match lease_store.renew_service("recovery-daemon", &owner, service_lease) {
-            Ok(true) => {}
-            _ => {
-                eprintln!("[daemon] service lease lost; stopping");
-                return ExitCode::FAILURE;
+    };
+    if flags.once {
+        return match supervisor.run_once_leased().await {
+            Ok(report) => {
+                print_report(&report);
+                ExitCode::SUCCESS
             }
+            Err(error) => {
+                eprintln!("[daemon] recovery failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let cancel = CancelFlag::new();
+    match supervisor
+        .run_until(cancel, |report| print_report(report))
+        .await
+    {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("[daemon] recovery failed: {error}");
+            ExitCode::FAILURE
         }
     }
-    let _ = lease_store.release_service("recovery-daemon", &owner);
-    ExitCode::SUCCESS
 }
 
 fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {

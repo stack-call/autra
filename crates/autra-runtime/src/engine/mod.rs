@@ -7,6 +7,8 @@ mod coordinator;
 mod executor;
 mod lease;
 mod recovery;
+
+pub use recovery::{RecoveryLease, RecoverySupervisor};
 mod streaming;
 mod validator;
 
@@ -18,6 +20,7 @@ use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchResult, Dispatcher, OutboxDispatcher,
 };
 use crate::hub::RunHub;
+use crate::scheduler::{GlobalScheduler, SchedulerLimits};
 use autra_core::{
     AgentStepper, BudgetSnapshot, CancelFlag, EffectId, EffectRecord, EffectStatus, HistoryItem,
     RunId, ToolCallRequest, ToolOutcome,
@@ -39,6 +42,7 @@ pub struct LocalEngine {
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
     effect_timeout: Option<Duration>,
+    scheduler: Arc<GlobalScheduler>,
     agent_profile: Option<String>,
     approver: Option<Arc<dyn Approver>>,
     policy: PolicyChain,
@@ -58,6 +62,7 @@ impl LocalEngine {
             max_tool_calls: 8,
             max_parallel_tool_calls: 1,
             effect_timeout: None,
+            scheduler: Arc::new(GlobalScheduler::default()),
             agent_profile: None,
             approver: None,
             policy: PolicyChain::new(),
@@ -98,6 +103,17 @@ impl LocalEngine {
     pub fn with_agent_profile(mut self, profile: impl Into<String>) -> Self {
         self.agent_profile = Some(profile.into());
         self
+    }
+
+    /// Replace the global resource limits. The scheduler is shared by every Run
+    /// driven by this engine, including child Runs.
+    pub fn with_scheduler_limits(mut self, limits: SchedulerLimits) -> Self {
+        self.scheduler = Arc::new(GlobalScheduler::new(limits));
+        self
+    }
+
+    pub fn scheduler(&self) -> &Arc<GlobalScheduler> {
+        &self.scheduler
     }
 
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
@@ -264,6 +280,7 @@ impl LocalEngine {
                 budget: None,
                 child_execution: None,
                 delta: None,
+                scheduler: Some(self.scheduler.clone()),
             };
             let mut batch = OutboxDispatcher::run_once_for_run_with(
                 journal.journal(),

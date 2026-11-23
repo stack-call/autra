@@ -10,6 +10,15 @@ use crate::journal::DurableTransitionStore;
 
 pub const TOOL_PROTOCOL_VERSION: u32 = 1;
 
+/// The resource pool a tool consumes. `Process` covers shell and other
+/// OS-process-heavy work; everything else uses the generic tool pool.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolResource {
+    #[default]
+    Tool,
+    Process,
+}
+
 /// Model-facing tool description.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolDescriptor {
@@ -87,6 +96,10 @@ pub trait Tool: Send + Sync {
 
     fn requires_approval(&self) -> bool {
         false
+    }
+
+    fn resource(&self) -> ToolResource {
+        ToolResource::Tool
     }
 
     fn descriptor(&self) -> ToolDescriptor {

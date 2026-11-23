@@ -14,6 +14,7 @@ pub mod hub;
 pub mod journal;
 pub mod policy;
 pub mod sandbox;
+pub mod scheduler;
 
 pub use approval::{ApprovalDecision, ApprovalRequest, Approver, digest_arguments};
 pub use autra_execution::{RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
@@ -22,7 +23,7 @@ pub use dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, Dispatcher,
     LocalDispatcher, OutboxDispatcher,
 };
-pub use engine::LocalEngine;
+pub use engine::{LocalEngine, RecoveryLease, RecoverySupervisor};
 pub use hooks::ObserverHook;
 pub use host::{ExecutionHost, HOST_PROTOCOL_VERSION, HostCapabilities, LocalHost};
 pub use hub::{RunHub, RunSubscription};
@@ -32,3 +33,4 @@ pub use sandbox::{
     SANDBOX_PROTOCOL_VERSION, SandboxBackend, SandboxCapabilities, SandboxCommand, SandboxError,
     SandboxHandle, SandboxOutput, SandboxSpec, SandboxStatus,
 };
+pub use scheduler::{GlobalScheduler, ResourceKind, SchedulerLimits};

@@ -140,6 +140,12 @@ Tests observe public behaviour, not private helpers.
 37. **ReAct state reuse** (`autra-harness`): transitions keep history behavior
     while reusing the decoded engine state; the existing ReAct, resume and
     journal tests continue to pass (ADR-0058).
+38. **Global scheduler** (`autra-runtime`, `autra`): a pool blocks after its
+    limit and releases on drop; a cancelled waiter stops; two concurrent Runs
+    share one global tool limit; process tools use the process pool.
+39. **Recovery supervisor** (`autra`): only one supervisor can hold the service
+    lease; dropping the lease allows another supervisor to claim it; the
+    supervisor reuses `recover_once` instead of a second Run loop.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

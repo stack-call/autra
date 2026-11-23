@@ -227,3 +227,25 @@ async fn recovery_skips_terminal_and_failed_runs() {
     assert_eq!(report.resumed, 0);
     assert_eq!(report.failed, 0);
 }
+
+#[tokio::test]
+async fn the_recovery_supervisor_holds_a_service_lease() {
+    let journal = MemoryJournal::new();
+    let agent = Agent::builder("daemon")
+        .model(FakeModel::new(Vec::new()))
+        .journal(journal)
+        .build()
+        .unwrap();
+    let first = agent.recovery_supervisor();
+    let lease = first.claim().unwrap();
+
+    let second = agent.recovery_supervisor();
+    let error = match second.claim() {
+        Ok(_) => panic!("a second supervisor must not claim the lease"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("another recovery supervisor"));
+
+    drop(lease);
+    assert!(second.claim().is_ok());
+}

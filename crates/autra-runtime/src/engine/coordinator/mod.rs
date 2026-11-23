@@ -19,7 +19,8 @@ use crate::hub::RunHub;
 use super::executor::{EffectExecutor, ModelExecutionContext, ModelStep, ToolBatchContext};
 use super::lease::RunLeaseGuard;
 use super::{LocalEngine, cancel_staged_effects, validator};
-pub(super) use result::{emit_tool_result, enqueue, queue_cancel};
+use result::ResultCollector;
+pub(super) use result::{emit_tool_result, enqueue};
 use transition::{PreparedEffects, TransitionCommitter};
 
 impl LocalEngine {
@@ -68,7 +69,7 @@ impl LocalEngine {
         &self,
         stepper: Arc<dyn AgentStepper>,
         mut state: AgentState,
-        mut queue: VecDeque<AcceptedEvent>,
+        queue: VecDeque<AcceptedEvent>,
         mut effects: Vec<EffectRecord>,
         options: RunOptions,
         on_event: F,
@@ -92,18 +93,17 @@ impl LocalEngine {
             }
             forward(event);
         };
-        let mut seq = queue.iter().map(|event| event.seq).max().unwrap_or(0);
+        let mut results = ResultCollector::new(queue);
         let mut hub_guard = HubGuard::new(
             self.hub.clone(),
-            RunSnapshot::from_state(&state, seq, effects.len()),
+            RunSnapshot::from_state(&state, results.seq(), effects.len()),
         );
-        let mut cancel_queued = false;
         loop {
             if options.cancel.is_cancelled() {
-                queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
+                results.cancel();
             }
 
-            let event = queue
+            let event = results
                 .pop_front()
                 .ok_or_else(|| RunError::Protocol("no accepted event to process".to_owned()))?;
             let expected_version = state.state_version;
@@ -219,7 +219,7 @@ impl LocalEngine {
 
             if options.cancel.is_cancelled() {
                 cancel_staged_effects(&mut effects[first_new..], self.journal.as_deref(), &run_id)?;
-                queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
+                results.cancel();
                 continue;
             }
 
@@ -243,10 +243,10 @@ impl LocalEngine {
                     )
                     .await?;
                 for outcome in batch.outcomes {
-                    enqueue(&mut queue, &mut seq, EventKind::ToolResult(outcome));
+                    results.tool_result(outcome);
                 }
                 if batch.cancelled {
-                    queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
+                    results.cancel();
                 }
                 state.budget = budget.snapshot();
             }
@@ -266,10 +266,10 @@ impl LocalEngine {
                     .await
                 {
                     Ok(ModelStep::Output(output)) => {
-                        enqueue(&mut queue, &mut seq, EventKind::ModelResult(output));
+                        results.model_result(output);
                     }
                     Ok(ModelStep::Cancelled) => {
-                        queue_cancel(&mut queue, &mut seq, &mut cancel_queued);
+                        results.cancel();
                         break;
                     }
                     Err(error) => {

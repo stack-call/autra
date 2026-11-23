@@ -56,6 +56,8 @@ The non-negotiable boundary is not directory placement. It is this:
 |---|---|---|
 | Run loop, transition commit, authorization, result collection | `LocalEngine` public API + `engine/coordinator` | `crates/autra-runtime/src/engine/coordinator/` |
 | Effect execution, streaming, cancellation | `EffectExecutor` / `Dispatcher` | `crates/autra-runtime/src/engine/executor.rs`, `dispatcher.rs` |
+| Global Model/Tool/Process limits | `GlobalScheduler` | `crates/autra-runtime/src/scheduler/mod.rs` |
+| Recovery supervision | `RecoverySupervisor` + service lease | `crates/autra-runtime/src/engine/recovery/supervisor.rs` |
 | Model request transformation | `ModelRequestTransform` over `ModelRequestDraft` | `crates/autra-harness/src/middleware.rs` |
 | Lifecycle observation | `ObserverHook` (read-only, four stages) | `crates/autra-execution/src/hooks.rs` |
 | Execution boundary | `Dispatcher` / `OutboxDispatcher` | `crates/autra-runtime/src/dispatcher.rs` |
@@ -66,7 +68,7 @@ The non-negotiable boundary is not directory placement. It is this:
 committed. It is a pre-commit transform, not an execution wrap.
 
 Known timing gap: `ObserverHook::on_effect_accepted` is emitted **before**
-`commit_transition` (`engine/mod.rs` emits it while building EffectRecords; the
+`commit_transition` (`coordinator/transition.rs` emits it while building EffectRecords; the
 commit happens later). It is closer to `on_effect_proposed` than to a committed
 fact. The target model below splits these events.
 

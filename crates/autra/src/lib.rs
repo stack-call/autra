@@ -26,7 +26,7 @@ pub use autra_harness::{react_engine_state, react_history, react_pending_tool_ca
 pub use autra_runtime::{
     ChildHandle, ChildRunSet, ChildSpec, DispatchOptions, DispatchOutcome, DispatchResult,
     Dispatcher, JoinPolicy, LocalDispatcher, LocalEngine, MemoryJournal, OutboxDispatcher,
-    RulePolicy, RunHub, RunSubscription,
+    RecoveryLease, RecoverySupervisor, RulePolicy, RunHub, RunSubscription, SchedulerLimits,
 };
 pub use session::Session;
 pub use subagent::{Subagent, SubagentRegistry, SubagentTool};

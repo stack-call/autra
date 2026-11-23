@@ -14,11 +14,12 @@ use autra_core::{
 };
 use autra_execution::{
     ChildExecutionContext, ModelError, ModelProvider, ToolContext, ToolInput, ToolRegistry,
-    emit_complete_text,
+    ToolResource, emit_complete_text,
 };
 use futures_util::{FutureExt, StreamExt};
 
 use crate::journal::{EffectJournal, JournalError, OutboxEntry};
+use crate::scheduler::{GlobalScheduler, ResourceKind};
 
 /// Executes accepted effect intents. A custom Dispatcher can wrap a provider,
 /// a sandbox or a remote worker.
@@ -65,6 +66,12 @@ pub trait Dispatcher: Send + Sync {
     /// tool apart from a tool that returned an error.
     fn knows_tool(&self, _name: &str) -> bool {
         true
+    }
+
+    /// The resource pool used by a tool. A dispatcher that cannot answer keeps
+    /// the generic tool pool.
+    fn tool_resource(&self, _name: &str) -> ToolResource {
+        ToolResource::Tool
     }
 }
 
@@ -136,6 +143,13 @@ impl Dispatcher for LocalDispatcher {
 
     fn knows_tool(&self, name: &str) -> bool {
         self.tools.get(name).is_some()
+    }
+
+    fn tool_resource(&self, name: &str) -> ToolResource {
+        self.tools
+            .get(name)
+            .map(|tool| tool.resource())
+            .unwrap_or_default()
     }
 }
 
@@ -230,6 +244,8 @@ pub struct DispatchOptions<'a> {
     pub child_execution: Option<ChildExecutionContext>,
     /// When set, model effects stream their text through this sink.
     pub delta: Option<DeltaSink>,
+    /// Global resource pools. `None` keeps the historical unbounded behavior.
+    pub scheduler: Option<Arc<GlobalScheduler>>,
 }
 
 /// Claim-driven outbox loop. It executes only claimed effects, records the
@@ -257,6 +273,7 @@ impl OutboxDispatcher {
                 budget: None,
                 child_execution: None,
                 delta: None,
+                scheduler: None,
             },
             dispatcher,
             |_| {},
@@ -312,6 +329,7 @@ impl OutboxDispatcher {
                 budget: None,
                 child_execution: None,
                 delta: None,
+                scheduler: None,
             },
             dispatcher,
             |_| {},
@@ -509,6 +527,33 @@ async fn dispatch_entry(
         EffectIntent::CallModel(_) => true,
         EffectIntent::CallTool(spec) => dispatcher.knows_tool(&spec.call.name),
     };
+    let resource = match &intent {
+        EffectIntent::CallModel(_) => ResourceKind::Model,
+        EffectIntent::CallTool(spec) => match dispatcher.tool_resource(&spec.call.name) {
+            ToolResource::Process => ResourceKind::Process,
+            ToolResource::Tool => ResourceKind::Tool,
+        },
+    };
+    let permit = match options.scheduler.clone() {
+        Some(scheduler) => {
+            let acquire = scheduler.acquire(resource, options.cancel);
+            match await_with_lease(journal, &entry.effect_id, claim_id, lease, acquire).await {
+                Ok(Some(permit)) => Some(permit),
+                Ok(None) => {
+                    return finish_entry(
+                        journal,
+                        run_id,
+                        entry,
+                        DispatchOutcome::Cancelled,
+                        known_tool,
+                        claim_id,
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        None => None,
+    };
     mark_dispatched(journal, run_id, entry, claim_id)?;
     let call = async {
         match &intent {
@@ -556,6 +601,7 @@ async fn dispatch_entry(
             return Err(error);
         }
     };
+    drop(permit);
     finish_entry(journal, run_id, entry, outcome, known_tool, claim_id)
 }
 

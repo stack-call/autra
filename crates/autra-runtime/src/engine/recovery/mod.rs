@@ -1,3 +1,7 @@
+mod supervisor;
+
+pub use supervisor::{RecoveryLease, RecoverySupervisor};
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,7 +17,7 @@ use autra_execution::{
 };
 
 use crate::approval::digest_intent;
-use crate::dispatcher::OutboxDispatcher;
+use crate::dispatcher::{DEFAULT_CLAIM_LEASE, DispatchOptions, OutboxDispatcher};
 
 use super::LocalEngine;
 use super::coordinator::enqueue;
@@ -322,12 +326,23 @@ impl LocalEngine {
         }
 
         if !retried.is_empty() {
-            OutboxDispatcher::run_once_for_run(
+            let options = DispatchOptions {
+                limit: retried.len(),
+                max_parallel: 1,
+                timeout: self.effect_timeout,
+                cancel: None,
+                lease: DEFAULT_CLAIM_LEASE,
+                budget: None,
+                child_execution: None,
+                delta: None,
+                scheduler: Some(self.scheduler.clone()),
+            };
+            OutboxDispatcher::run_once_for_run_with(
                 journal.journal(),
                 run_id,
-                retried.len(),
+                options,
                 self.dispatcher.as_ref(),
-                self.effect_timeout,
+                |_| {},
             )
             .await
             .map_err(|error| RunError::Journal(error.to_string()))?;
@@ -495,12 +510,23 @@ impl LocalEngine {
         }
 
         if needs_dispatch > 0 {
-            OutboxDispatcher::run_once_for_run(
+            let options = DispatchOptions {
+                limit: needs_dispatch,
+                max_parallel: 1,
+                timeout: effect_timeout,
+                cancel: None,
+                lease: DEFAULT_CLAIM_LEASE,
+                budget: None,
+                child_execution: None,
+                delta: None,
+                scheduler: Some(self.scheduler.clone()),
+            };
+            OutboxDispatcher::run_once_for_run_with(
                 journal.journal(),
                 run_id,
-                needs_dispatch,
+                options,
                 self.dispatcher.as_ref(),
-                effect_timeout,
+                |_| {},
             )
             .await
             .map_err(|error| RunError::Journal(error.to_string()))?;

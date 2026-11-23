@@ -96,7 +96,7 @@ core has no Tokio, database or sandbox dependency.
 | `autra-core` | IDs, engine-agnostic AgentState, accepted events, Effect intents, budgets, cancellation, Stepper trait | MVP |
 | `autra-execution` | Tool, ModelProvider, EffectJournal/DurableTransitionStore, Approver, ObserverHook, Run API, Host and Sandbox contracts | Implemented |
 | `autra-harness` | ReAct (owns history in engine_state), context, skills, planning and concrete tools | MVP |
-| `autra-runtime` | Local engine: coordinator, dispatch, outbox, resume, ChildRun, timeouts | Implemented |
+| `autra-runtime` | Local engine: coordinator, scheduler, dispatch, outbox, recovery, ChildRun, timeouts | Implemented |
 | `autra` | Product facade: Agent, AgentBuilder, Session, Subagent | Implemented |
 | `autra-cli` | `autractl run`, `demo`, `tools`, help | MVP |
 | `autra-openai` | OpenAI-compatible chat completions provider | Implemented, streaming and non-streaming |

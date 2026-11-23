@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use autra_execution::{ToolContext, ToolInput, ToolOutput};
+use autra_execution::{ToolContext, ToolInput, ToolOutput, ToolResource};
 
 use crate::{LocalWorkspace, Tool, ToolError};
 use async_trait::async_trait;
@@ -297,6 +297,10 @@ impl Tool for RunCommandTool {
 
     fn requires_approval(&self) -> bool {
         true
+    }
+
+    fn resource(&self) -> ToolResource {
+        ToolResource::Process
     }
 
     fn preview(&self, arguments: &str) -> Option<String> {

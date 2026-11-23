@@ -4,9 +4,12 @@
 > **基线**：`mvp-v1`，包含本地稳定性 P0（Run/Service lease、claim fencing、进程取消、原子写）。
 > **范围**：Local-first、单机优先、预留多进程与多机扩展。
 >
-> **实现进展**：第一轮模块拆分已落地，`engine/coordinator/` 负责 Run 推进、
-> TransitionCommitter、AuthorizationGate 和结果收集；`EffectExecutor` 保留。
-> GlobalScheduler、完整 ResultCollector、RecoverySupervisor 仍是提案。
+> **实现进展**：单机模块化骨架已落地。
+> `engine/coordinator/` 负责 Run 推进、TransitionCommitter、AuthorizationGate
+> 和 ResultCollector；`scheduler/` 提供 Model/Tool/Process 全局 FIFO Semaphore（加权公平与有界等待队列仍后续）；
+> `engine/recovery/supervisor.rs` 提供带服务租约的 `RecoverySupervisor`；
+> `EffectExecutor` 保留。跨进程 Worker、PostgreSQL、Redis、AttemptId/Fencing
+> 和 SQLite 读写分离仍属于后续阶段。
 > **相关**：[运行时演进](runtime-evolution.md)、[简化架构 RFC](autra-runtime-simplified-rfc.md)、
 > [本地运行时稳定性](local-runtime-stability.md)、[执行模型](execution-model.md)、
 > [持久化](durability.md)、ADR-0058。
@@ -47,7 +50,21 @@ RunHub / Metrics / Tracing（旁路）
 
 ## 2. 当前基线
 
-已经有、并且应当保留的：
+**vNext 单机骨架状态**
+
+| 组件 | 状态 |
+|---|---|
+| RunCoordinator | 已实现：`engine/coordinator/mod.rs` 的 run/drive |
+| TransitionCommitter | 已实现：`coordinator/transition.rs` |
+| AuthorizationGate | 已实现：`coordinator/authorization.rs` |
+| ResultCollector | 已实现：`coordinator/result.rs` 的事件队列 |
+| GlobalScheduler | 已实现本地版本：`scheduler/mod.rs`，Model/Tool/Process Semaphore |
+| EffectExecutor | 已实现：`engine/executor.rs` |
+| RecoverySupervisor | 已实现：`engine/recovery/supervisor.rs`，服务租约 + 周期扫描 |
+| Journal/Outbox | 已有，SQLite 单 Writer；读写分离与 GC 未实现 |
+| 多进程 Worker / PostgreSQL / Redis | 未实现，属于阶段 3/4 |
+
+已经在本地单机模式中具备、并且应当保留的：
 
 | 能力 | 当前实现 |
 |---|---|
@@ -57,8 +74,9 @@ RunHub / Metrics / Tracing（旁路）
 | 终态提交 | `commit_terminal`，带版本 CAS |
 | Effect 账本 | `EffectRecord`、`EffectAttempt`、状态机、结果与错误 |
 | 执行边界 | `EffectExecutor`、`Dispatcher`、`OutboxDispatcher` |
+| 全局调度 | `GlobalScheduler` 的 Model/Tool/Process FIFO Semaphore |
 | 审批 | Policy、ApprovalRequest/Record、digest、revision、TTL、持久化复用 |
-| 恢复 | `resume`、`reconcile`、`outbox`、`autractl daemon` |
+| 恢复 | `resume`、`reconcile`、`outbox`、`RecoverySupervisor`、`autractl daemon` |
 | 观察 | `RunHub`、streaming、`ObserverHook`、tracing |
 | 本地稳定性 P0 | Run/Service lease、claim 续租与 fencing、活跃 owner 跳过、daemon 单实例、Agent profile 校验、命令树取消、原子写 |
 | 约束 | `autra-testkit` 的 crate 依赖方向测试 |
@@ -67,12 +85,12 @@ RunHub / Metrics / Tracing（旁路）
 
 | 缺口 | 影响 |
 |---|---|
-| `LocalEngine::drive()` 仍集中协调状态、提交、执行、取消、流式与完成 | 增加全局限流、多 Worker、恢复策略时难以独立验证 |
-| 没有跨 Run 的全局 Scheduler | 100 个 Run 各自的局部并发会叠加成系统级失控 |
+| Scheduler 只有 FIFO Semaphore | 有界等待队列、429 退避和加权公平尚未实现 |
 | `Attempt` 已记录，但没有独立的 `AttemptId` / `fencing_token` 协议 | 多进程接管时难以证明“谁有权提交” |
 | 取消意图没有独立的持久化记录 | 崩溃恢复只能看到未完成 Run，不能可靠区分用户取消与执行者失联 |
-| ResultCollector 逻辑分散在 dispatch/engine 中 | 完成顺序、反馈顺序、去重和恢复后的重复结果难以统一 |
+| ResultCollector 目前只负责事件队列 | 跨恢复的去重、结果重放和全局排序尚未实现 |
 | SQLite 是单个 `Arc<Mutex<Connection>>` | 读写路径未分离，长事务会阻塞其他 Run |
+| 没有崩溃/租约过期/fsync 失败的故障注入矩阵 | 无法证明恢复不会重复外部副作用 |
 | 没有 PostgreSQL / 远程 Worker / 消息队列 | 多机扩展缺少后端契约 |
 | 没有 Sandbox | 不可信命令仍以当前用户权限执行 |
 
@@ -162,6 +180,7 @@ Scheduler 回答：
 它还需要跨 Run 公平性，避免一个产生大量 Effect 的 Run 长期占满名额。
 
 **初期实现**：Tokio `Semaphore` + 有界队列 + 简单的加权公平/轮转即可，不需要 Redis。
+当前已落地 FIFO `Semaphore`；等待队列上限和加权公平仍未实现。
 
 **关键细节**：不要先领取大量 Effect 再让它们在内存队列里等待。应先获得资源许可，再领取少量即将执行的 Effect；执行中若可能超过租约，必须续租。
 
@@ -534,7 +553,10 @@ Core 只认识通用状态和 Stepper；Harness 提供 ReActStepper，未来也�
 
 每轮都保持现有测试通过。
 
-### 第一轮：拆 LocalEngine，保持行为不变
+### 第一轮：拆 LocalEngine，保持行为不变（已完成）
+
+`engine/coordinator/` 已包含 run/drive、TransitionCommitter、AuthorizationGate
+和 ResultCollector；`EffectExecutor` 保留。
 
 从 `drive()` 逐步拆出：
 
@@ -546,15 +568,18 @@ Core 只认识通用状态和 Stepper；Harness 提供 ReActStepper，未来也�
 
 **验收**：原子提交、审批、工具顺序、流式输出、ChildRun、恢复相关测试全部通过。
 
-### 第二轮：加入 GlobalScheduler
+### 第二轮：加入 GlobalScheduler（本地版本已完成）
 
-实现 Model / Tool / Process 三类全局 `Semaphore`；增加有界队列、429 退避、基本公平调度；压测 SQLite 事务与连接竞争。
+已实现 Model / Tool / Process 三类全局 `Semaphore`，并接入直接执行路径、
+outbox 派发、恢复与 reconcile。有界队列、429 退避、加权公平和 SQLite
+读写压测仍未完成。
 
 **验收**：同时启动 100 个 Run，严格遵守配置的模型/工具并发上限，不产生无界等待队列。
 
-### 第三轮：完善 Durable Recovery 与故障测试
+### 第三轮：完善 Durable Recovery 与故障测试（部分完成）
 
-扩展现有 daemon，补持久化取消语义、Attempt 身份、Worker Lease、Fencing；在数据库提交、派发、外部调用前后注入崩溃。
+`RecoverySupervisor` 已从 CLI 提取到 runtime，带服务租约并复用 `recover_once`。
+持久化取消语义、Attempt 身份、Worker Lease/Fencing 代际和崩溃注入仍未完成。
 
 **验收**：杀死进程后，已确认结果不丢失；用户取消不被当成普通崩溃恢复；非幂等未知操作不会自动重复。
 
