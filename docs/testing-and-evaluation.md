@@ -142,7 +142,8 @@ Tests observe public behaviour, not private helpers.
     journal tests continue to pass (ADR-0058).
 38. **Global scheduler** (`autra-runtime`, `autra`): a pool blocks after its
     limit and releases on drop; a cancelled waiter stops; two concurrent Runs
-    share one global tool limit; process tools use the process pool.
+    share one global tool limit; 100 concurrent Runs stay under the configured
+    tool limit; process tools use the process pool.
 39. **Recovery supervisor** (`autra`): only one supervisor can hold the service
     lease; dropping the lease allows another supervisor to claim it; the
     supervisor reuses `recover_once` instead of a second Run loop.

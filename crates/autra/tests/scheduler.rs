@@ -81,3 +81,34 @@ async fn two_runs_share_the_global_tool_limit() {
     assert_eq!(second.unwrap().answer(), Some("done"));
     assert_eq!(max_active.load(Ordering::SeqCst), 1);
 }
+
+#[tokio::test]
+async fn one_hundred_runs_respect_the_global_tool_limit() {
+    let active = Arc::new(AtomicUsize::new(0));
+    let max_active = Arc::new(AtomicUsize::new(0));
+    let dispatcher = SlowDispatcher {
+        active: active.clone(),
+        max_active: max_active.clone(),
+    };
+    let agent = Arc::new(
+        Agent::builder("scheduler-load")
+            .dispatcher(dispatcher)
+            .scheduler_limits(SchedulerLimits::new(100, 4, 4))
+            .build()
+            .unwrap(),
+    );
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..100 {
+        let agent = agent.clone();
+        tasks.spawn(async move { agent.run(&format!("run-{index}")).await });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        assert_eq!(result.unwrap().unwrap().answer(), Some("done"));
+    }
+
+    assert!(
+        max_active.load(Ordering::SeqCst) <= 4,
+        "tool concurrency exceeded the global limit"
+    );
+}
