@@ -1,5 +1,7 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use autra_core::{EffectClass, ToolSpec};
@@ -9,6 +11,10 @@ pub use autra_execution::tool::{
     TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor, ToolError, ToolInput,
     ToolOutput, ToolRegistry,
 };
+
+/// Serializes workspace writes inside one process. Cross-process writers still
+/// need the durable journal lease; this only removes in-process races.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 pub struct EchoTool;
 
@@ -123,6 +129,13 @@ impl LocalWorkspace {
         }
 
         let candidate = self.root.join(relative_path);
+        if let Ok(metadata) = std::fs::symlink_metadata(&candidate) {
+            if metadata.file_type().is_symlink() {
+                return Err(ToolError::new(format!(
+                    "refusing to write through symlink `{relative}`"
+                )));
+            }
+        }
         if let Ok(existing) = std::fs::canonicalize(&candidate) {
             if !existing.starts_with(&self.root) {
                 return Err(ToolError::new(format!(
@@ -188,6 +201,97 @@ impl LocalWorkspace {
             )));
         }
         Ok(target)
+    }
+
+    /// Write through a temporary file in the same directory and rename it into
+    /// place, so a crash leaves either the old or the new contents.
+    pub fn write_atomic(&self, relative: &str, content: &str) -> Result<(), ToolError> {
+        let _guard = WRITE_LOCK
+            .lock()
+            .map_err(|_| ToolError::new("workspace write lock poisoned"))?;
+        let path = self.resolve_for_write(relative)?;
+        self.write_atomic_locked(&path, relative, content.as_bytes())
+    }
+
+    /// Atomic write that refuses to overwrite content changed after the caller
+    /// read it. This closes the read-modify-write race for `edit_file`.
+    pub fn write_atomic_if_unchanged(
+        &self,
+        relative: &str,
+        expected: &str,
+        content: &str,
+    ) -> Result<(), ToolError> {
+        let _guard = WRITE_LOCK
+            .lock()
+            .map_err(|_| ToolError::new("workspace write lock poisoned"))?;
+        let path = self.resolve_for_write(relative)?;
+        let current = std::fs::read_to_string(&path).map_err(|error| {
+            ToolError::new(format!("cannot read `{relative}` before writing: {error}"))
+        })?;
+        if current != expected {
+            return Err(ToolError::new(format!(
+                "`{relative}` changed since it was read; retry the edit"
+            )));
+        }
+        self.write_atomic_locked(&path, relative, content.as_bytes())
+    }
+
+    fn write_atomic_locked(
+        &self,
+        path: &Path,
+        relative: &str,
+        content: &[u8],
+    ) -> Result<(), ToolError> {
+        if let Ok(metadata) = std::fs::symlink_metadata(path) {
+            if metadata.file_type().is_symlink() {
+                return Err(ToolError::new(format!(
+                    "refusing to write through symlink `{relative}`"
+                )));
+            }
+            if !metadata.is_file() {
+                return Err(ToolError::new(format!("`{relative}` is not a file")));
+            }
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| ToolError::new(format!("path has no parent: `{relative}`")))?;
+        static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+        let temp = parent.join(format!(
+            ".autra-write-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        let write = || -> std::io::Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)?;
+            if let Ok(metadata) = std::fs::metadata(path) {
+                let _ = file.set_permissions(metadata.permissions());
+            }
+            file.write_all(content)?;
+            file.sync_all()?;
+            Ok(())
+        };
+        if let Err(error) = write() {
+            let _ = std::fs::remove_file(&temp);
+            return Err(ToolError::new(format!(
+                "cannot write `{relative}`: {error}"
+            )));
+        }
+        if let Err(error) = std::fs::rename(&temp, path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(ToolError::new(format!(
+                "cannot replace `{relative}`: {error}"
+            )));
+        }
+        #[cfg(unix)]
+        {
+            if let Ok(directory) = std::fs::File::open(parent) {
+                let _ = directory.sync_all();
+            }
+        }
+        Ok(())
     }
 }
 
@@ -436,9 +540,7 @@ impl Tool for WriteFileTool {
                 "content exceeds {WRITE_FILE_MAX_BYTES} bytes"
             )));
         }
-        let path = self.workspace.resolve_for_write(&args.path)?;
-        std::fs::write(&path, args.content.as_bytes())
-            .map_err(|error| ToolError::new(format!("cannot write `{}`: {error}", args.path)))?;
+        self.workspace.write_atomic(&args.path, &args.content)?;
         Ok(format!(
             "wrote {} bytes to {}",
             args.content.len(),
@@ -734,9 +836,8 @@ impl Tool for EditFileTool {
         let args: EditFileArgs = serde_json::from_str(arguments)
             .map_err(|error| invalid_arguments("edit_file", error))?;
         let (old, new, count) = self.replacement(&args)?;
-        let path = self.workspace.resolve(&args.path)?;
-        std::fs::write(&path, new.as_bytes())
-            .map_err(|error| ToolError::new(format!("cannot write `{}`: {error}", args.path)))?;
+        self.workspace
+            .write_atomic_if_unchanged(&args.path, &old, &new)?;
         Ok(format!(
             "replaced {count} occurrence(s) in {}\n{}",
             args.path,

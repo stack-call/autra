@@ -566,12 +566,39 @@ async fn daemon_command(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let interval = std::time::Duration::from_secs(flags.interval_secs.unwrap_or(5));
+    let interval = std::time::Duration::from_secs(flags.interval_secs.unwrap_or(5).max(1));
+    let service_lease = std::time::Duration::from_secs((interval.as_secs() * 3).max(30));
+    let Some(path) = flags.journal.as_ref() else {
+        eprintln!("daemon requires --journal <path>");
+        return ExitCode::FAILURE;
+    };
+    let lease_store = match SqliteEffectJournal::open(path) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let owner = format!(
+        "daemon-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0)
+    );
+    if !matches!(
+        lease_store.claim_service("recovery-daemon", &owner, service_lease),
+        Ok(true)
+    ) {
+        eprintln!("[daemon] another daemon already owns this journal");
+        return ExitCode::FAILURE;
+    }
     loop {
         match agent.recover_once(32).await {
             Ok(report) if report.scanned > 0 => println!(
-                "[daemon] scanned={} resumed={} failed={}",
-                report.scanned, report.resumed, report.failed
+                "[daemon] scanned={} resumed={} failed={} skipped={}",
+                report.scanned, report.resumed, report.failed, report.skipped
             ),
             Ok(_) => {}
             Err(error) => eprintln!("[daemon] recovery failed: {error}"),
@@ -580,7 +607,15 @@ async fn daemon_command(args: &[String]) -> ExitCode {
             break;
         }
         tokio::time::sleep(interval).await;
+        match lease_store.renew_service("recovery-daemon", &owner, service_lease) {
+            Ok(true) => {}
+            _ => {
+                eprintln!("[daemon] service lease lost; stopping");
+                return ExitCode::FAILURE;
+            }
+        }
     }
+    let _ = lease_store.release_service("recovery-daemon", &owner);
     ExitCode::SUCCESS
 }
 

@@ -41,6 +41,8 @@ pub struct RecoveryReport {
     pub scanned: usize,
     pub resumed: usize,
     pub failed: usize,
+    /// Runs skipped because another live executor owns them.
+    pub skipped: usize,
 }
 
 #[derive(Clone, Default)]

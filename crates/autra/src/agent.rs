@@ -437,6 +437,17 @@ Maintain a short plan with `update_plan` and keep it current."
         } else {
             (self.instructions, None)
         };
+        let agent_profile = agent_profile(ProfileInput {
+            name: &self.name,
+            instructions: instructions.as_deref(),
+            tools: &tools,
+            skills: &self.skills,
+            policy: &self.policy,
+            context_budget_chars: self.context_budget_chars,
+            max_turns: self.max_turns,
+            max_tool_calls: self.max_tool_calls,
+            max_parallel_tool_calls: self.max_parallel_tool_calls,
+        });
         let dispatcher = match self.dispatcher {
             Some(dispatcher) => dispatcher,
             None => {
@@ -452,7 +463,8 @@ Maintain a short plan with `update_plan` and keep it current."
                 self.max_tool_calls,
                 self.max_parallel_tool_calls,
             )
-            .with_effect_timeout(self.effect_timeout);
+            .with_effect_timeout(self.effect_timeout)
+            .with_agent_profile(agent_profile);
         if let Some(journal) = self.journal {
             engine = engine.with_journal(journal);
         }
@@ -484,4 +496,61 @@ Maintain a short plan with `update_plan` and keep it current."
             engine,
         })
     }
+}
+
+/// A stable identity for the parts of an Agent configuration that change how a
+/// Run behaves. The model provider is not included; callers must resume with
+/// the same provider and credentials.
+struct ProfileInput<'a> {
+    name: &'a str,
+    instructions: Option<&'a str>,
+    tools: &'a ToolRegistry,
+    skills: &'a SkillRegistry,
+    policy: &'a PolicyChain,
+    context_budget_chars: Option<usize>,
+    max_turns: u32,
+    max_tool_calls: u32,
+    max_parallel_tool_calls: u32,
+}
+
+fn agent_profile(input: ProfileInput<'_>) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for part in [input.name, input.instructions.unwrap_or("")] {
+        hasher.update(part.as_bytes());
+        hasher.update([0]);
+    }
+    let mut specs = input.tools.specs();
+    specs.sort_by(|left, right| left.name.cmp(&right.name));
+    for spec in &specs {
+        for part in [&spec.name, &spec.description, &spec.input_schema] {
+            hasher.update(part.as_bytes());
+            hasher.update([0]);
+        }
+    }
+    for skill in input.skills.index() {
+        for part in [&skill.name, &skill.description] {
+            hasher.update(part.as_bytes());
+            hasher.update([0]);
+        }
+    }
+    hasher.update(input.policy.revision().as_bytes());
+    hasher.update([0]);
+    for value in [
+        input.context_budget_chars.map(|value| value as u64),
+        Some(input.max_turns as u64),
+        Some(input.max_tool_calls as u64),
+        Some(input.max_parallel_tool_calls as u64),
+    ] {
+        hasher.update(value.unwrap_or_default().to_le_bytes());
+    }
+    let digest = hasher.finalize();
+    format!(
+        "sha256:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
 }

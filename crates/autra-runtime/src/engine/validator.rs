@@ -27,6 +27,9 @@ pub(super) fn validate_initialized(
     if next.state_version != current.state_version {
         return Err(invalid("initialize must not change state_version"));
     }
+    if next.agent_profile != current.agent_profile {
+        return Err(invalid("initialize must not change the agent profile"));
+    }
     if next.budget != current.budget {
         return Err(invalid("initialize must not change the budget"));
     }
@@ -54,6 +57,9 @@ pub(super) fn validate(
         return Err(invalid(
             "a transition must not change session or turn identity",
         ));
+    }
+    if next.agent_profile != current.agent_profile {
+        return Err(invalid("a transition must not change the agent profile"));
     }
     if next.state_version != expected_version + 1 {
         return Err(invalid(format!(

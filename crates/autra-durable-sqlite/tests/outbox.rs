@@ -46,6 +46,106 @@ fn outbox_survives_reopen_and_supports_claims() {
 }
 
 #[test]
+fn a_stale_claim_cannot_record_an_outcome() {
+    use std::time::Duration;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("fencing.db");
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    let run_id = RunId::new("run-fencing");
+    let effect = authorized_effect();
+    journal.enqueue_effect(&run_id, &effect).unwrap();
+    journal
+        .claim_due_effects_with_lease(10, "claim-1", Duration::from_secs(1))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(2100));
+    journal
+        .claim_due_effects_with_lease(10, "claim-2", Duration::from_secs(1))
+        .unwrap();
+
+    let mut recorded = effect.clone();
+    recorded.set_status(EffectStatus::Dispatched);
+    let error = journal
+        .record_claimed(&run_id, &recorded, "claim-1")
+        .unwrap_err();
+    assert!(error.is_claim_lost());
+    journal
+        .record_claimed(&run_id, &recorded, "claim-2")
+        .unwrap();
+}
+
+#[test]
+fn run_leases_are_exclusive_and_can_be_released() {
+    use std::time::Duration;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("runs.db");
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    let run_id = RunId::new("run-lease-owner");
+
+    assert!(
+        journal
+            .claim_run(&run_id, "owner-1", Duration::from_secs(30))
+            .unwrap()
+    );
+    assert!(
+        !journal
+            .claim_run(&run_id, "owner-2", Duration::from_secs(30))
+            .unwrap()
+    );
+    assert!(
+        journal
+            .renew_run(&run_id, "owner-1", Duration::from_secs(60))
+            .unwrap()
+    );
+    assert_eq!(
+        journal.run_lease(&run_id).unwrap().unwrap().owner_id,
+        "owner-1"
+    );
+
+    journal.release_run(&run_id, "owner-1").unwrap();
+    assert!(journal.run_lease(&run_id).unwrap().is_none());
+    assert!(
+        journal
+            .claim_run(&run_id, "owner-2", Duration::from_secs(30))
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_service_lease_has_one_owner() {
+    use std::time::Duration;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("service.db");
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+
+    assert!(
+        journal
+            .claim_service("recovery-daemon", "daemon-1", Duration::from_secs(30))
+            .unwrap()
+    );
+    assert!(
+        !journal
+            .claim_service("recovery-daemon", "daemon-2", Duration::from_secs(30))
+            .unwrap()
+    );
+    assert!(
+        journal
+            .renew_service("recovery-daemon", "daemon-1", Duration::from_secs(60))
+            .unwrap()
+    );
+    journal
+        .release_service("recovery-daemon", "daemon-1")
+        .unwrap();
+    assert!(
+        journal
+            .claim_service("recovery-daemon", "daemon-2", Duration::from_secs(30))
+            .unwrap()
+    );
+}
+
+#[test]
 fn an_expired_lease_can_be_reclaimed() {
     use std::time::Duration;
 

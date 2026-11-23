@@ -126,6 +126,85 @@ async fn recovery_resumes_an_awaiting_tool_run() {
 }
 
 #[tokio::test]
+async fn recovery_skips_a_run_with_a_live_owner() {
+    use std::time::Duration;
+
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("recover-owned");
+    journal
+        .save_run(&base_state(&run_id, AgentPhase::AwaitingModel))
+        .unwrap();
+    let effect = model_effect();
+    journal.record(&run_id, &effect).unwrap();
+    journal.enqueue_effect(&run_id, &effect).unwrap();
+    assert!(
+        journal
+            .claim_run(&run_id, "other-executor", Duration::from_secs(60))
+            .unwrap()
+    );
+    let agent = Agent::builder("daemon")
+        .model(FakeModel::new(Vec::new()))
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+
+    let report = agent.recover_once(10).await.unwrap();
+
+    assert_eq!(report.scanned, 1);
+    assert_eq!(report.skipped, 1);
+    assert_eq!(report.resumed, 0);
+    let stored = journal.load_run(&run_id).unwrap().unwrap();
+    assert_eq!(stored.phase, AgentPhase::AwaitingModel);
+}
+
+#[tokio::test]
+async fn resume_refuses_a_run_owned_by_another_executor() {
+    use std::time::Duration;
+
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("resume-owned");
+    journal
+        .save_run(&base_state(&run_id, AgentPhase::AwaitingModel))
+        .unwrap();
+    assert!(
+        journal
+            .claim_run(&run_id, "other-executor", Duration::from_secs(60))
+            .unwrap()
+    );
+    let agent = Agent::builder("owner")
+        .model(FakeModel::new(vec![answer("should not run")]))
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+
+    let error = agent.resume(&run_id).await.unwrap_err();
+
+    assert!(error.to_string().contains("owned by another executor"));
+}
+
+#[tokio::test]
+async fn resume_refuses_a_different_agent_profile() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("resume-profile");
+    let mut state = base_state(&run_id, AgentPhase::AwaitingModel);
+    state.agent_profile = Some("sha256:other".to_owned());
+    journal.save_run(&state).unwrap();
+    let agent = Agent::builder("owner")
+        .model(FakeModel::new(vec![answer("should not run")]))
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+
+    let error = agent.resume(&run_id).await.unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("created by a different agent profile")
+    );
+}
+
+#[tokio::test]
 async fn recovery_skips_terminal_and_failed_runs() {
     let journal = MemoryJournal::new();
     let completed = RunId::new("recover-completed");

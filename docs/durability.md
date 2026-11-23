@@ -128,11 +128,18 @@ A polling daemon (`autractl daemon --journal <path>`) scans the journal and
 resumes runs parked at `AwaitingTool` or `AwaitingModel`, skipping terminal
 states. By default it rejects new approvals unless `--yes` is passed. It is an
 opt-in process, not part of the library runtime. Approval decisions persist and
-`Agent::reconcile` retries safe `OutcomeUnknown` effects, but there is no
-automatic daemon. Resume assumes the same Agent configuration, tools and
-workspace as the original run. A timed-out tool is marked `outcome_unknown`;
+`Agent::reconcile` retries safe `OutcomeUnknown` effects. The daemon holds a service lease, so only one daemon
+owns a journal, and it skips Runs whose owner lease is still live. Active Runs
+renew their Run lease; a crashed owner becomes reclaimable after the lease
+expires. Resume also checks the stored Agent profile hash and refuses a
+different instructions/tools/policy configuration. See
+[`local-runtime-stability.md`](local-runtime-stability.md). A timed-out tool is marked `outcome_unknown`;
 safe classes can be reconciled, and unsafe classes stay unresolved for a human. Do not infer
 full durable recovery from the journal.
 
 See [`ADR-0003`](adr/0003-default-local-host.md) and
 [`ADR-0008`](adr/0008-native-durable-and-restate-independent.md).
+
+The known gaps around leases, daemon ownership, process cancellation, atomic
+writes and journal retention are tracked in
+[`local-runtime-stability.md`](local-runtime-stability.md).

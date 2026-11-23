@@ -7,9 +7,11 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+use autra_execution::{ToolContext, ToolInput, ToolOutput};
+
 use crate::{LocalWorkspace, Tool, ToolError};
 use async_trait::async_trait;
-use autra_core::{EffectClass, ToolSpec};
+use autra_core::{CancelFlag, EffectClass, ToolSpec};
 use serde::Deserialize;
 
 pub const RUN_COMMAND_TOOL: &str = "run_command";
@@ -34,6 +36,7 @@ pub(crate) async fn run_program(
     program: &str,
     args: &[String],
     timeout: Duration,
+    cancel: Option<CancelFlag>,
 ) -> Result<ProcessOutput, ToolError> {
     let mut command = tokio::process::Command::new(program);
     command
@@ -43,6 +46,8 @@ pub(crate) async fn run_program(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
     sanitize_environment(&mut command);
     let mut child = command
         .spawn()
@@ -66,25 +71,55 @@ pub(crate) async fn run_program(
         let status = child.wait().await?;
         Ok::<_, std::io::Error>((status, stdout, stderr))
     };
-    match tokio::time::timeout(timeout, wait).await {
-        Ok(Ok((status, stdout, stderr))) => Ok(ProcessOutput {
+    enum Completion {
+        Done(std::io::Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>)>),
+        TimedOut,
+        Cancelled,
+    }
+    let completion = {
+        tokio::pin!(wait);
+        tokio::select! {
+            result = &mut wait => Completion::Done(result),
+            _ = tokio::time::sleep(timeout) => Completion::TimedOut,
+            _ = wait_for_cancel(cancel.as_ref()) => Completion::Cancelled,
+        }
+    };
+    match completion {
+        Completion::Done(Ok((status, stdout, stderr))) => Ok(ProcessOutput {
             code: status.code(),
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
         }),
-        Ok(Err(error)) => {
+        Completion::Done(Err(error)) => {
             kill_tree(&mut child).await;
             Err(ToolError::new(format!(
                 "`{program}` failed to run: {error}"
             )))
         }
-        Err(_) => {
+        Completion::TimedOut => {
             kill_tree(&mut child).await;
             Err(ToolError::outcome_unknown(format!(
                 "`{program}` timed out after {}s; it may still have changed the workspace",
                 timeout.as_secs()
             )))
         }
+        Completion::Cancelled => {
+            kill_tree(&mut child).await;
+            Err(ToolError::outcome_unknown(format!(
+                "`{program}` was cancelled; it may still have changed the workspace"
+            )))
+        }
+    }
+}
+
+async fn wait_for_cancel(cancel: Option<&CancelFlag>) {
+    match cancel {
+        Some(cancel) => {
+            while !cancel.is_cancelled() {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        None => std::future::pending().await,
     }
 }
 
@@ -149,6 +184,22 @@ fn is_sensitive_key(key: &std::ffi::OsStr) -> bool {
 }
 
 async fn kill_tree(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            let pid = pid as i32;
+            // The child was started as its own process group; signal the whole
+            // tree, then force-kill anything that ignored the first signal.
+            unsafe {
+                libc::kill(-pid, libc::SIGTERM);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
     #[cfg(windows)]
     {
         if let Some(pid) = child.id() {
@@ -161,6 +212,7 @@ async fn kill_tree(child: &mut tokio::process::Child) {
         }
     }
     let _ = child.kill().await;
+    let _ = child.wait().await;
 }
 
 pub(crate) fn truncate_output(text: &str, max_bytes: usize) -> String {
@@ -253,6 +305,22 @@ impl Tool for RunCommandTool {
     }
 
     async fn call(&self, arguments: &str) -> Result<String, ToolError> {
+        self.run(arguments, None).await
+    }
+
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        self.run(&input.arguments, context.cancel)
+            .await
+            .map(ToolOutput::text)
+    }
+}
+
+impl RunCommandTool {
+    async fn run(&self, arguments: &str, cancel: Option<CancelFlag>) -> Result<String, ToolError> {
         let args: RunCommandArgs = serde_json::from_str(arguments)
             .map_err(|error| ToolError::new(format!("invalid run_command arguments: {error}")))?;
         if args.command.trim().is_empty() {
@@ -273,6 +341,7 @@ impl Tool for RunCommandTool {
             program,
             &[flag.to_owned(), args.command.clone()],
             timeout,
+            cancel,
         )
         .await?;
         let report = format_output(&output, self.max_output_bytes);

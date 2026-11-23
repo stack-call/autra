@@ -57,6 +57,10 @@ pub struct AgentState {
     pub budget: BudgetSnapshot,
     pub final_answer: Option<String>,
     pub last_error: Option<String>,
+    /// Stable identity of the Agent configuration that created this Run.
+    /// Recovery refuses to continue a Run with a different profile.
+    #[serde(default)]
+    pub agent_profile: Option<String>,
     pub engine_state: EngineState,
 }
 
@@ -72,6 +76,7 @@ impl AgentState {
             budget,
             final_answer: None,
             last_error: None,
+            agent_profile: None,
             engine_state: EngineState::new("none", 0),
         }
     }

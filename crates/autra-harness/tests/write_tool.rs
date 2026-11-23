@@ -5,6 +5,64 @@ use autra_core::EffectClass;
 use autra_harness::{LocalWorkspace, Tool, WriteFileTool};
 use tempfile::tempdir;
 
+#[test]
+fn an_atomic_write_rejects_a_stale_pre_image() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("note.txt"), "current").unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+
+    let error = workspace
+        .write_atomic_if_unchanged("note.txt", "stale", "new")
+        .unwrap_err();
+
+    assert!(error.to_string().contains("changed since it was read"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+        "current"
+    );
+}
+
+#[test]
+fn an_atomic_write_replaces_content_without_leaving_temp_files() {
+    let dir = tempdir().unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+
+    workspace.write_atomic("note.txt", "first").unwrap();
+    workspace.write_atomic("note.txt", "second").unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+        "second"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".autra-write-")
+        })
+        .collect();
+    assert!(leftovers.is_empty(), "temporary files were not cleaned up");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_atomic_write_refuses_a_symlink() {
+    let dir = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let target = outside.path().join("outside.txt");
+    std::fs::write(&target, "outside").unwrap();
+    std::os::unix::fs::symlink(&target, dir.path().join("link.txt")).unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+
+    let error = workspace.write_atomic("link.txt", "changed").unwrap_err();
+
+    assert!(error.to_string().contains("symlink"));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "outside");
+}
+
 fn workspace(root: &Path) -> LocalWorkspace {
     LocalWorkspace::open(root).unwrap()
 }

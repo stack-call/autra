@@ -9,12 +9,13 @@ use autra_core::{
 };
 use autra_execution::{
     DurableTransitionStore, PolicyDecision, ReconciliationReport, RecoveryReport, RunError,
-    RunEvent, RunOptions, RunOutcome, RunSnapshot, UNCLAIMED_CLAIM, UnresolvedEffect,
+    RunEvent, RunOptions, RunOutcome, RunSnapshot, UNCLAIMED_CLAIM, UnresolvedEffect, now_unix_ms,
 };
 
 use crate::approval::digest_intent;
 use crate::dispatcher::OutboxDispatcher;
 
+use super::lease::RunLeaseGuard;
 use super::{LocalEngine, enqueue};
 
 impl LocalEngine {
@@ -108,6 +109,14 @@ impl LocalEngine {
             AgentPhase::AwaitingTool | AgentPhase::AwaitingModel => {}
         }
 
+        if let (Some(expected), Some(stored)) = (&self.agent_profile, &state.agent_profile) {
+            if expected != stored {
+                return Err(RunError::Protocol(format!(
+                    "run `{run_id}` was created by a different agent profile; refusing to resume"
+                )));
+            }
+        }
+        let _lease = RunLeaseGuard::acquire(self.journal.clone(), run_id, options.cancel.clone())?;
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
         let approver = options.approver.clone().or_else(|| self.approver.clone());
         match state.phase {
@@ -176,6 +185,15 @@ impl LocalEngine {
             ) {
                 continue;
             }
+            if let Some(lease) = journal
+                .run_lease(&run_id)
+                .map_err(|error| RunError::Journal(error.to_string()))?
+            {
+                if lease.is_live(now_unix_ms()) {
+                    report.skipped += 1;
+                    continue;
+                }
+            }
             match self
                 .resume_with_options(stepper.clone(), &run_id, RunOptions::default(), |_| {})
                 .await
@@ -208,6 +226,8 @@ impl LocalEngine {
             .journal
             .as_ref()
             .ok_or_else(|| RunError::Protocol("reconciliation requires a journal".to_owned()))?;
+        let _lease =
+            RunLeaseGuard::acquire(self.journal.clone(), run_id, autra_core::CancelFlag::new())?;
         let mut effects = journal
             .load(run_id)
             .map_err(|error| RunError::Journal(error.to_string()))?;

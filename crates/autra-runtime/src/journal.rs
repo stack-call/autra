@@ -1,12 +1,22 @@
 //! In-process EffectJournal for local runs and tests.
 
 pub use autra_execution::journal::{DEFAULT_CLAIM_LEASE, EffectJournal, JournalError, OutboxEntry};
-use autra_execution::{ApprovalRecord, ApprovalStore, ApprovalStoreError, DurableTransitionStore};
+use autra_execution::{
+    ApprovalRecord, ApprovalStore, ApprovalStoreError, DurableTransitionStore, LeaseRecord,
+    now_unix_ms,
+};
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
+
+#[derive(Clone, Debug)]
+struct MemoryClaim {
+    claim_id: String,
+    deadline_unix_ms: u64,
+}
 
 /// In-process journal for tests and local runs.
 #[derive(Clone, Default)]
@@ -15,8 +25,50 @@ pub struct MemoryJournal {
     runs: Arc<Mutex<BTreeMap<RunId, AgentState>>>,
     events: Arc<Mutex<BTreeMap<RunId, Vec<AcceptedEvent>>>>,
     outbox: Arc<Mutex<BTreeMap<EffectId, OutboxEntry>>>,
-    claims: Arc<Mutex<BTreeMap<EffectId, String>>>,
+    claims: Arc<Mutex<BTreeMap<EffectId, MemoryClaim>>>,
+    run_leases: Arc<Mutex<BTreeMap<RunId, LeaseRecord>>>,
+    service_leases: Arc<Mutex<BTreeMap<String, LeaseRecord>>>,
     approvals: Arc<Mutex<BTreeMap<EffectId, ApprovalRecord>>>,
+}
+
+fn lease_deadline(lease: Duration) -> u64 {
+    now_unix_ms().saturating_add(lease.as_millis() as u64)
+}
+
+impl MemoryJournal {
+    fn claim_with_lease(
+        &self,
+        run_id: Option<&RunId>,
+        limit: usize,
+        claim_id: &str,
+        lease: Duration,
+    ) -> Vec<OutboxEntry> {
+        let now = now_unix_ms();
+        let mut outbox = self.outbox.lock().expect("journal lock poisoned");
+        let mut claims = self.claims.lock().expect("journal lock poisoned");
+        claims.retain(|_, claim| claim.deadline_unix_ms > now);
+        let ids: Vec<EffectId> = outbox
+            .values()
+            .filter(|entry| run_id.is_none_or(|run_id| &entry.run_id == run_id))
+            .filter(|entry| !claims.contains_key(&entry.effect_id))
+            .take(limit)
+            .map(|entry| entry.effect_id.clone())
+            .collect();
+        let mut claimed = Vec::new();
+        for id in ids {
+            let entry = outbox.get_mut(&id).expect("outbox entry");
+            entry.attempts += 1;
+            claims.insert(
+                id.clone(),
+                MemoryClaim {
+                    claim_id: claim_id.to_owned(),
+                    deadline_unix_ms: lease_deadline(lease),
+                },
+            );
+            claimed.push(entry.clone());
+        }
+        claimed
+    }
 }
 
 impl MemoryJournal {
@@ -120,26 +172,44 @@ impl EffectJournal for MemoryJournal {
         Ok(())
     }
 
+    fn record_claimed(
+        &self,
+        run_id: &RunId,
+        effect: &EffectRecord,
+        claim_id: &str,
+    ) -> Result<(), JournalError> {
+        let claims = self.claims.lock().expect("journal lock poisoned");
+        match claims.get(&effect.id) {
+            Some(claim) if claim.claim_id == claim_id => {}
+            _ => return Err(JournalError::claim_lost(&effect.id, claim_id)),
+        }
+        drop(claims);
+        self.record(run_id, effect)
+    }
+
+    fn renew_claim(
+        &self,
+        effect_id: &EffectId,
+        claim_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let mut claims = self.claims.lock().expect("journal lock poisoned");
+        match claims.get_mut(effect_id) {
+            Some(claim) if claim.claim_id == claim_id && claim.deadline_unix_ms > now => {
+                claim.deadline_unix_ms = lease_deadline(lease);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn claim_due_effects(
         &self,
         limit: usize,
         claim_id: &str,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
-        let mut outbox = self.outbox.lock().expect("journal lock poisoned");
-        let mut claims = self.claims.lock().expect("journal lock poisoned");
-        let ids: Vec<EffectId> = outbox
-            .values()
-            .take(limit)
-            .map(|entry| entry.effect_id.clone())
-            .collect();
-        let mut claimed = Vec::new();
-        for id in ids {
-            let entry = outbox.get_mut(&id).expect("outbox entry");
-            entry.attempts += 1;
-            claims.insert(id.clone(), claim_id.to_owned());
-            claimed.push(entry.clone());
-        }
-        Ok(claimed)
+        Ok(self.claim_with_lease(None, limit, claim_id, DEFAULT_CLAIM_LEASE))
     }
 
     fn claim_due_effects_for_run(
@@ -148,28 +218,32 @@ impl EffectJournal for MemoryJournal {
         limit: usize,
         claim_id: &str,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
-        let mut outbox = self.outbox.lock().expect("journal lock poisoned");
-        let mut claims = self.claims.lock().expect("journal lock poisoned");
-        let ids: Vec<EffectId> = outbox
-            .values()
-            .filter(|entry| &entry.run_id == run_id)
-            .take(limit)
-            .map(|entry| entry.effect_id.clone())
-            .collect();
-        let mut claimed = Vec::new();
-        for id in ids {
-            let entry = outbox.get_mut(&id).expect("outbox entry");
-            entry.attempts += 1;
-            claims.insert(id.clone(), claim_id.to_owned());
-            claimed.push(entry.clone());
-        }
-        Ok(claimed)
+        Ok(self.claim_with_lease(Some(run_id), limit, claim_id, DEFAULT_CLAIM_LEASE))
+    }
+
+    fn claim_due_effects_with_lease(
+        &self,
+        limit: usize,
+        claim_id: &str,
+        lease: Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        Ok(self.claim_with_lease(None, limit, claim_id, lease))
+    }
+
+    fn claim_due_effects_for_run_with_lease(
+        &self,
+        run_id: &RunId,
+        limit: usize,
+        claim_id: &str,
+        lease: Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        Ok(self.claim_with_lease(Some(run_id), limit, claim_id, lease))
     }
 
     fn complete_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
         let mut claims = self.claims.lock().expect("journal lock poisoned");
         let owns = match claims.get(effect_id) {
-            Some(owner) => owner == claim_id,
+            Some(claim) => claim.claim_id == claim_id,
             None => claim_id.is_empty(),
         };
         if owns {
@@ -185,11 +259,122 @@ impl EffectJournal for MemoryJournal {
     fn release_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
         let mut claims = self.claims.lock().expect("journal lock poisoned");
         let owns = match claims.get(effect_id) {
-            Some(owner) => owner == claim_id,
+            Some(claim) => claim.claim_id == claim_id,
             None => claim_id.is_empty(),
         };
         if owns {
             claims.remove(effect_id);
+        }
+        Ok(())
+    }
+
+    fn claim_run(
+        &self,
+        run_id: &RunId,
+        owner_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let mut leases = self.run_leases.lock().expect("journal lock poisoned");
+        match leases.get(run_id) {
+            Some(current) if current.is_live(now) && current.owner_id != owner_id => Ok(false),
+            _ => {
+                leases.insert(
+                    run_id.clone(),
+                    LeaseRecord {
+                        owner_id: owner_id.to_owned(),
+                        deadline_unix_ms: lease_deadline(lease),
+                    },
+                );
+                Ok(true)
+            }
+        }
+    }
+
+    fn renew_run(
+        &self,
+        run_id: &RunId,
+        owner_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let mut leases = self.run_leases.lock().expect("journal lock poisoned");
+        match leases.get_mut(run_id) {
+            Some(current) if current.owner_id == owner_id && current.is_live(now) => {
+                current.deadline_unix_ms = lease_deadline(lease);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn release_run(&self, run_id: &RunId, owner_id: &str) -> Result<(), JournalError> {
+        let mut leases = self.run_leases.lock().expect("journal lock poisoned");
+        if leases
+            .get(run_id)
+            .is_some_and(|lease| lease.owner_id == owner_id)
+        {
+            leases.remove(run_id);
+        }
+        Ok(())
+    }
+
+    fn run_lease(&self, run_id: &RunId) -> Result<Option<LeaseRecord>, JournalError> {
+        Ok(self
+            .run_leases
+            .lock()
+            .expect("journal lock poisoned")
+            .get(run_id)
+            .cloned())
+    }
+
+    fn claim_service(
+        &self,
+        service: &str,
+        owner_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let mut leases = self.service_leases.lock().expect("journal lock poisoned");
+        match leases.get(service) {
+            Some(current) if current.is_live(now) && current.owner_id != owner_id => Ok(false),
+            _ => {
+                leases.insert(
+                    service.to_owned(),
+                    LeaseRecord {
+                        owner_id: owner_id.to_owned(),
+                        deadline_unix_ms: lease_deadline(lease),
+                    },
+                );
+                Ok(true)
+            }
+        }
+    }
+
+    fn renew_service(
+        &self,
+        service: &str,
+        owner_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let mut leases = self.service_leases.lock().expect("journal lock poisoned");
+        match leases.get_mut(service) {
+            Some(current) if current.owner_id == owner_id && current.is_live(now) => {
+                current.deadline_unix_ms = lease_deadline(lease);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn release_service(&self, service: &str, owner_id: &str) -> Result<(), JournalError> {
+        let mut leases = self.service_leases.lock().expect("journal lock poisoned");
+        if leases
+            .get(service)
+            .is_some_and(|lease| lease.owner_id == owner_id)
+        {
+            leases.remove(service);
         }
         Ok(())
     }

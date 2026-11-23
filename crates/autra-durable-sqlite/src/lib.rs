@@ -9,7 +9,7 @@ use std::time::Duration;
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
 use autra_execution::{
     ApprovalRecord, ApprovalStore, ApprovalStoreError, DEFAULT_CLAIM_LEASE, DurableTransitionStore,
-    EffectJournal, JournalError, OutboxEntry,
+    EffectJournal, JournalError, LeaseRecord, OutboxEntry, now_unix_ms,
 };
 pub mod session;
 
@@ -90,6 +90,16 @@ impl SqliteEffectJournal {
                     claim_id TEXT,
                     claim_deadline TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS run_leases (
+                    run_id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    deadline_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS service_leases (
+                    service TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    deadline_ms INTEGER NOT NULL
                 );",
             )
             .map_err(|error| JournalError::new(format!("cannot migrate journal: {error}")))?;
@@ -185,6 +195,72 @@ impl EffectJournal for SqliteEffectJournal {
             )
             .map_err(|error| JournalError::new(format!("cannot record effect: {error}")))?;
         Ok(())
+    }
+
+    fn record_claimed(
+        &self,
+        run_id: &RunId,
+        effect: &EffectRecord,
+        claim_id: &str,
+    ) -> Result<(), JournalError> {
+        let payload = serde_json::to_string(effect)
+            .map_err(|error| JournalError::new(format!("cannot serialize effect: {error}")))?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| JournalError::new(format!("cannot begin claim write: {error}")))?;
+        let owned: Option<i64> = transaction
+            .query_row(
+                "SELECT 1 FROM effect_outbox WHERE effect_id = ?1 AND claim_id = ?2",
+                params![effect.id.as_str(), claim_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| JournalError::new(format!("cannot check claim: {error}")))?;
+        if owned.is_none() {
+            return Err(JournalError::claim_lost(&effect.id, claim_id));
+        }
+        transaction
+            .execute(
+                "INSERT INTO effects (effect_id, run_id, payload_json)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(effect_id) DO UPDATE SET
+                   run_id = excluded.run_id,
+                   payload_json = excluded.payload_json,
+                   updated_at = CURRENT_TIMESTAMP",
+                params![effect.id.as_str(), run_id.as_str(), payload],
+            )
+            .map_err(|error| JournalError::new(format!("cannot record effect: {error}")))?;
+        transaction
+            .commit()
+            .map_err(|error| JournalError::new(format!("cannot commit claim write: {error}")))?;
+        Ok(())
+    }
+
+    fn renew_claim(
+        &self,
+        effect_id: &EffectId,
+        claim_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let modifier = format!("+{} seconds", lease.as_secs().max(1));
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let changed = connection
+            .execute(
+                "UPDATE effect_outbox
+                 SET claim_deadline = datetime('now', ?3)
+                 WHERE effect_id = ?1 AND claim_id = ?2
+                   AND claim_deadline >= datetime('now')",
+                params![effect_id.as_str(), claim_id, modifier],
+            )
+            .map_err(|error| JournalError::new(format!("cannot renew claim: {error}")))?;
+        Ok(changed > 0)
     }
 
     fn save_run(&self, state: &AgentState) -> Result<(), JournalError> {
@@ -438,6 +514,150 @@ impl EffectJournal for SqliteEffectJournal {
                 params![effect_id.as_str(), claim_id],
             )
             .map_err(|error| JournalError::new(format!("cannot release effect: {error}")))?;
+        Ok(())
+    }
+
+    fn claim_run(
+        &self,
+        run_id: &RunId,
+        owner_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let deadline = now.saturating_add(lease.as_millis() as u64);
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let changed = connection
+            .execute(
+                "INSERT INTO run_leases (run_id, owner_id, deadline_ms)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                   owner_id = excluded.owner_id,
+                   deadline_ms = excluded.deadline_ms
+                 WHERE run_leases.deadline_ms < ?4 OR run_leases.owner_id = ?2",
+                params![run_id.as_str(), owner_id, deadline as i64, now as i64],
+            )
+            .map_err(|error| JournalError::new(format!("cannot claim run: {error}")))?;
+        Ok(changed > 0)
+    }
+
+    fn renew_run(
+        &self,
+        run_id: &RunId,
+        owner_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let deadline = now.saturating_add(lease.as_millis() as u64);
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let changed = connection
+            .execute(
+                "UPDATE run_leases SET deadline_ms = ?3
+                 WHERE run_id = ?1 AND owner_id = ?2 AND deadline_ms >= ?4",
+                params![run_id.as_str(), owner_id, deadline as i64, now as i64],
+            )
+            .map_err(|error| JournalError::new(format!("cannot renew run: {error}")))?;
+        Ok(changed > 0)
+    }
+
+    fn release_run(&self, run_id: &RunId, owner_id: &str) -> Result<(), JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .execute(
+                "DELETE FROM run_leases WHERE run_id = ?1 AND owner_id = ?2",
+                params![run_id.as_str(), owner_id],
+            )
+            .map_err(|error| JournalError::new(format!("cannot release run: {error}")))?;
+        Ok(())
+    }
+
+    fn run_lease(&self, run_id: &RunId) -> Result<Option<LeaseRecord>, JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .query_row(
+                "SELECT owner_id, deadline_ms FROM run_leases WHERE run_id = ?1",
+                params![run_id.as_str()],
+                |row| {
+                    Ok(LeaseRecord {
+                        owner_id: row.get(0)?,
+                        deadline_unix_ms: row.get::<_, i64>(1)? as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| JournalError::new(format!("cannot read run lease: {error}")))
+    }
+
+    fn claim_service(
+        &self,
+        service: &str,
+        owner_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let deadline = now.saturating_add(lease.as_millis() as u64);
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let changed = connection
+            .execute(
+                "INSERT INTO service_leases (service, owner_id, deadline_ms)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(service) DO UPDATE SET
+                   owner_id = excluded.owner_id,
+                   deadline_ms = excluded.deadline_ms
+                 WHERE service_leases.deadline_ms < ?4 OR service_leases.owner_id = ?2",
+                params![service, owner_id, deadline as i64, now as i64],
+            )
+            .map_err(|error| JournalError::new(format!("cannot claim service: {error}")))?;
+        Ok(changed > 0)
+    }
+
+    fn renew_service(
+        &self,
+        service: &str,
+        owner_id: &str,
+        lease: Duration,
+    ) -> Result<bool, JournalError> {
+        let now = now_unix_ms();
+        let deadline = now.saturating_add(lease.as_millis() as u64);
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let changed = connection
+            .execute(
+                "UPDATE service_leases SET deadline_ms = ?3
+                 WHERE service = ?1 AND owner_id = ?2 AND deadline_ms >= ?4",
+                params![service, owner_id, deadline as i64, now as i64],
+            )
+            .map_err(|error| JournalError::new(format!("cannot renew service: {error}")))?;
+        Ok(changed > 0)
+    }
+
+    fn release_service(&self, service: &str, owner_id: &str) -> Result<(), JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .execute(
+                "DELETE FROM service_leases WHERE service = ?1 AND owner_id = ?2",
+                params![service, owner_id],
+            )
+            .map_err(|error| JournalError::new(format!("cannot release service: {error}")))?;
         Ok(())
     }
 }

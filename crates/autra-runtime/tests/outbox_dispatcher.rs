@@ -55,7 +55,6 @@ impl Dispatcher for StaticDispatcher {
 struct CountingDispatcher {
     calls: Arc<AtomicUsize>,
 }
-
 impl CountingDispatcher {
     fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
@@ -88,6 +87,39 @@ impl Dispatcher for CountingDispatcher {
             call_id: call.call_id.clone(),
             name: call.name.clone(),
             content: "counted".to_owned(),
+            is_error: false,
+            outcome_unknown: false,
+        }
+    }
+}
+
+struct SlowDispatcher;
+
+#[async_trait]
+impl Dispatcher for SlowDispatcher {
+    async fn call_model(
+        &self,
+        _request: &ModelCallSpec,
+        _timeout: Option<Duration>,
+    ) -> Result<ModelOutput, ModelError> {
+        Ok(ModelOutput {
+            usage: None,
+            text: Some("slow-model".to_owned()),
+            tool_calls: Vec::new(),
+        })
+    }
+
+    async fn call_tool(
+        &self,
+        _run_id: &RunId,
+        call: &ToolCallRequest,
+        _timeout: Option<Duration>,
+    ) -> ToolOutcome {
+        tokio::time::sleep(Duration::from_millis(900)).await;
+        ToolOutcome {
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+            content: "slow-ok".to_owned(),
             is_error: false,
             outcome_unknown: false,
         }
@@ -137,6 +169,60 @@ async fn claims_executes_and_completes_a_tool_effect() {
     assert_eq!(stored[0].status, EffectStatus::Committed);
     assert_eq!(stored[0].result.as_deref(), Some("tool-ok"));
     assert!(journal.claim_due_effects(10, "check").unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_long_effect_renews_its_claim_instead_of_being_stolen() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("run-slow");
+    let effect = enqueue(
+        &journal,
+        &run_id,
+        EffectIntent::CallTool(ToolCallSpec {
+            call: ToolCallRequest {
+                call_id: "call-slow".to_owned(),
+                name: "echo".to_owned(),
+                arguments: "{}".to_owned(),
+            },
+        }),
+        EffectKind::ToolCall,
+    );
+    let dispatcher = SlowDispatcher;
+    let options = DispatchOptions {
+        limit: 10,
+        max_parallel: 1,
+        timeout: None,
+        cancel: None,
+        lease: Duration::from_millis(300),
+        budget: None,
+        child_execution: None,
+        delta: None,
+    };
+
+    let dispatch =
+        OutboxDispatcher::run_once_for_run_with(&journal, &run_id, options, &dispatcher, |_| {});
+    tokio::pin!(dispatch);
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_millis(700)) => {
+            let stolen = journal
+                .claim_due_effects_with_lease(10, "thief", Duration::from_secs(10))
+                .unwrap();
+            assert!(stolen.is_empty(), "a renewed claim must not be reclaimable");
+        }
+        _ = &mut dispatch => panic!("the slow effect finished too early"),
+    }
+    let results = dispatch.await.unwrap();
+
+    assert_eq!(results.len(), 1);
+    let stored = journal.load(&run_id).unwrap();
+    assert_eq!(
+        stored
+            .iter()
+            .find(|record| record.id == effect.id)
+            .unwrap()
+            .status,
+        EffectStatus::Committed
+    );
 }
 
 #[tokio::test]

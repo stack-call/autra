@@ -49,6 +49,25 @@ impl EffectJournal for SpyJournal {
         self.inner.record(run_id, effect)
     }
 
+    fn record_claimed(
+        &self,
+        run_id: &RunId,
+        effect: &EffectRecord,
+        claim_id: &str,
+    ) -> Result<(), JournalError> {
+        *self.last_run.lock().unwrap() = Some(run_id.clone());
+        self.inner.record_claimed(run_id, effect, claim_id)
+    }
+
+    fn renew_claim(
+        &self,
+        effect_id: &EffectId,
+        claim_id: &str,
+        lease: std::time::Duration,
+    ) -> Result<bool, JournalError> {
+        self.inner.renew_claim(effect_id, claim_id, lease)
+    }
+
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError> {
         self.inner.load(run_id)
     }
@@ -104,6 +123,33 @@ impl EffectJournal for SpyJournal {
         let rows = self
             .inner
             .claim_due_effects_for_run(run_id, limit, claim_id)?;
+        self.claimed.fetch_add(rows.len(), Ordering::SeqCst);
+        Ok(rows)
+    }
+
+    fn claim_due_effects_with_lease(
+        &self,
+        limit: usize,
+        claim_id: &str,
+        lease: std::time::Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        let rows = self
+            .inner
+            .claim_due_effects_with_lease(limit, claim_id, lease)?;
+        self.claimed.fetch_add(rows.len(), Ordering::SeqCst);
+        Ok(rows)
+    }
+
+    fn claim_due_effects_for_run_with_lease(
+        &self,
+        run_id: &RunId,
+        limit: usize,
+        claim_id: &str,
+        lease: std::time::Duration,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        let rows = self
+            .inner
+            .claim_due_effects_for_run_with_lease(run_id, limit, claim_id, lease)?;
         self.claimed.fetch_add(rows.len(), Ordering::SeqCst);
         Ok(rows)
     }

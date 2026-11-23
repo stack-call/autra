@@ -279,13 +279,17 @@ impl OutboxDispatcher {
         F: FnMut(&DispatchResult),
     {
         let claim_id = next_claim_id("local-dispatcher");
+        let lease = options.lease;
         let entries = journal.claim_due_effects_for_run_with_lease(
             run_id,
             options.limit,
             &claim_id,
-            options.lease,
+            lease,
         )?;
-        dispatch_entries(journal, entries, options, dispatcher, &claim_id, on_result).await
+        dispatch_entries(
+            journal, entries, options, dispatcher, &claim_id, lease, on_result,
+        )
+        .await
     }
 
     /// Drain due outbox rows across all Runs. Rows whose lease expired are
@@ -325,9 +329,12 @@ impl OutboxDispatcher {
         F: FnMut(&DispatchResult),
     {
         let claim_id = next_claim_id("outbox-drain");
-        let entries =
-            journal.claim_due_effects_with_lease(options.limit, &claim_id, options.lease)?;
-        dispatch_entries(journal, entries, options, dispatcher, &claim_id, on_result).await
+        let lease = options.lease;
+        let entries = journal.claim_due_effects_with_lease(options.limit, &claim_id, lease)?;
+        dispatch_entries(
+            journal, entries, options, dispatcher, &claim_id, lease, on_result,
+        )
+        .await
     }
 }
 
@@ -351,6 +358,35 @@ where
     }
 }
 
+/// Keep a claimed Effect alive while its future runs. A lost or expired claim
+/// returns an error so the dispatcher never records an outcome it no longer
+/// owns.
+async fn await_with_lease<F, T>(
+    journal: &dyn EffectJournal,
+    effect_id: &EffectId,
+    claim_id: &str,
+    lease: Duration,
+    future: F,
+) -> Result<T, JournalError>
+where
+    F: Future<Output = T>,
+{
+    tokio::pin!(future);
+    let period = (lease / 3).max(Duration::from_millis(100));
+    let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            result = &mut future => return Ok(result),
+            _ = ticker.tick() => {
+                if !journal.renew_claim(effect_id, claim_id, lease)? {
+                    return Err(JournalError::claim_lost(effect_id, claim_id));
+                }
+            }
+        }
+    }
+}
+
 fn next_claim_id(prefix: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -368,6 +404,7 @@ async fn dispatch_entries<F>(
     options: DispatchOptions<'_>,
     dispatcher: &dyn Dispatcher,
     claim_id: &str,
+    lease: Duration,
     mut on_result: F,
 ) -> Result<Vec<DispatchResult>, JournalError>
 where
@@ -382,6 +419,7 @@ where
             dispatcher,
             &options,
             claim_id,
+            lease,
         ));
     }
     let mut stream =
@@ -402,6 +440,7 @@ async fn dispatch_entry(
     dispatcher: &dyn Dispatcher,
     options: &DispatchOptions<'_>,
     claim_id: &str,
+    lease: Duration,
 ) -> Result<DispatchResult, JournalError> {
     let mut effects = journal.load(run_id)?;
     let Some(record) = effects
@@ -433,7 +472,7 @@ async fn dispatch_entry(
                 None,
                 Some("the effect was in flight when its claim lease ended".to_owned()),
             );
-            journal.record(run_id, record)?;
+            journal.record_claimed(run_id, record, claim_id)?;
             journal.complete_outbox(&entry.effect_id, claim_id)?;
             return Ok(DispatchResult {
                 effect_id: entry.effect_id.clone(),
@@ -471,60 +510,50 @@ async fn dispatch_entry(
         EffectIntent::CallTool(spec) => dispatcher.knows_tool(&spec.call.name),
     };
     mark_dispatched(journal, run_id, entry, claim_id)?;
-    let outcome = match &intent {
-        EffectIntent::CallModel(spec) => {
-            let result = match options.delta.clone() {
-                Some(sink) => {
-                    let mut on_delta = move |text: String| sink(text);
-                    let call =
-                        dispatcher.call_model_streaming(spec, options.timeout, &mut on_delta);
-                    match await_with_cancel(call, options.cancel).await {
-                        Some(result) => result,
-                        None => {
-                            return finish_entry(
-                                journal,
-                                run_id,
-                                entry,
-                                DispatchOutcome::Cancelled,
-                                known_tool,
-                                claim_id,
-                            );
-                        }
+    let call = async {
+        match &intent {
+            EffectIntent::CallModel(spec) => {
+                let result = match options.delta.clone() {
+                    Some(sink) => {
+                        let mut on_delta = move |text: String| sink(text);
+                        let call =
+                            dispatcher.call_model_streaming(spec, options.timeout, &mut on_delta);
+                        await_with_cancel(call, options.cancel).await
                     }
-                }
-                None => {
-                    let call = dispatcher.call_model(spec, options.timeout);
-                    match await_with_cancel(call, options.cancel).await {
-                        Some(result) => result,
-                        None => {
-                            return finish_entry(
-                                journal,
-                                run_id,
-                                entry,
-                                DispatchOutcome::Cancelled,
-                                known_tool,
-                                claim_id,
-                            );
-                        }
+                    None => {
+                        let call = dispatcher.call_model(spec, options.timeout);
+                        await_with_cancel(call, options.cancel).await
                     }
+                };
+                match result {
+                    Some(result) => DispatchOutcome::Model(result),
+                    None => DispatchOutcome::Cancelled,
                 }
-            };
-            DispatchOutcome::Model(result)
+            }
+            EffectIntent::CallTool(spec) => {
+                let context = ToolContext {
+                    run_id: run_id.clone(),
+                    call_id: spec.call.call_id.clone(),
+                    parent_run_id: Some(run_id.clone()),
+                    cancel: options.cancel.cloned(),
+                    budget: options.budget.clone(),
+                    child_execution: options.child_execution.clone(),
+                };
+                DispatchOutcome::Tool(
+                    dispatcher
+                        .call_tool_with_context(&context, &spec.call, options.timeout)
+                        .await,
+                )
+            }
         }
-        EffectIntent::CallTool(spec) => {
-            let context = ToolContext {
-                run_id: run_id.clone(),
-                call_id: spec.call.call_id.clone(),
-                parent_run_id: Some(run_id.clone()),
-                cancel: options.cancel.cloned(),
-                budget: options.budget.clone(),
-                child_execution: options.child_execution.clone(),
-            };
-            DispatchOutcome::Tool(
-                dispatcher
-                    .call_tool_with_context(&context, &spec.call, options.timeout)
-                    .await,
-            )
+    };
+    let outcome = match await_with_lease(journal, &entry.effect_id, claim_id, lease, call).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            if !error.is_claim_lost() {
+                let _ = journal.release_outbox(&entry.effect_id, claim_id);
+            }
+            return Err(error);
         }
     };
     finish_entry(journal, run_id, entry, outcome, known_tool, claim_id)
@@ -548,8 +577,10 @@ fn mark_dispatched(
         )));
     };
     record.set_status(EffectStatus::Dispatched);
-    if let Err(error) = journal.record(run_id, record) {
-        let _ = journal.release_outbox(&entry.effect_id, claim_id);
+    if let Err(error) = journal.record_claimed(run_id, record, claim_id) {
+        if !error.is_claim_lost() {
+            let _ = journal.release_outbox(&entry.effect_id, claim_id);
+        }
         return Err(error);
     }
     Ok(())
@@ -575,8 +606,10 @@ fn finish_entry(
         )));
     };
     apply_outcome(record, &outcome, known_tool);
-    if let Err(error) = journal.record(run_id, record) {
-        let _ = journal.release_outbox(&entry.effect_id, claim_id);
+    if let Err(error) = journal.record_claimed(run_id, record, claim_id) {
+        if !error.is_claim_lost() {
+            let _ = journal.release_outbox(&entry.effect_id, claim_id);
+        }
         return Err(error);
     }
     journal.complete_outbox(&entry.effect_id, claim_id)?;

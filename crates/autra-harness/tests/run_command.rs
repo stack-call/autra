@@ -1,5 +1,5 @@
-use autra_core::EffectClass;
-use autra_harness::{LocalWorkspace, RunCommandTool, Tool};
+use autra_core::{CancelFlag, EffectClass, RunId};
+use autra_harness::{LocalWorkspace, RunCommandTool, Tool, ToolContext, ToolInput};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -61,4 +61,73 @@ async fn a_timeout_is_an_unknown_outcome() {
 
     assert!(error.outcome_unknown);
     assert!(error.to_string().contains("timed out"));
+}
+
+fn context(cancel: CancelFlag) -> ToolContext {
+    ToolContext {
+        run_id: RunId::new("run-cancel"),
+        call_id: "call-cancel".to_owned(),
+        parent_run_id: None,
+        cancel: Some(cancel),
+        budget: None,
+        child_execution: None,
+    }
+}
+
+#[tokio::test]
+async fn cancellation_stops_the_command() {
+    let dir = tempdir().unwrap();
+    let tool = RunCommandTool::new(LocalWorkspace::open(dir.path()).unwrap());
+    let cancel = CancelFlag::new();
+    #[cfg(windows)]
+    let command = "ping -n 10 127.0.0.1 > nul";
+    #[cfg(not(windows))]
+    let command = "sleep 10";
+    let input = ToolInput {
+        arguments: format!(r#"{{"command":"{command}"}}"#),
+    };
+    let context = context(cancel.clone());
+
+    let task = tokio::spawn(async move { tool.execute(input, context).await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    cancel.cancel();
+    let result = task.await.unwrap();
+
+    let error = match result {
+        Ok(_) => panic!("cancelled command must fail"),
+        Err(error) => error,
+    };
+    assert!(error.outcome_unknown);
+    assert!(error.to_string().contains("cancelled"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancellation_kills_grandchildren() {
+    let dir = tempdir().unwrap();
+    let tool = RunCommandTool::new(LocalWorkspace::open(dir.path()).unwrap());
+    let cancel = CancelFlag::new();
+    let input = ToolInput {
+        arguments: r#"{"command":"sleep 30 & echo $! > grandchild.pid; wait"}"#.to_owned(),
+    };
+    let context = context(cancel.clone());
+
+    let task = tokio::spawn(async move { tool.execute(input, context).await });
+    let pid_path = dir.path().join("grandchild.pid");
+    for _ in 0..50 {
+        if pid_path.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let pid = std::fs::read_to_string(&pid_path).unwrap();
+    cancel.cancel();
+    let _ = task.await.unwrap();
+
+    let alive = std::process::Command::new("kill")
+        .args(["-0", pid.trim()])
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "grandchild {} survived cancellation", pid.trim());
 }

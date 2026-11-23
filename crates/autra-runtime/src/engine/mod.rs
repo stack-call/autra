@@ -5,6 +5,7 @@
 
 mod approval;
 mod executor;
+mod lease;
 mod policy;
 mod recovery;
 mod streaming;
@@ -16,7 +17,9 @@ use std::time::Duration;
 
 use crate::approval::digest_intent;
 use crate::child::{ChildHandle, ChildSpec};
-use crate::dispatcher::{DispatchResult, Dispatcher, OutboxDispatcher};
+use crate::dispatcher::{
+    DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchResult, Dispatcher, OutboxDispatcher,
+};
 use crate::hub::RunHub;
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, BudgetHandle, BudgetSnapshot, CancelFlag,
@@ -28,6 +31,7 @@ use autra_execution::{
     RunOptions, RunOutcome, RunSnapshot, ToolPolicy, ToolRegistry, UNCLAIMED_CLAIM,
 };
 use executor::{EffectExecutor, ModelExecutionContext, ModelStep, ToolBatchContext};
+use lease::RunLeaseGuard;
 
 /// Drives one Run: accepts events, commits transitions, executes effects and
 /// resumes committed checkpoints.
@@ -41,6 +45,7 @@ pub struct LocalEngine {
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
     effect_timeout: Option<Duration>,
+    agent_profile: Option<String>,
     approver: Option<Arc<dyn Approver>>,
     policy: PolicyChain,
     actor: Option<String>,
@@ -59,6 +64,7 @@ impl LocalEngine {
             max_tool_calls: 8,
             max_parallel_tool_calls: 1,
             effect_timeout: None,
+            agent_profile: None,
             approver: None,
             policy: PolicyChain::new(),
             actor: None,
@@ -91,6 +97,12 @@ impl LocalEngine {
 
     pub fn with_effect_timeout(mut self, effect_timeout: Option<Duration>) -> Self {
         self.effect_timeout = effect_timeout;
+        self
+    }
+
+    /// Record the Agent configuration identity on every new Run.
+    pub fn with_agent_profile(mut self, profile: impl Into<String>) -> Self {
+        self.agent_profile = Some(profile.into());
         self
     }
 
@@ -231,11 +243,13 @@ impl LocalEngine {
         F: FnMut(&RunEvent),
     {
         tracing::info!(run_id = %run_id, "agent run started");
+        let _lease = RunLeaseGuard::acquire(self.journal.clone(), &run_id, options.cancel.clone())?;
         if let Some(observer) = &self.observer {
             observer.on_run_started(&run_id);
         }
         let mut state = AgentState::new(run_id.clone(), budget);
         state.parent_run_id = parent_run_id;
+        state.agent_profile = self.agent_profile.clone();
         let before_initialize = state.clone();
         stepper.initialize(&mut state, &history);
         validator::validate_initialized(&before_initialize, &state)?;
@@ -260,14 +274,56 @@ impl LocalEngine {
             .journal
             .as_ref()
             .ok_or_else(|| RunError::Protocol("outbox drain requires a journal".to_owned()))?;
-        OutboxDispatcher::run_due(
-            journal.journal(),
-            limit,
-            self.dispatcher.as_ref(),
-            self.effect_timeout,
-        )
-        .await
-        .map_err(|error| RunError::Journal(error.to_string()))
+        let run_ids = journal
+            .journal()
+            .list_run_ids()
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+        if run_ids.is_empty() {
+            return OutboxDispatcher::run_due(
+                journal.journal(),
+                limit,
+                self.dispatcher.as_ref(),
+                self.effect_timeout,
+            )
+            .await
+            .map_err(|error| RunError::Journal(error.to_string()));
+        }
+        let mut results = Vec::new();
+        for run_id in run_ids {
+            if results.len() >= limit {
+                break;
+            }
+            if journal
+                .journal()
+                .run_lease(&run_id)
+                .map_err(|error| RunError::Journal(error.to_string()))?
+                .is_some_and(|lease| lease.is_live(autra_execution::now_unix_ms()))
+            {
+                // A live executor owns this Run; its own loop drains it.
+                continue;
+            }
+            let options = DispatchOptions {
+                limit: limit - results.len(),
+                max_parallel: 1,
+                timeout: self.effect_timeout,
+                cancel: None,
+                lease: DEFAULT_CLAIM_LEASE,
+                budget: None,
+                child_execution: None,
+                delta: None,
+            };
+            let mut batch = OutboxDispatcher::run_once_for_run_with(
+                journal.journal(),
+                &run_id,
+                options,
+                self.dispatcher.as_ref(),
+                |_| {},
+            )
+            .await
+            .map_err(|error| RunError::Journal(error.to_string()))?;
+            results.append(&mut batch);
+        }
+        Ok(results)
     }
 
     async fn drive<F>(

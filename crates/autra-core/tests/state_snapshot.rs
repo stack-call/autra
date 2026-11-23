@@ -23,6 +23,7 @@ fn state_serializes_to_a_stable_snapshot() {
             },
             "final_answer": null,
             "last_error": null,
+            "agent_profile": null,
             "engine_state": {
                 "engine_id": "none",
                 "schema_revision": 0,

@@ -15,6 +15,9 @@ similar = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["process", "rt", "time", "io-util", "macros"], optional = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 default = []
 process = ["dep:tokio"]

@@ -9,11 +9,38 @@ use thiserror::Error;
 pub enum JournalError {
     #[error("{0}")]
     Message(String),
+    #[error("claim `{claim_id}` no longer owns effect `{effect_id}`")]
+    ClaimLost { effect_id: String, claim_id: String },
 }
 
 impl JournalError {
     pub fn new(message: impl Into<String>) -> Self {
         Self::Message(message.into())
+    }
+
+    pub fn claim_lost(effect_id: &EffectId, claim_id: &str) -> Self {
+        Self::ClaimLost {
+            effect_id: effect_id.to_string(),
+            claim_id: claim_id.to_owned(),
+        }
+    }
+
+    pub fn is_claim_lost(&self) -> bool {
+        matches!(self, Self::ClaimLost { .. })
+    }
+}
+
+/// Ownership of a Run or a local service. Deadlines are Unix milliseconds so
+/// another process can decide whether the owner is still alive.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LeaseRecord {
+    pub owner_id: String,
+    pub deadline_unix_ms: u64,
+}
+
+impl LeaseRecord {
+    pub fn is_live(&self, now_unix_ms: u64) -> bool {
+        self.deadline_unix_ms > now_unix_ms
     }
 }
 
@@ -26,8 +53,86 @@ pub struct OutboxEntry {
 }
 
 pub trait EffectJournal: Send + Sync {
+    /// Unfenced write for pre-claim state such as a committed transition.
+    /// Dispatchers must use `record_claimed`.
     fn record(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError>;
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError>;
+
+    /// Write an effect only while `claim_id` still owns its outbox row.
+    /// The default refuses the write: a journal that cannot fence must not
+    /// silently allow a stale owner to record an outcome.
+    fn record_claimed(
+        &self,
+        _run_id: &RunId,
+        _effect: &EffectRecord,
+        _claim_id: &str,
+    ) -> Result<(), JournalError> {
+        Err(JournalError::new(
+            "journal does not support claim-fenced writes",
+        ))
+    }
+
+    /// Extend a claim that has not expired. `false` means the claim was lost.
+    fn renew_claim(
+        &self,
+        _effect_id: &EffectId,
+        _claim_id: &str,
+        _lease: Duration,
+    ) -> Result<bool, JournalError> {
+        Ok(false)
+    }
+
+    /// Acquire exclusive ownership of a Run.
+    fn claim_run(
+        &self,
+        _run_id: &RunId,
+        _owner_id: &str,
+        _lease: Duration,
+    ) -> Result<bool, JournalError> {
+        Ok(true)
+    }
+
+    /// Refresh a Run lease. `false` means another owner took it over.
+    fn renew_run(
+        &self,
+        _run_id: &RunId,
+        _owner_id: &str,
+        _lease: Duration,
+    ) -> Result<bool, JournalError> {
+        Ok(true)
+    }
+
+    fn release_run(&self, _run_id: &RunId, _owner_id: &str) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn run_lease(&self, _run_id: &RunId) -> Result<Option<LeaseRecord>, JournalError> {
+        Ok(None)
+    }
+
+    /// Acquire exclusive ownership of a local service such as the recovery
+    /// daemon. Uses the same lease model as a Run.
+    fn claim_service(
+        &self,
+        _service: &str,
+        _owner_id: &str,
+        _lease: Duration,
+    ) -> Result<bool, JournalError> {
+        Ok(true)
+    }
+
+    fn renew_service(
+        &self,
+        _service: &str,
+        _owner_id: &str,
+        _lease: Duration,
+    ) -> Result<bool, JournalError> {
+        Ok(true)
+    }
+
+    fn release_service(&self, _service: &str, _owner_id: &str) -> Result<(), JournalError> {
+        Ok(())
+    }
 
     fn save_run(&self, _state: &AgentState) -> Result<(), JournalError> {
         Ok(())
@@ -113,7 +218,7 @@ pub trait EffectJournal: Send + Sync {
 }
 
 /// Default lease for a claimed outbox row.
-pub const DEFAULT_CLAIM_LEASE: Duration = Duration::from_secs(30);
+pub const DEFAULT_CLAIM_LEASE: Duration = Duration::from_secs(60);
 
 /// Claim id for completing a row that was never claimed by a dispatcher.
 pub const UNCLAIMED_CLAIM: &str = "";

@@ -1,5 +1,6 @@
 use autra_core::{EffectId, EffectKind, EffectRecord, EffectStatus, RunId};
 use autra_runtime::{EffectJournal, MemoryJournal};
+use std::time::Duration;
 
 fn authorized_effect() -> EffectRecord {
     let mut effect = EffectRecord::new(
@@ -58,17 +59,31 @@ fn a_stale_claim_cannot_complete_or_release_the_row() {
     let effect = authorized_effect();
 
     journal.enqueue_effect(&run_id, &effect).unwrap();
-    journal.claim_due_effects(10, "claim-1").unwrap();
+    journal
+        .claim_due_effects_with_lease(10, "claim-1", Duration::from_millis(1))
+        .unwrap();
     // Simulate lease expiry: a second worker reclaims the same row.
-    journal.claim_due_effects(10, "claim-2").unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    let reclaimed = journal
+        .claim_due_effects_with_lease(10, "claim-2", Duration::from_millis(1))
+        .unwrap();
+    assert_eq!(reclaimed.len(), 1);
 
     journal.complete_outbox(&effect.id, "claim-1").unwrap();
     assert_eq!(
-        journal.claim_due_effects(10, "claim-2").unwrap().len(),
-        1,
+        journal
+            .claim_due_effects_with_lease(10, "claim-3", Duration::from_millis(1))
+            .unwrap()
+            .len(),
+        0,
         "a stale claim must not remove the row"
     );
 
     journal.complete_outbox(&effect.id, "claim-2").unwrap();
-    assert!(journal.claim_due_effects(10, "claim-4").unwrap().is_empty());
+    assert!(
+        journal
+            .claim_due_effects_with_lease(10, "claim-4", Duration::from_millis(1))
+            .unwrap()
+            .is_empty()
+    );
 }

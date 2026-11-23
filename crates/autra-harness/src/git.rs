@@ -62,6 +62,7 @@ impl Tool for GitStatusTool {
                 "--branch".to_owned(),
             ],
             GIT_TIMEOUT,
+            None,
         )
         .await?;
         // Git for Windows occasionally returns exit 0 with empty output on the
@@ -77,6 +78,7 @@ impl Tool for GitStatusTool {
                     "--branch".to_owned(),
                 ],
                 GIT_TIMEOUT,
+                None,
             )
             .await?;
         }
@@ -143,7 +145,14 @@ impl Tool for GitDiffTool {
             command_args.push("--".to_owned());
             command_args.push(path.clone());
         }
-        let output = run_program(self.workspace.root(), "git", &command_args, GIT_TIMEOUT).await?;
+        let output = run_program(
+            self.workspace.root(),
+            "git",
+            &command_args,
+            GIT_TIMEOUT,
+            None,
+        )
+        .await?;
         ensure_success("git diff", &output)?;
         let text = output.stdout.trim_end();
         if text.is_empty() {

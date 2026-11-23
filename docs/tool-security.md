@@ -97,3 +97,7 @@ mounts, environment variables or the network.
 See [`ADR-0007`](adr/0007-tool-effect-and-authority-separated.md),
 [`ADR-0009`](adr/0009-openshell-is-a-sandbox-backend.md) and
 [`integrations/openshell.md`](integrations/openshell.md).
+
+For the local unsandboxed stability risks (process trees, cancellation,
+atomic writes, approvals bound to command specs), see
+[`local-runtime-stability.md`](local-runtime-stability.md).
