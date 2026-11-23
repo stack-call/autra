@@ -1,6 +1,7 @@
 # Autra Runtime vNext：模块化单体架构提案
 
-> **状态**：设计提案。除“当前基线”明确标为已实现的部分外，本文描述的是目标结构，不是现有实现。
+> **状态**：单机模块化骨架已实现（见“实现进展”）；多进程、PostgreSQL、
+> Redis 和完整 Attempt/Fencing 协议仍是设计提案。
 > **基线**：`mvp-v1`，包含本地稳定性 P0（Run/Service lease、claim fencing、进程取消、原子写）。
 > **范围**：Local-first、单机优先、预留多进程与多机扩展。
 >
