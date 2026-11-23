@@ -130,6 +130,16 @@ Tests observe public behaviour, not private helpers.
     without a recorded Run explains its usage and `/session` reports the id,
     turn count and last Run. `Session::last_run_id` survives reopen through
     `SessionStore`.
+36. **Local runtime P0** (`autra-runtime`, `autra-durable-sqlite`,
+    `autra-harness`, `autra`): a long Effect renews its claim instead of being
+    reclaimed; a stale claim cannot record an outcome; Run leases are exclusive,
+    released, and skipped by recovery while live; the recovery daemon has a
+    single service lease; resume refuses an owned Run or a different Agent
+    profile; cancellation stops a command and its grandchildren; atomic writes
+    reject a stale pre-image and symlinks and leave no temp files.
+37. **ReAct state reuse** (`autra-harness`): transitions keep history behavior
+    while reusing the decoded engine state; the existing ReAct, resume and
+    journal tests continue to pass (ADR-0058).
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

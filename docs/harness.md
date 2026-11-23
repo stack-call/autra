@@ -55,6 +55,9 @@ adapters. Memory, MCP and full Planning/Workflow remain future work.
 - ReAct engine state carries `engine_id` and `schema_revision`. Corrupt,
   foreign or newer engine state is rejected on read instead of silently
   resetting to empty history; resume fails rather than continuing blind.
+- ReAct transitions reuse a decoded engine state keyed by `state_version`,
+  replace the engine payload instead of cloning the old one, and serialize once
+  per transition. See [ADR-0058](adr/0058-react-transitions-reuse-engine-state.md).
 - The CLI's `run`/`chat` commands register the workspace tools and require
   approval for `write_file` and `run_command` unless `--yes` is passed.
 

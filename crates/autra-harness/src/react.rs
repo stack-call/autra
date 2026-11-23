@@ -1,10 +1,10 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EffectIntent, EngineState,
-    EventKind, HistoryItem, ModelCallSpec, ModelOutput, StepError, ToolCallRequest, ToolCallSpec,
-    ToolOutcome, ToolSpec, Transition,
+    EventKind, HistoryItem, ModelCallSpec, ModelOutput, RunId, StepError, ToolCallRequest,
+    ToolCallSpec, ToolOutcome, ToolSpec, Transition,
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,9 +49,28 @@ fn try_react_state(state: &AgentState) -> Result<ReactState, StepError> {
     }
 }
 
-fn store_react_state(next: &mut AgentState, react: ReactState) {
+fn store_react_state(next: &mut AgentState, react: &ReactState) {
     let data = serde_json::to_value(react).expect("react state must be serializable");
     next.engine_state = EngineState::new(REACT_ENGINE_ID, REACT_SCHEMA_REVISION).with_data(data);
+}
+
+/// Build the next state without cloning the previous engine payload. Every
+/// ReAct transition replaces the engine payload, so copying it first is wasted
+/// work that grows with the conversation history.
+fn fork_state(state: &AgentState) -> AgentState {
+    AgentState {
+        run_id: state.run_id.clone(),
+        state_version: state.state_version,
+        parent_run_id: state.parent_run_id.clone(),
+        session_id: state.session_id.clone(),
+        turn_id: state.turn_id.clone(),
+        phase: state.phase.clone(),
+        budget: state.budget.clone(),
+        final_answer: state.final_answer.clone(),
+        last_error: state.last_error.clone(),
+        agent_profile: state.agent_profile.clone(),
+        engine_state: EngineState::new(UNINITIALIZED_ENGINE_ID, 0),
+    }
 }
 
 /// The conversation history of a ReAct run.
@@ -82,6 +101,15 @@ pub struct ReActStepper {
     instructions: Option<String>,
     tools: Vec<ToolSpec>,
     context_builder: Arc<dyn ContextBuilder>,
+    /// The last decoded state, keyed by the version it belongs to. Taking it
+    /// avoids deserializing the full history on every transition.
+    cached: Mutex<Option<CachedReact>>,
+}
+
+struct CachedReact {
+    run_id: RunId,
+    state_version: u64,
+    state: ReactState,
 }
 
 impl ReActStepper {
@@ -90,6 +118,7 @@ impl ReActStepper {
             instructions,
             tools,
             context_builder: Arc::new(SimpleContextBuilder::default()),
+            cached: Mutex::new(None),
         }
     }
 
@@ -101,6 +130,33 @@ impl ReActStepper {
     pub fn with_shared_context_builder(mut self, builder: Arc<dyn ContextBuilder>) -> Self {
         self.context_builder = builder;
         self
+    }
+
+    fn take_react_state(&self, state: &AgentState) -> Result<ReactState, StepError> {
+        let mut cached = self.cached.lock().expect("react cache poisoned");
+        if cached.as_ref().is_some_and(|entry| {
+            entry.run_id == state.run_id && entry.state_version == state.state_version
+        }) {
+            return Ok(cached.take().expect("checked").state);
+        }
+        drop(cached);
+        try_react_state(state)
+    }
+
+    fn cache(&self, next: &AgentState, react: ReactState, state_version: u64) {
+        *self.cached.lock().expect("react cache poisoned") = Some(CachedReact {
+            run_id: next.run_id.clone(),
+            state_version,
+            state: react,
+        });
+    }
+
+    /// Serialize the new state once, then keep the same value for the next
+    /// transition. The engine advances `state_version` by one after the
+    /// proposal, so the cache is keyed to that next version.
+    fn store_transition(&self, next: &mut AgentState, react: ReactState) {
+        store_react_state(next, &react);
+        self.cache(next, react, next.state_version + 1);
     }
 
     fn model_request(&self, react: &ReactState) -> Result<ModelCallSpec, StepError> {
@@ -144,17 +200,17 @@ impl ReActStepper {
         output: &ModelOutput,
     ) -> Result<Transition, StepError> {
         Self::expect_phase(state, AgentPhase::AwaitingModel, "ModelResult")?;
-        let mut react = try_react_state(state)?;
+        let mut react = self.take_react_state(state)?;
         react.history.push(HistoryItem::Assistant {
             text: output.text.clone(),
             tool_calls: output.tool_calls.clone(),
         });
-        let mut next = state.clone();
-        store_react_state(&mut next, react.clone());
+        let mut next = fork_state(state);
 
         if output.tool_calls.is_empty() {
             next.phase = AgentPhase::Completed;
             next.final_answer = output.text.clone();
+            self.store_transition(&mut next, react);
             return Ok(Transition {
                 next,
                 intents: Vec::new(),
@@ -165,9 +221,11 @@ impl ReActStepper {
         let mut seen = HashSet::new();
         for call in &output.tool_calls {
             if call.call_id.is_empty() {
+                self.store_transition(&mut next, react);
                 return Ok(Self::failed(next, "tool call id must not be empty"));
             }
             if !seen.insert(call.call_id.as_str()) {
+                self.store_transition(&mut next, react);
                 return Ok(Self::failed(
                     next,
                     format!("duplicate tool call id `{}`", call.call_id),
@@ -178,6 +236,7 @@ impl ReActStepper {
         let requested = output.tool_calls.len() as u32;
         if !next.budget.tool_calls_available(requested) {
             let remaining = next.budget.remaining_tool_calls();
+            self.store_transition(&mut next, react);
             return Ok(Self::failed(
                 next,
                 format!("max tool calls exceeded: {requested} requested, {remaining} remaining"),
@@ -185,7 +244,7 @@ impl ReActStepper {
         }
         next.budget.tool_calls_used += requested;
         react.pending_tool_calls = output.tool_calls.clone();
-        store_react_state(&mut next, react);
+        self.store_transition(&mut next, react);
         next.phase = AgentPhase::AwaitingTool;
 
         let intents = output
@@ -207,12 +266,13 @@ impl ReActStepper {
         outcome: &ToolOutcome,
     ) -> Result<Transition, StepError> {
         Self::expect_phase(state, AgentPhase::AwaitingTool, "ToolResult")?;
-        let mut react = try_react_state(state)?;
+        let mut react = self.take_react_state(state)?;
         if !react
             .pending_tool_calls
             .iter()
             .any(|call| call.call_id == outcome.call_id)
         {
+            self.cache(state, react, state.state_version);
             return Ok(Self::failed(
                 state.clone(),
                 format!("tool result for unknown call id `{}`", outcome.call_id),
@@ -223,10 +283,10 @@ impl ReActStepper {
         react
             .pending_tool_calls
             .retain(|call| call.call_id != outcome.call_id);
-        let mut next = state.clone();
-        store_react_state(&mut next, react.clone());
+        let mut next = fork_state(state);
 
         if !react.pending_tool_calls.is_empty() {
+            self.store_transition(&mut next, react);
             return Ok(Transition {
                 next,
                 intents: Vec::new(),
@@ -235,11 +295,13 @@ impl ReActStepper {
         }
 
         if !next.budget.turn_available() {
+            self.store_transition(&mut next, react);
             return Ok(Self::failed(next, "max turns exceeded"));
         }
         next.budget.turns_used += 1;
         next.phase = AgentPhase::AwaitingModel;
         let request = self.model_request(&react)?;
+        self.store_transition(&mut next, react);
         Ok(Transition {
             next,
             intents: vec![EffectIntent::CallModel(request)],
@@ -254,13 +316,13 @@ impl AgentStepper for ReActStepper {
     }
 
     fn initialize(&self, state: &mut AgentState, history: &[HistoryItem]) {
-        store_react_state(
-            state,
-            ReactState {
-                history: history.to_vec(),
-                pending_tool_calls: Vec::new(),
-            },
-        );
+        let react = ReactState {
+            history: history.to_vec(),
+            pending_tool_calls: Vec::new(),
+        };
+        store_react_state(state, &react);
+        let version = state.state_version;
+        self.cache(state, react, version);
     }
 
     fn transition(
@@ -271,16 +333,17 @@ impl AgentStepper for ReActStepper {
         match &event.kind {
             EventKind::RunStarted { input } => {
                 Self::expect_phase(state, AgentPhase::Ready, "RunStarted")?;
-                let mut react = try_react_state(state)?;
+                let mut react = self.take_react_state(state)?;
                 react.history.push(HistoryItem::User(input.clone()));
-                let mut next = state.clone();
-                store_react_state(&mut next, react.clone());
+                let mut next = fork_state(state);
                 if !next.budget.turn_available() {
+                    self.store_transition(&mut next, react);
                     return Ok(Self::failed(next, "max turns exceeded"));
                 }
                 next.budget.turns_used += 1;
                 next.phase = AgentPhase::AwaitingModel;
                 let request = self.model_request(&react)?;
+                self.store_transition(&mut next, react);
                 Ok(Transition {
                     next,
                     intents: vec![EffectIntent::CallModel(request)],
