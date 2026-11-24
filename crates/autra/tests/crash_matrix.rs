@@ -143,10 +143,5 @@ async fn a_committed_effect_still_in_the_outbox_is_not_executed_again() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert!(
-        journal
-            .claim_due_effects(10, "check")
-            .unwrap()
-            .is_empty()
-    );
+    assert!(journal.claim_due_effects(10, "check").unwrap().is_empty());
 }
