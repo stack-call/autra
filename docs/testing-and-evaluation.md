@@ -180,6 +180,9 @@ Tests observe public behaviour, not private helpers.
 49. **Blocking file work** (`autra-harness`): write/edit/search run on Tokio's
     blocking pool when the process feature is enabled, with a synchronous
     fallback for library builds without it.
+50. **SQLite write path** (`autra-durable-sqlite`): the transition commit uses
+    cached prepared statements inside its transaction; reader/writer split and
+    the bounded write gate remain active.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

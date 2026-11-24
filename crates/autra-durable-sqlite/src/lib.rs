@@ -868,46 +868,52 @@ impl DurableTransitionStore for SqliteEffectJournal {
             )));
         }
         transaction
-            .execute(
+            .prepare_cached(
                 "INSERT INTO runs (run_id, state_json, state_version) VALUES (?1, ?2, ?3)
                  ON CONFLICT(run_id) DO UPDATE SET
                    state_json = excluded.state_json,
                    state_version = excluded.state_version,
                    updated_at = CURRENT_TIMESTAMP",
-                params![
-                    state.run_id.as_str(),
-                    state_payload,
-                    state.state_version as i64
-                ],
             )
+            .map_err(|error| JournalError::new(format!("cannot prepare run write: {error}")))?
+            .execute(params![
+                state.run_id.as_str(),
+                state_payload,
+                state.state_version as i64
+            ])
             .map_err(|error| JournalError::new(format!("cannot save run: {error}")))?;
         transaction
-            .execute(
+            .prepare_cached(
                 "INSERT INTO run_events (run_id, seq, event_json) VALUES (?1, ?2, ?3)",
-                params![run_id.as_str(), event.seq as i64, event_payload],
             )
+            .map_err(|error| JournalError::new(format!("cannot prepare event write: {error}")))?
+            .execute(params![run_id.as_str(), event.seq as i64, event_payload])
             .map_err(|error| JournalError::new(format!("cannot record event: {error}")))?;
         for effect in new_effects {
             let payload = serde_json::to_string(effect)
                 .map_err(|error| JournalError::new(format!("cannot serialize effect: {error}")))?;
             transaction
-                .execute(
+                .prepare_cached(
                     "INSERT INTO effects (effect_id, run_id, payload_json)
                      VALUES (?1, ?2, ?3)
                      ON CONFLICT(effect_id) DO UPDATE SET
                        run_id = excluded.run_id,
                        payload_json = excluded.payload_json,
                        updated_at = CURRENT_TIMESTAMP",
-                    params![effect.id.as_str(), run_id.as_str(), payload],
                 )
+                .map_err(|error| JournalError::new(format!("cannot prepare effect write: {error}")))?
+                .execute(params![effect.id.as_str(), run_id.as_str(), payload])
                 .map_err(|error| JournalError::new(format!("cannot record effect: {error}")))?;
             if effect.status == EffectStatus::Authorized && !effect.intent_json.is_empty() {
                 transaction
-                    .execute(
+                    .prepare_cached(
                         "INSERT OR IGNORE INTO effect_outbox (effect_id, run_id, intent_json)
                          VALUES (?1, ?2, ?3)",
-                        params![effect.id.as_str(), run_id.as_str(), effect.intent_json],
                     )
+                    .map_err(|error| {
+                        JournalError::new(format!("cannot prepare outbox write: {error}"))
+                    })?
+                    .execute(params![effect.id.as_str(), run_id.as_str(), effect.intent_json])
                     .map_err(|error| {
                         JournalError::new(format!("cannot enqueue effect: {error}"))
                     })?;
