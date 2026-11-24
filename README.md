@@ -72,6 +72,7 @@ After building, the binary is `autractl` (or prefix with
 - `autractl approve|reject --journal <path> <run-id> <effect-id>` — record an approval decision for a pending effect.
 - `autractl cancel --journal <path> [--reason <text>] <run-id>` — persist a cancellation request.
 - `autractl gc --journal <path> [--older-than-days <n>] [--dry-run]` — remove old terminal Runs and their events/effects.
+- `autractl doctor --journal <path> [--workspace <dir>]` — report journal leases, outbox backlog and workspace writability.
 - `autractl effects --journal <path> [--unknown] <run-id>` — list a Run's effects.
 - `autractl reconcile --journal <path> [--model <name>] <run-id>` — retry safe `OutcomeUnknown` effects.
 - `autractl outbox --journal <path> --model <name>` — drain due outbox rows, reclaiming expired leases.

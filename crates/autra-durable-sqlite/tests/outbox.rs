@@ -335,3 +335,23 @@ fn gc_removes_only_old_terminal_runs() {
     assert!(journal.load_run(&completed).unwrap().is_none());
     assert!(journal.load_run(&active).unwrap().is_some());
 }
+
+#[test]
+fn health_reports_live_leases_and_cancel_requests() {
+    use std::time::Duration;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("health.db");
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    let run_id = RunId::new("run-health");
+    journal
+        .claim_run(&run_id, "owner", Duration::from_secs(30))
+        .unwrap();
+    journal.request_cancel(&run_id, "stop").unwrap();
+
+    let health = journal.health(autra_execution::now_unix_ms()).unwrap();
+
+    assert_eq!(health.live_run_leases, 1);
+    assert_eq!(health.expired_run_leases, 0);
+    assert_eq!(health.cancel_requests, 1);
+}

@@ -12,9 +12,11 @@ use autra_execution::{
     EffectJournal, JournalError, LeaseRecord, OutboxEntry, now_unix_ms,
 };
 mod gc;
+mod health;
 pub mod session;
 
 pub use gc::GcReport;
+pub use health::{JournalHealth, ServiceLeaseInfo};
 
 pub use session::SqliteSessionStore;
 

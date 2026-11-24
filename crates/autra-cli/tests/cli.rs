@@ -720,3 +720,27 @@ fn gc_requires_a_journal_and_supports_dry_run() {
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert!(stdout(&output).contains("(dry run)"));
 }
+
+#[test]
+fn doctor_requires_a_journal_and_reports_health() {
+    let output = autractl().args(["doctor"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("requires --journal"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("doctor.db");
+    let output = autractl()
+        .args([
+            "doctor",
+            "--journal",
+            path.to_str().unwrap(),
+            "--workspace",
+            dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.contains("runs: 0"));
+    assert!(text.contains("writable=true"));
+}

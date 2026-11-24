@@ -157,6 +157,9 @@ Tests observe public behaviour, not private helpers.
 42. **Journal GC** (`autra-durable-sqlite`, `autra-cli`): only terminal Runs
     older than the cutoff are removed, dry-run reports without deleting, active
     Runs and their events/effects remain, and `gc` validates its journal flag.
+43. **Doctor** (`autra-durable-sqlite`, `autra-cli`): journal health reports
+    live/expired Run leases and persisted cancel requests; `doctor` checks
+    workspace writability and validates its journal flag.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

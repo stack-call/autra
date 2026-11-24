@@ -40,6 +40,7 @@ async fn main() -> ExitCode {
         Some("daemon") => daemon_command(&args[1..]).await,
         Some("cancel") => cancel_command(&args[1..]),
         Some("gc") => gc_command(&args[1..]),
+        Some("doctor") => doctor_command(&args[1..]),
         Some("approve") => approval_command(&args[1..], ApprovalDecision::Approved),
         Some("reject") => approval_command(&args[1..], ApprovalDecision::Rejected),
         Some("demo") => demo_command().await,
@@ -682,6 +683,78 @@ fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn doctor_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "doctor") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if !flags.rest.is_empty() {
+        eprintln!("usage: autractl doctor --journal <path> [--workspace <dir>]");
+        return ExitCode::FAILURE;
+    }
+    let Some(path) = flags.journal.as_ref() else {
+        eprintln!("doctor requires --journal <path>");
+        return ExitCode::FAILURE;
+    };
+    let health = match SqliteEffectJournal::open(path) {
+        Ok(journal) => match journal.health(autra::now_unix_ms()) {
+            Ok(health) => health,
+            Err(error) => {
+                eprintln!("doctor failed: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    let root = flags.workspace.as_deref().unwrap_or(".");
+    let workspace_ok = LocalWorkspace::open(root).is_ok_and(|_| {
+        let probe = std::path::Path::new(root).join(".autra/doctor.tmp");
+        let written = std::fs::create_dir_all(probe.parent().unwrap_or(std::path::Path::new(".")))
+            .is_ok()
+            && std::fs::write(&probe, b"ok").is_ok();
+        let _ = std::fs::remove_file(&probe);
+        written
+    });
+
+    println!("journal: {path} ({size} bytes)");
+    println!("schema: {}", health.schema_version);
+    println!("runs: {}", health.runs);
+    println!(
+        "run leases: {} live / {} expired",
+        health.live_run_leases, health.expired_run_leases
+    );
+    println!("effects: {}", health.effects);
+    println!("pending outbox: {}", health.pending_outbox);
+    println!("cancel requests: {}", health.cancel_requests);
+    if health.service_leases.is_empty() {
+        println!("service leases: none");
+    } else {
+        for lease in &health.service_leases {
+            println!(
+                "service lease: {} owner={} expired={}",
+                lease.service, lease.owner_id, lease.expired
+            );
+        }
+    }
+    println!("workspace: {root} writable={workspace_ok}");
+
+    if !workspace_ok {
+        eprintln!("doctor: workspace is not writable");
+        return ExitCode::FAILURE;
+    }
+    if health.pending_outbox > 0 && health.live_run_leases == 0 {
+        eprintln!(
+            "doctor: {} Effect(s) pending with no live Run owner; run `outbox` or `daemon`",
+            health.pending_outbox
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 fn gc_command(args: &[String]) -> ExitCode {
@@ -1420,6 +1493,7 @@ USAGE:
   autractl daemon --journal <path> [--model <name>] [--workspace <dir>] [--interval-secs <n>] [--once]
   autractl cancel --journal <path> [--reason <text>] <run-id>
   autractl gc --journal <path> [--older-than-days <n>] [--dry-run]
+  autractl doctor --journal <path> [--workspace <dir>]
   autractl approve|reject --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>
   autractl demo
   autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
@@ -1445,6 +1519,7 @@ OPTIONS:
   --reason <text>    cancellation reason recorded by `cancel`
   --older-than-days <n> gc retention window (default 30)
   --dry-run          report gc candidates without deleting
+  --workspace <dir>  workspace to probe for `doctor`
 
 ENVIRONMENT:
   OPENAI_API_KEY     required when a real model is used
