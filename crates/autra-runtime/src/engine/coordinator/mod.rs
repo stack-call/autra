@@ -130,6 +130,7 @@ impl LocalEngine {
                 mut next,
                 intents,
                 disposition,
+                engine_delta,
             } = transition;
             next.state_version = expected_version + 1;
             if let Err(error) = committer.validate(
@@ -165,6 +166,7 @@ impl LocalEngine {
                 &event,
                 &next,
                 &effects[first_new..],
+                engine_delta.as_ref(),
             )?;
             // Apply only after the authoritative transition succeeded. If the
             // commit fails, the in-memory state is left untouched.

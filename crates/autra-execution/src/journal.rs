@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, RunId};
+use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EngineStateDelta, RunId};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -297,5 +297,20 @@ pub trait DurableTransitionStore: EffectJournal {
         state: &AgentState,
     ) -> Result<(), JournalError> {
         self.save_run(state)
+    }
+
+    /// Commit a transition with an optional engine-state patch. Hosts without
+    /// patch storage keep the full-state behavior.
+    fn commit_transition_with_engine_delta(
+        &self,
+        run_id: &RunId,
+        expected_version: u64,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        new_effects: &[EffectRecord],
+        delta: Option<&EngineStateDelta>,
+    ) -> Result<(), JournalError> {
+        let _ = delta;
+        self.commit_transition(run_id, expected_version, event, state, new_effects)
     }
 }

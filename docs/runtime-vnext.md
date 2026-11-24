@@ -418,9 +418,10 @@ state JSON。目标设计是把它拆成：
 最新 snapshot + 连续的 JSON Patch
 ```
 
-- `TransitionProposal` 增加可选 `engine_delta`
+- 已实现 `TransitionProposal.engine_delta`
+- ReAct 生成 append-oriented JSON Patch
 - Stepper 不提供 delta 时回退全量 snapshot
-- SQLite 使用 `run_engine_snapshots` 和 `run_engine_patches`
+- SQLite schema v2 使用 `run_engine_snapshots` 和 `run_engine_patches`
 - 每 32 步或 patch 超过 64 KiB 时写新 snapshot
 - `load_run` 从最新 snapshot 加 patch 重建
 - 无旧库迁移；schema v1 直接拒绝

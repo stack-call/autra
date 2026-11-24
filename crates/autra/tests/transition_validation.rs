@@ -37,6 +37,7 @@ impl AgentStepper for BadStepper {
             next,
             intents: Vec::new(),
             disposition: Disposition::Continue,
+            engine_delta: None,
         })
     }
 }
@@ -104,6 +105,7 @@ impl AgentStepper for BadInitialize {
             next: state.clone(),
             intents: Vec::new(),
             disposition: Disposition::Continue,
+            engine_delta: None,
         })
     }
 }

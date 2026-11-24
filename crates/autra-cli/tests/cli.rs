@@ -768,6 +768,6 @@ fn metrics_returns_json_health() {
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert_eq!(value["runs"], 0);
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["schema_version"], 2);
     assert!(value["readers"].as_u64().unwrap_or(0) >= 1);
 }

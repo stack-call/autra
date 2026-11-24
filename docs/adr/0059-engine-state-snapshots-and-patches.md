@@ -1,6 +1,13 @@
 # Engine State Uses Snapshots and Patches
 
-**Status:** proposed
+**Status:** accepted
+
+## Implementation
+
+The split format is implemented in `autra-durable-sqlite` schema v2.
+`TransitionProposal` carries `engine_delta`, ReAct emits JSON Patch rows, and
+`load_run` reconstructs the full `EngineState` from the newest snapshot plus
+contiguous patches. Schema v1 is rejected rather than migrated.
 
 ## Context
 

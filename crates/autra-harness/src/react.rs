@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use autra_core::{
     AcceptedEvent, AgentPhase, AgentState, AgentStepper, Disposition, EffectIntent, EngineState,
-    EventKind, HistoryItem, ModelCallSpec, ModelOutput, RunId, StepError, ToolCallRequest,
-    ToolCallSpec, ToolOutcome, ToolSpec, Transition,
+    EngineStateDelta, EventKind, HistoryItem, ModelCallSpec, ModelOutput, RunId, StepError,
+    ToolCallRequest, ToolCallSpec, ToolOutcome, ToolSpec, Transition,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +57,29 @@ fn store_react_state(next: &mut AgentState, react: &ReactState) {
 /// Build the next state without cloning the previous engine payload. Every
 /// ReAct transition replaces the engine payload, so copying it first is wasted
 /// work that grows with the conversation history.
+fn react_delta(base_version: u64, change: ReactChange) -> Option<EngineStateDelta> {
+    let patch = match change {
+        ReactChange::History(item) => {
+            let item = serde_json::to_value(item).ok()?;
+            serde_json::json!([
+                { "op": "add", "path": "/data/history/-", "value": item }
+            ])
+        }
+        ReactChange::HistoryAndPending { item, pending } => {
+            let item = serde_json::to_value(item).ok()?;
+            let pending = serde_json::to_value(pending).ok()?;
+            serde_json::json!([
+                { "op": "add", "path": "/data/history/-", "value": item },
+                { "op": "replace", "path": "/data/pending_tool_calls", "value": pending }
+            ])
+        }
+    };
+    Some(EngineStateDelta {
+        base_version,
+        patch,
+    })
+}
+
 fn fork_state(state: &AgentState) -> AgentState {
     AgentState {
         run_id: state.run_id.clone(),
@@ -94,6 +117,14 @@ pub fn react_engine_state(
     })
     .expect("react state must be serializable");
     EngineState::new(REACT_ENGINE_ID, REACT_SCHEMA_REVISION).with_data(data)
+}
+
+enum ReactChange {
+    History(HistoryItem),
+    HistoryAndPending {
+        item: HistoryItem,
+        pending: Vec<ToolCallRequest>,
+    },
 }
 
 /// The default ReAct engine: model call, tool batch, then final answer.
@@ -154,9 +185,16 @@ impl ReActStepper {
     /// Serialize the new state once, then keep the same value for the next
     /// transition. The engine advances `state_version` by one after the
     /// proposal, so the cache is keyed to that next version.
-    fn store_transition(&self, next: &mut AgentState, react: ReactState) {
+    fn store_transition(
+        &self,
+        next: &mut AgentState,
+        react: ReactState,
+        change: ReactChange,
+    ) -> Option<EngineStateDelta> {
+        let delta = react_delta(next.state_version, change);
         store_react_state(next, &react);
         self.cache(next, react, next.state_version + 1);
+        delta
     }
 
     fn model_request(&self, react: &ReactState) -> Result<ModelCallSpec, StepError> {
@@ -176,6 +214,22 @@ impl ReActStepper {
             next: state,
             intents: Vec::new(),
             disposition: Disposition::Failed,
+            engine_delta: None,
+        }
+    }
+
+    fn failed_with_delta(
+        mut state: AgentState,
+        message: impl Into<String>,
+        delta: Option<EngineStateDelta>,
+    ) -> Transition {
+        state.phase = AgentPhase::Failed;
+        state.last_error = Some(message.into());
+        Transition {
+            next: state,
+            intents: Vec::new(),
+            disposition: Disposition::Failed,
+            engine_delta: delta,
         }
     }
 
@@ -201,34 +255,49 @@ impl ReActStepper {
     ) -> Result<Transition, StepError> {
         Self::expect_phase(state, AgentPhase::AwaitingModel, "ModelResult")?;
         let mut react = self.take_react_state(state)?;
-        react.history.push(HistoryItem::Assistant {
+        let assistant = HistoryItem::Assistant {
             text: output.text.clone(),
             tool_calls: output.tool_calls.clone(),
-        });
+        };
+        react.history.push(assistant.clone());
         let mut next = fork_state(state);
 
         if output.tool_calls.is_empty() {
             next.phase = AgentPhase::Completed;
             next.final_answer = output.text.clone();
-            self.store_transition(&mut next, react);
+            let delta = self.store_transition(&mut next, react, ReactChange::History(assistant));
             return Ok(Transition {
                 next,
                 intents: Vec::new(),
                 disposition: Disposition::Finished,
+                engine_delta: delta,
             });
         }
 
         let mut seen = HashSet::new();
         for call in &output.tool_calls {
             if call.call_id.is_empty() {
-                self.store_transition(&mut next, react);
-                return Ok(Self::failed(next, "tool call id must not be empty"));
+                let delta = self.store_transition(
+                    &mut next,
+                    react,
+                    ReactChange::History(assistant.clone()),
+                );
+                return Ok(Self::failed_with_delta(
+                    next,
+                    "tool call id must not be empty",
+                    delta,
+                ));
             }
             if !seen.insert(call.call_id.as_str()) {
-                self.store_transition(&mut next, react);
-                return Ok(Self::failed(
+                let delta = self.store_transition(
+                    &mut next,
+                    react,
+                    ReactChange::History(assistant.clone()),
+                );
+                return Ok(Self::failed_with_delta(
                     next,
                     format!("duplicate tool call id `{}`", call.call_id),
+                    delta,
                 ));
             }
         }
@@ -236,15 +305,24 @@ impl ReActStepper {
         let requested = output.tool_calls.len() as u32;
         if !next.budget.tool_calls_available(requested) {
             let remaining = next.budget.remaining_tool_calls();
-            self.store_transition(&mut next, react);
-            return Ok(Self::failed(
+            let delta =
+                self.store_transition(&mut next, react, ReactChange::History(assistant.clone()));
+            return Ok(Self::failed_with_delta(
                 next,
                 format!("max tool calls exceeded: {requested} requested, {remaining} remaining"),
+                delta,
             ));
         }
         next.budget.tool_calls_used += requested;
         react.pending_tool_calls = output.tool_calls.clone();
-        self.store_transition(&mut next, react);
+        let delta = self.store_transition(
+            &mut next,
+            react,
+            ReactChange::HistoryAndPending {
+                item: assistant,
+                pending: output.tool_calls.clone(),
+            },
+        );
         next.phase = AgentPhase::AwaitingTool;
 
         let intents = output
@@ -257,6 +335,7 @@ impl ReActStepper {
             next,
             intents,
             disposition: Disposition::Continue,
+            engine_delta: delta,
         })
     }
 
@@ -279,33 +358,60 @@ impl ReActStepper {
             ));
         }
 
-        react.history.push(HistoryItem::Tool(outcome.clone()));
+        let tool_item = HistoryItem::Tool(outcome.clone());
+        react.history.push(tool_item.clone());
         react
             .pending_tool_calls
             .retain(|call| call.call_id != outcome.call_id);
         let mut next = fork_state(state);
 
         if !react.pending_tool_calls.is_empty() {
-            self.store_transition(&mut next, react);
+            let pending = react.pending_tool_calls.clone();
+            let delta = self.store_transition(
+                &mut next,
+                react,
+                ReactChange::HistoryAndPending {
+                    item: tool_item,
+                    pending,
+                },
+            );
             return Ok(Transition {
                 next,
                 intents: Vec::new(),
                 disposition: Disposition::Continue,
+                engine_delta: delta,
             });
         }
 
         if !next.budget.turn_available() {
-            self.store_transition(&mut next, react);
-            return Ok(Self::failed(next, "max turns exceeded"));
+            let pending = react.pending_tool_calls.clone();
+            let delta = self.store_transition(
+                &mut next,
+                react,
+                ReactChange::HistoryAndPending {
+                    item: tool_item,
+                    pending,
+                },
+            );
+            return Ok(Self::failed_with_delta(next, "max turns exceeded", delta));
         }
         next.budget.turns_used += 1;
         next.phase = AgentPhase::AwaitingModel;
         let request = self.model_request(&react)?;
-        self.store_transition(&mut next, react);
+        let pending = react.pending_tool_calls.clone();
+        let delta = self.store_transition(
+            &mut next,
+            react,
+            ReactChange::HistoryAndPending {
+                item: tool_item,
+                pending,
+            },
+        );
         Ok(Transition {
             next,
             intents: vec![EffectIntent::CallModel(request)],
             disposition: Disposition::Continue,
+            engine_delta: delta,
         })
     }
 }
@@ -334,20 +440,22 @@ impl AgentStepper for ReActStepper {
             EventKind::RunStarted { input } => {
                 Self::expect_phase(state, AgentPhase::Ready, "RunStarted")?;
                 let mut react = self.take_react_state(state)?;
-                react.history.push(HistoryItem::User(input.clone()));
+                let user = HistoryItem::User(input.clone());
+                react.history.push(user.clone());
                 let mut next = fork_state(state);
                 if !next.budget.turn_available() {
-                    self.store_transition(&mut next, react);
-                    return Ok(Self::failed(next, "max turns exceeded"));
+                    let delta = self.store_transition(&mut next, react, ReactChange::History(user));
+                    return Ok(Self::failed_with_delta(next, "max turns exceeded", delta));
                 }
                 next.budget.turns_used += 1;
                 next.phase = AgentPhase::AwaitingModel;
                 let request = self.model_request(&react)?;
-                self.store_transition(&mut next, react);
+                let delta = self.store_transition(&mut next, react, ReactChange::History(user));
                 Ok(Transition {
                     next,
                     intents: vec![EffectIntent::CallModel(request)],
                     disposition: Disposition::Continue,
+                    engine_delta: delta,
                 })
             }
             EventKind::ModelResult(output) => self.on_model_result(state, output),
@@ -364,6 +472,7 @@ impl AgentStepper for ReActStepper {
                     next,
                     intents: vec![EffectIntent::CallModel(request)],
                     disposition: Disposition::Continue,
+                    engine_delta: None,
                 })
             }
             EventKind::CancelRequested => {
@@ -382,6 +491,7 @@ impl AgentStepper for ReActStepper {
                     next,
                     intents: Vec::new(),
                     disposition: Disposition::Finished,
+                    engine_delta: None,
                 })
             }
         }

@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
+use autra_core::{
+    AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, EngineStateDelta, RunId,
+};
 use autra_execution::{
     ApprovalRecord, ApprovalStore, ApprovalStoreError, DEFAULT_CLAIM_LEASE, DurableTransitionStore,
     EffectJournal, JournalError, LeaseRecord, OutboxEntry, now_unix_ms,
@@ -26,7 +28,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 /// Version written to `PRAGMA user_version`. Future schema changes must bump
 /// it and add an explicit migration step.
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 
 /// Shared connection settings for the journal and session stores.
 pub(crate) fn configure_connection(connection: &Connection) -> Result<(), String> {
@@ -44,12 +46,163 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), String
             "database schema version {version} is newer than supported {SCHEMA_VERSION}"
         ));
     }
-    if version < SCHEMA_VERSION {
+    if version != 0 && version < SCHEMA_VERSION {
+        return Err(format!(
+            "journal schema version {version} is not supported; recreate the journal"
+        ));
+    }
+    if version == 0 {
         connection
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+const ENGINE_SNAPSHOT_INTERVAL: u64 = 32;
+const ENGINE_PATCH_MAX_BYTES: usize = 64 * 1024;
+
+fn state_header_json(state: &AgentState) -> Result<String, JournalError> {
+    serde_json::to_string(&serde_json::json!({
+        "run_id": &state.run_id,
+        "state_version": state.state_version,
+        "parent_run_id": &state.parent_run_id,
+        "session_id": &state.session_id,
+        "turn_id": &state.turn_id,
+        "phase": &state.phase,
+        "budget": &state.budget,
+        "final_answer": &state.final_answer,
+        "last_error": &state.last_error,
+        "agent_profile": &state.agent_profile,
+        "engine_state": {
+            "engine_id": &state.engine_state.engine_id,
+            "schema_revision": state.engine_state.schema_revision,
+            "data": null
+        }
+    }))
+    .map_err(|error| JournalError::new(format!("cannot serialize run header: {error}")))
+}
+
+fn write_engine_snapshot(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &RunId,
+    state: &AgentState,
+) -> Result<(), JournalError> {
+    let payload = serde_json::to_string(&state.engine_state)
+        .map_err(|error| JournalError::new(format!("cannot serialize engine state: {error}")))?;
+    transaction
+        .prepare_cached(
+            "INSERT INTO run_engine_snapshots
+               (run_id, version, engine_id, schema_revision, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(run_id, version) DO UPDATE SET
+               engine_id = excluded.engine_id,
+               schema_revision = excluded.schema_revision,
+               payload_json = excluded.payload_json",
+        )
+        .map_err(|error| JournalError::new(format!("cannot prepare snapshot: {error}")))?
+        .execute(params![
+            run_id.as_str(),
+            state.state_version as i64,
+            state.engine_state.engine_id,
+            state.engine_state.schema_revision as i64,
+            payload
+        ])
+        .map_err(|error| JournalError::new(format!("cannot write snapshot: {error}")))?;
+    Ok(())
+}
+
+fn write_engine_patch(
+    transaction: &rusqlite::Transaction<'_>,
+    run_id: &RunId,
+    version: u64,
+    base_version: u64,
+    patch_json: &str,
+) -> Result<(), JournalError> {
+    transaction
+        .prepare_cached(
+            "INSERT INTO run_engine_patches
+               (run_id, version, base_version, patch_json)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(run_id, version) DO UPDATE SET
+               base_version = excluded.base_version,
+               patch_json = excluded.patch_json",
+        )
+        .map_err(|error| JournalError::new(format!("cannot prepare patch: {error}")))?
+        .execute(params![
+            run_id.as_str(),
+            version as i64,
+            base_version as i64,
+            patch_json
+        ])
+        .map_err(|error| JournalError::new(format!("cannot write engine patch: {error}")))?;
+    Ok(())
+}
+
+fn load_engine_state(
+    connection: &Connection,
+    run_id: &RunId,
+    state_version: u64,
+) -> Result<autra_core::EngineState, JournalError> {
+    let snapshot: Option<(i64, String)> = connection
+        .query_row(
+            "SELECT version, payload_json FROM run_engine_snapshots
+             WHERE run_id = ?1 AND version <= ?2
+             ORDER BY version DESC LIMIT 1",
+            params![run_id.as_str(), state_version as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| JournalError::new(format!("cannot read engine snapshot: {error}")))?;
+    let Some((snapshot_version, payload)) = snapshot else {
+        return Err(JournalError::new(format!(
+            "run `{run_id}` has no engine snapshot at or before version {state_version}"
+        )));
+    };
+    let mut engine: autra_core::EngineState = serde_json::from_str(&payload)
+        .map_err(|error| JournalError::new(format!("cannot decode engine snapshot: {error}")))?;
+    let original_id = engine.engine_id.clone();
+    let original_revision = engine.schema_revision;
+    for version in (snapshot_version as u64 + 1)..=state_version {
+        let patch: Option<(i64, String)> = connection
+            .query_row(
+                "SELECT base_version, patch_json FROM run_engine_patches
+                 WHERE run_id = ?1 AND version = ?2",
+                params![run_id.as_str(), version as i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| JournalError::new(format!("cannot read engine patch: {error}")))?;
+        let Some((base_version, patch_json)) = patch else {
+            return Err(JournalError::new(format!(
+                "run `{run_id}` is missing its engine patch for version {version}"
+            )));
+        };
+        if base_version as u64 != version - 1 {
+            return Err(JournalError::new(format!(
+                "run `{run_id}` engine patch {version} has base {base_version}, expected {}",
+                version - 1
+            )));
+        }
+        let patch: json_patch::Patch = serde_json::from_str(&patch_json).map_err(|error| {
+            JournalError::new(format!("cannot decode engine patch {version}: {error}"))
+        })?;
+        let mut value = serde_json::to_value(&engine).map_err(|error| {
+            JournalError::new(format!("cannot encode engine state for patch: {error}"))
+        })?;
+        json_patch::patch(&mut value, &patch).map_err(|error| {
+            JournalError::new(format!("cannot apply engine patch {version}: {error}"))
+        })?;
+        engine = serde_json::from_value(value).map_err(|error| {
+            JournalError::new(format!("cannot decode patched engine state: {error}"))
+        })?;
+        if engine.engine_id != original_id || engine.schema_revision != original_revision {
+            return Err(JournalError::new(format!(
+                "engine patch {version} changed engine identity"
+            )));
+        }
+    }
+    Ok(engine)
 }
 
 /// Bounded admission for the single writer. A full queue fails fast instead of
@@ -172,6 +325,21 @@ impl SqliteEffectJournal {
                     run_id TEXT PRIMARY KEY,
                     reason TEXT NOT NULL,
                     requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS run_engine_snapshots (
+                    run_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    engine_id TEXT NOT NULL,
+                    schema_revision INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    PRIMARY KEY (run_id, version)
+                );
+                CREATE TABLE IF NOT EXISTS run_engine_patches (
+                    run_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    base_version INTEGER NOT NULL,
+                    patch_json TEXT NOT NULL,
+                    PRIMARY KEY (run_id, version)
                 );",
             )
             .map_err(|error| JournalError::new(format!("cannot migrate journal: {error}")))?;
@@ -369,41 +537,60 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn save_run(&self, state: &AgentState) -> Result<(), JournalError> {
-        let payload = serde_json::to_string(state)
-            .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
-        let connection = self.writer()?;
-        connection
-            .execute(
+        let payload = state_header_json(state)?;
+        let mut connection = self.writer()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| JournalError::new(format!("cannot begin run write: {error}")))?;
+        transaction
+            .prepare_cached(
                 "INSERT INTO runs (run_id, state_json, state_version) VALUES (?1, ?2, ?3)
                  ON CONFLICT(run_id) DO UPDATE SET
                    state_json = excluded.state_json,
                    state_version = excluded.state_version,
                    updated_at = CURRENT_TIMESTAMP",
-                params![state.run_id.as_str(), payload, state.state_version as i64],
             )
+            .map_err(|error| JournalError::new(format!("cannot prepare run write: {error}")))?
+            .execute(params![
+                state.run_id.as_str(),
+                payload,
+                state.state_version as i64
+            ])
             .map_err(|error| JournalError::new(format!("cannot save run: {error}")))?;
+        write_engine_snapshot(&transaction, &state.run_id, state)?;
+        transaction
+            .commit()
+            .map_err(|error| JournalError::new(format!("cannot commit run write: {error}")))?;
         Ok(())
     }
 
     fn load_run(&self, run_id: &RunId) -> Result<Option<AgentState>, JournalError> {
         let connection = self.reader()?;
-        let mut statement = connection
-            .prepare("SELECT state_json FROM runs WHERE run_id = ?1")
-            .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?;
-        let mut rows = statement
-            .query(params![run_id.as_str()])
-            .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?;
-        let Some(row) = rows
-            .next()
-            .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?
-        else {
-            return Ok(None);
+        let payload: String = {
+            let mut statement = connection
+                .prepare("SELECT state_json FROM runs WHERE run_id = ?1")
+                .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?;
+            let mut rows = statement
+                .query(params![run_id.as_str()])
+                .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?;
+            let Some(row) = rows
+                .next()
+                .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?
+            else {
+                return Ok(None);
+            };
+            row.get(0)
+                .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?
         };
-        let payload: String = row
-            .get(0)
-            .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?;
-        let state = serde_json::from_str(&payload)
+        let mut state: AgentState = serde_json::from_str(&payload)
             .map_err(|error| JournalError::new(format!("cannot deserialize run: {error}")))?;
+        match load_engine_state(&connection, run_id, state.state_version) {
+            Ok(engine) => state.engine_state = engine,
+            Err(error) if state.state_version == 0 && state.engine_state.engine_id == "none" => {
+                let _ = error;
+            }
+            Err(error) => return Err(error),
+        }
         Ok(Some(state))
     }
 
@@ -839,10 +1026,47 @@ impl DurableTransitionStore for SqliteEffectJournal {
         state: &AgentState,
         new_effects: &[EffectRecord],
     ) -> Result<(), JournalError> {
+        self.commit_transition_with_engine_delta(
+            run_id,
+            expected_version,
+            event,
+            state,
+            new_effects,
+            None,
+        )
+    }
+
+    fn commit_transition_with_engine_delta(
+        &self,
+        run_id: &RunId,
+        expected_version: u64,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        new_effects: &[EffectRecord],
+        delta: Option<&EngineStateDelta>,
+    ) -> Result<(), JournalError> {
         let event_payload = serde_json::to_string(event)
             .map_err(|error| JournalError::new(format!("cannot serialize event: {error}")))?;
-        let state_payload = serde_json::to_string(state)
-            .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
+        let state_payload = state_header_json(state)?;
+        let patch_payload = match delta {
+            Some(delta) => {
+                if delta.base_version != expected_version {
+                    return Err(JournalError::new(format!(
+                        "engine delta base {} does not match expected version {expected_version}",
+                        delta.base_version
+                    )));
+                }
+                Some(serde_json::to_string(&delta.patch).map_err(|error| {
+                    JournalError::new(format!("cannot serialize engine patch: {error}"))
+                })?)
+            }
+            None => None,
+        };
+        let snapshot = patch_payload.as_ref().is_none_or(|patch| {
+            state.state_version == 1
+                || state.state_version % ENGINE_SNAPSHOT_INTERVAL == 0
+                || patch.len() > ENGINE_PATCH_MAX_BYTES
+        });
         let mut connection = self.writer()?;
         let transaction = connection.transaction().map_err(|error| {
             JournalError::new(format!("cannot begin journal transaction: {error}"))
@@ -883,9 +1107,7 @@ impl DurableTransitionStore for SqliteEffectJournal {
             ])
             .map_err(|error| JournalError::new(format!("cannot save run: {error}")))?;
         transaction
-            .prepare_cached(
-                "INSERT INTO run_events (run_id, seq, event_json) VALUES (?1, ?2, ?3)",
-            )
+            .prepare_cached("INSERT INTO run_events (run_id, seq, event_json) VALUES (?1, ?2, ?3)")
             .map_err(|error| JournalError::new(format!("cannot prepare event write: {error}")))?
             .execute(params![run_id.as_str(), event.seq as i64, event_payload])
             .map_err(|error| JournalError::new(format!("cannot record event: {error}")))?;
@@ -901,7 +1123,9 @@ impl DurableTransitionStore for SqliteEffectJournal {
                        payload_json = excluded.payload_json,
                        updated_at = CURRENT_TIMESTAMP",
                 )
-                .map_err(|error| JournalError::new(format!("cannot prepare effect write: {error}")))?
+                .map_err(|error| {
+                    JournalError::new(format!("cannot prepare effect write: {error}"))
+                })?
                 .execute(params![effect.id.as_str(), run_id.as_str(), payload])
                 .map_err(|error| JournalError::new(format!("cannot record effect: {error}")))?;
             if effect.status == EffectStatus::Authorized && !effect.intent_json.is_empty() {
@@ -913,11 +1137,26 @@ impl DurableTransitionStore for SqliteEffectJournal {
                     .map_err(|error| {
                         JournalError::new(format!("cannot prepare outbox write: {error}"))
                     })?
-                    .execute(params![effect.id.as_str(), run_id.as_str(), effect.intent_json])
+                    .execute(params![
+                        effect.id.as_str(),
+                        run_id.as_str(),
+                        effect.intent_json
+                    ])
                     .map_err(|error| {
                         JournalError::new(format!("cannot enqueue effect: {error}"))
                     })?;
             }
+        }
+        if snapshot {
+            write_engine_snapshot(&transaction, run_id, state)?;
+        } else if let Some(patch) = patch_payload {
+            write_engine_patch(
+                &transaction,
+                run_id,
+                state.state_version,
+                expected_version,
+                &patch,
+            )?;
         }
         transaction
             .commit()
@@ -937,8 +1176,7 @@ impl DurableTransitionStore for SqliteEffectJournal {
                 state.state_version
             )));
         }
-        let payload = serde_json::to_string(state)
-            .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
+        let payload = state_header_json(state)?;
         let mut connection = self.writer()?;
         let transaction = connection.transaction().map_err(|error| {
             JournalError::new(format!("cannot begin terminal transaction: {error}"))
@@ -990,6 +1228,17 @@ impl DurableTransitionStore for SqliteEffectJournal {
                     "state version conflict for run `{run_id}`: expected {expected_version}, found none"
                 )));
             }
+        }
+        if state.state_version == 1 {
+            write_engine_snapshot(&transaction, run_id, state)?;
+        } else {
+            write_engine_patch(
+                &transaction,
+                run_id,
+                state.state_version,
+                expected_version,
+                "[]",
+            )?;
         }
         transaction
             .commit()

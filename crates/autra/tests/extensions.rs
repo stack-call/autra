@@ -75,6 +75,7 @@ impl AgentStepper for OneShotStepper {
                     next,
                     intents: Vec::new(),
                     disposition: Disposition::Finished,
+                    engine_delta: None,
                 })
             }
             _ => Err(StepError::new("unexpected event")),

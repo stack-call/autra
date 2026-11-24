@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::effect::EffectIntent;
 use crate::event::AcceptedEvent;
 use crate::message::{HistoryItem, ToolCallRequest};
-use crate::state::AgentState;
+use crate::state::{AgentState, EngineStateDelta};
 
 pub const STEPPER_PROTOCOL_VERSION: u32 = 1;
 
@@ -37,6 +37,8 @@ pub struct TransitionProposal {
     pub next: AgentState,
     pub intents: Vec<EffectIntent>,
     pub disposition: Disposition,
+    /// Optional engine-state patch. `None` makes the journal write a snapshot.
+    pub engine_delta: Option<EngineStateDelta>,
 }
 
 /// Backward-compatible alias. New code should name the Proposal explicitly.

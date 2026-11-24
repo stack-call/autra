@@ -208,7 +208,7 @@ fn opening_configures_wal_and_sets_the_schema_version() {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
 }
 
 #[test]
@@ -388,4 +388,23 @@ fn effects_can_be_loaded_individually() {
     let subset = journal.load_effects(&run_id, &[second.id.clone()]).unwrap();
     assert_eq!(subset.len(), 1);
     assert_eq!(subset[0].id, second.id);
+}
+
+#[test]
+fn an_old_schema_is_rejected_without_migration() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("old.db");
+    {
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .pragma_update(None, "user_version", 1_i64)
+            .unwrap();
+    }
+
+    let error = match SqliteEffectJournal::open(&path) {
+        Ok(_) => panic!("schema v1 must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("not supported"));
 }

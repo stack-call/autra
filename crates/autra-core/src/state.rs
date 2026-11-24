@@ -15,6 +15,14 @@ pub enum AgentPhase {
 }
 
 /// State owned by a specific engine. Core stores it opaquely and versions it.
+/// A JSON Patch (RFC 6902) from one engine-state version to the next.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineStateDelta {
+    pub base_version: u64,
+    /// Patch applied to the serialized `EngineState` object.
+    pub patch: serde_json::Value,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineState {
     pub engine_id: String,

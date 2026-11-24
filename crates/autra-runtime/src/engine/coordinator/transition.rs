@@ -3,7 +3,7 @@
 
 use autra_core::{
     AcceptedEvent, AgentState, Disposition, EffectId, EffectIntent, EffectKind, EffectRecord,
-    EffectStatus, ModelCallSpec, RunId, ToolCallRequest,
+    EffectStatus, EngineStateDelta, ModelCallSpec, RunId, ToolCallRequest,
 };
 use autra_execution::RunError;
 
@@ -97,10 +97,26 @@ impl<'a> TransitionCommitter<'a> {
         event: &AcceptedEvent,
         next: &AgentState,
         new_effects: &[EffectRecord],
+        delta: Option<&EngineStateDelta>,
     ) -> Result<(), RunError> {
         if let Some(journal) = &self.engine.journal {
+            if let Some(delta) = delta {
+                if delta.base_version != expected_version {
+                    return Err(RunError::Protocol(format!(
+                        "engine delta base_version {} does not match expected {expected_version}",
+                        delta.base_version
+                    )));
+                }
+            }
             journal
-                .commit_transition(run_id, expected_version, event, next, new_effects)
+                .commit_transition_with_engine_delta(
+                    run_id,
+                    expected_version,
+                    event,
+                    next,
+                    new_effects,
+                    delta,
+                )
                 .map_err(|error| RunError::Journal(error.to_string()))?;
         }
         Ok(())

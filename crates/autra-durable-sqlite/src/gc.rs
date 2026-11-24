@@ -17,6 +17,8 @@ pub struct GcReport {
     pub approvals: usize,
     pub leases: usize,
     pub cancels: usize,
+    pub engine_snapshots: usize,
+    pub engine_patches: usize,
     pub dry_run: bool,
 }
 
@@ -80,6 +82,8 @@ impl SqliteEffectJournal {
             report.outbox += count(&transaction, "effect_outbox", run_id)?;
             report.leases += count(&transaction, "run_leases", run_id)?;
             report.cancels += count(&transaction, "cancel_requests", run_id)?;
+            report.engine_snapshots += count(&transaction, "run_engine_snapshots", run_id)?;
+            report.engine_patches += count(&transaction, "run_engine_patches", run_id)?;
 
             let effect_ids = effect_ids(&transaction, run_id)?;
             for effect_id in &effect_ids {
@@ -120,6 +124,22 @@ impl SqliteEffectJournal {
                         JournalError::new(format!("cannot delete approval: {error}"))
                     })?;
             }
+            transaction
+                .execute(
+                    "DELETE FROM run_engine_patches WHERE run_id = ?1",
+                    params![run_id],
+                )
+                .map_err(|error| {
+                    JournalError::new(format!("cannot delete engine patch: {error}"))
+                })?;
+            transaction
+                .execute(
+                    "DELETE FROM run_engine_snapshots WHERE run_id = ?1",
+                    params![run_id],
+                )
+                .map_err(|error| {
+                    JournalError::new(format!("cannot delete engine snapshot: {error}"))
+                })?;
             transaction
                 .execute("DELETE FROM run_leases WHERE run_id = ?1", params![run_id])
                 .map_err(|error| JournalError::new(format!("cannot delete lease: {error}")))?;
