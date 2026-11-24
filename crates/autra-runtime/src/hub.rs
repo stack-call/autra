@@ -43,7 +43,9 @@ impl RunHub {
         let entries = self.entries.lock().expect("hub lock poisoned");
         if let Some(entry) = entries.get(run_id) {
             if let Some(sender) = &entry.sender {
-                let _ = sender.send(event.clone());
+                if sender.receiver_count() > 0 {
+                    let _ = sender.send(event.clone());
+                }
             }
         }
     }

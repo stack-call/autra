@@ -78,7 +78,7 @@ RunHub / Metrics / Tracing（旁路）
 | 全局调度 | `GlobalScheduler` 的 Model/Tool/Process FIFO Semaphore |
 | 审批 | Policy、ApprovalRequest/Record、digest、revision、TTL、持久化复用 |
 | 恢复 | `resume`、`reconcile`、`outbox`、`RecoverySupervisor`、`autractl daemon` |
-| 观察 | `RunHub`、streaming、`ObserverHook`、tracing |
+| 观察 | `RunHub`（无订阅者时跳过发布）、delta 合并、`ObserverHook`、tracing |
 | 本地稳定性 P0 | Run/Service lease、claim 续租与 fencing、活跃 owner 跳过、daemon 单实例、Agent profile 校验、命令树取消、原子写 |
 | 约束 | `autra-testkit` 的 crate 依赖方向测试 |
 

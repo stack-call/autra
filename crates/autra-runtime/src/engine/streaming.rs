@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use autra_execution::RunEvent;
 
@@ -18,8 +19,12 @@ pub(super) fn delta_channel() -> (DeltaSink, tokio::sync::mpsc::UnboundedReceive
     (sink, receiver)
 }
 
-/// Drive a model call while forwarding deltas as `ModelDelta` events. Deltas
-/// that arrive just before the call finishes are still delivered in order.
+const DELTA_BATCH_BYTES: usize = 512;
+const DELTA_FLUSH_MS: u64 = 8;
+
+/// Drive a model call while forwarding deltas as `ModelDelta` events. Small
+/// bursts are coalesced into one event, so a token stream does not create one
+/// event (and one broadcast clone) per token. Order is preserved.
 pub(super) async fn await_with_deltas<Fut, T, F>(
     future: Fut,
     deltas: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
@@ -30,14 +35,48 @@ where
     F: FnMut(&RunEvent),
 {
     tokio::pin!(future);
+    let mut buffer = String::new();
+    let mut flush_at: Option<tokio::time::Instant> = None;
     let result = loop {
+        let flush = async {
+            match flush_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             result = &mut future => break result,
-            Some(text) = deltas.recv() => on_event(&RunEvent::ModelDelta { text }),
+            Some(text) = deltas.recv() => {
+                buffer.push_str(&text);
+                if buffer.len() >= DELTA_BATCH_BYTES {
+                    flush_delta(&mut buffer, on_event);
+                    flush_at = None;
+                } else if flush_at.is_none() {
+                    flush_at = Some(
+                        tokio::time::Instant::now() + Duration::from_millis(DELTA_FLUSH_MS),
+                    );
+                }
+            }
+            _ = flush => {
+                flush_delta(&mut buffer, on_event);
+                flush_at = None;
+            }
         }
     };
     while let Ok(text) = deltas.try_recv() {
-        on_event(&RunEvent::ModelDelta { text });
+        buffer.push_str(&text);
+        if buffer.len() >= DELTA_BATCH_BYTES {
+            flush_delta(&mut buffer, on_event);
+        }
     }
+    flush_delta(&mut buffer, on_event);
     result
+}
+
+fn flush_delta<F: FnMut(&RunEvent)>(buffer: &mut String, on_event: &mut F) {
+    if buffer.is_empty() {
+        return;
+    }
+    let text = std::mem::take(buffer);
+    on_event(&RunEvent::ModelDelta { text });
 }

@@ -65,7 +65,7 @@ fn a_stale_claim_cannot_complete_or_release_the_row() {
     // Simulate lease expiry: a second worker reclaims the same row.
     std::thread::sleep(Duration::from_millis(5));
     let reclaimed = journal
-        .claim_due_effects_with_lease(10, "claim-2", Duration::from_millis(1))
+        .claim_due_effects_with_lease(10, "claim-2", Duration::from_secs(10))
         .unwrap();
     assert_eq!(reclaimed.len(), 1);
 

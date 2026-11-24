@@ -170,6 +170,10 @@ Tests observe public behaviour, not private helpers.
     gate rejects overflow, and health reports queue depth and reader count.
 46. **Metrics** (`autra-durable-sqlite`, `autra-cli`): health includes run and
     Effect status counts; `metrics` prints the health document as JSON.
+47. **Delta coalescing** (`autra`, `autra-runtime`): streamed text is batched
+    into larger `ModelDelta` events while preserving order and arriving before
+    `ModelResult`; a Run with no hub subscribers does not clone events into a
+    broadcast channel.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

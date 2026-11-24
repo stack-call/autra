@@ -59,7 +59,8 @@ async fn deltas_arrive_before_the_model_result() {
             _ => None,
         })
         .collect();
-    assert_eq!(deltas, ["he", "llo"]);
+    assert_eq!(deltas.concat(), "hello");
+    assert!(deltas.len() <= 2, "deltas should be coalesced");
     let last_delta = events
         .iter()
         .rposition(|event| matches!(event, RunEvent::ModelDelta { .. }))
@@ -114,7 +115,8 @@ async fn a_journaled_run_streams_deltas_through_the_outbox() {
             _ => None,
         })
         .collect();
-    assert_eq!(deltas, ["he", "llo"]);
+    assert_eq!(deltas.concat(), "hello");
+    assert!(deltas.len() <= 2, "deltas should be coalesced");
     let last_delta = events
         .iter()
         .rposition(|event| matches!(event, RunEvent::ModelDelta { .. }))
