@@ -704,3 +704,19 @@ fn cancel_records_a_persisted_request() {
         Some("user asked")
     );
 }
+
+#[test]
+fn gc_requires_a_journal_and_supports_dry_run() {
+    let output = autractl().args(["gc"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("requires --journal"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gc.db");
+    let output = autractl()
+        .args(["gc", "--journal", path.to_str().unwrap(), "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(stdout(&output).contains("(dry run)"));
+}

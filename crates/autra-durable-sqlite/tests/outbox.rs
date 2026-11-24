@@ -307,3 +307,31 @@ fn a_run_lease_survives_reopen_until_it_expires() {
             .unwrap()
     );
 }
+
+#[test]
+fn gc_removes_only_old_terminal_runs() {
+    use std::time::Duration;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("gc.db");
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    let completed = RunId::new("run-completed");
+    let active = RunId::new("run-active");
+    let mut completed_state = AgentState::new(completed.clone(), BudgetSnapshot::new(2, 2));
+    completed_state.phase = AgentPhase::Completed;
+    completed_state.final_answer = Some("done".to_owned());
+    let mut active_state = AgentState::new(active.clone(), BudgetSnapshot::new(2, 2));
+    active_state.phase = AgentPhase::AwaitingModel;
+    journal.save_run(&completed_state).unwrap();
+    journal.save_run(&active_state).unwrap();
+
+    std::thread::sleep(Duration::from_millis(1100));
+    let dry = journal.gc(Duration::from_secs(0), true).unwrap();
+    assert_eq!(dry.runs, 1);
+    assert!(journal.load_run(&completed).unwrap().is_some());
+
+    let report = journal.gc(Duration::from_secs(0), false).unwrap();
+    assert_eq!(report.runs, 1);
+    assert!(journal.load_run(&completed).unwrap().is_none());
+    assert!(journal.load_run(&active).unwrap().is_some());
+}

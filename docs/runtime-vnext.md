@@ -62,7 +62,7 @@ RunHub / Metrics / Tracing（旁路）
 | GlobalScheduler | 已实现本地版本：`scheduler/mod.rs`，Model/Tool/Process Semaphore |
 | EffectExecutor | 已实现：`engine/executor.rs` |
 | RecoverySupervisor | 已实现：`engine/recovery/supervisor.rs`，服务租约 + 周期扫描 |
-| Journal/Outbox | 已有，SQLite 单 Writer；cancel request、run/service lease、Attempt owner 元数据已持久化；读写分离与 GC 未实现 |
+| Journal/Outbox | 已有，SQLite 单 Writer；cancel request、run/service lease、Attempt owner 元数据和 retention GC 已持久化；读写分离未实现 |
 | 多进程 Worker / PostgreSQL / Redis | 未实现，属于阶段 3/4 |
 
 已经在本地单机模式中具备、并且应当保留的：
@@ -265,7 +265,7 @@ Effect E100
 
 重试不应生成一个新的、不相关的 Effect。
 
-**当前进展**：Run/Service lease、claim 续租与 claim-id fencing 已实现；还缺独立 `AttemptId`、`fencing_token`、持久化 `CancelRequest`，以及 journal retention/GC。
+**当前进展**：Run/Service lease、claim 续租与 fencing、`AttemptId`/worker/fencing 元数据、持久化 `CancelRequest` 和 journal GC 已实现；跨进程的正式执行权代际协议仍待完成。
 
 ### 4.8 RecoverySupervisor
 

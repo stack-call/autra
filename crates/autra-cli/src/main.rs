@@ -39,6 +39,7 @@ async fn main() -> ExitCode {
         Some("reconcile") => reconcile_command(&args[1..]).await,
         Some("daemon") => daemon_command(&args[1..]).await,
         Some("cancel") => cancel_command(&args[1..]),
+        Some("gc") => gc_command(&args[1..]),
         Some("approve") => approval_command(&args[1..], ApprovalDecision::Approved),
         Some("reject") => approval_command(&args[1..], ApprovalDecision::Rejected),
         Some("demo") => demo_command().await,
@@ -65,6 +66,8 @@ struct Flags {
     tool_limit: Option<usize>,
     process_limit: Option<usize>,
     reason: Option<String>,
+    older_than_days: Option<u64>,
+    dry_run: bool,
     once: bool,
     interval_secs: Option<u64>,
     unknown_only: bool,
@@ -681,6 +684,50 @@ fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {
     }
 }
 
+fn gc_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "gc") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if !flags.rest.is_empty() {
+        eprintln!("usage: autractl gc --journal <path> [--older-than-days <n>] [--dry-run]");
+        return ExitCode::FAILURE;
+    }
+    let Some(path) = flags.journal.as_ref() else {
+        eprintln!("gc requires --journal <path>");
+        return ExitCode::FAILURE;
+    };
+    let journal = match SqliteEffectJournal::open(path) {
+        Ok(journal) => journal,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let days = flags.older_than_days.unwrap_or(30);
+    let older_than = std::time::Duration::from_secs(days.saturating_mul(24 * 60 * 60));
+    match journal.gc(older_than, flags.dry_run) {
+        Ok(report) => {
+            println!(
+                "runs={} events={} effects={} outbox={} approvals={} leases={} cancels={}{}",
+                report.runs,
+                report.events,
+                report.effects,
+                report.outbox,
+                report.approvals,
+                report.leases,
+                report.cancels,
+                if report.dry_run { " (dry run)" } else { "" }
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("gc failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn cancel_command(args: &[String]) -> ExitCode {
     let flags = match parse_flags(args, "cancel") {
         Ok(flags) => flags,
@@ -788,6 +835,8 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         tool_limit: None,
         process_limit: None,
         reason: None,
+        older_than_days: None,
+        dry_run: false,
         once: false,
         interval_secs: None,
         unknown_only: false,
@@ -855,6 +904,21 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
                     return Err(());
                 }
             },
+            "--older-than-days" => match iter.next() {
+                Some(value) => match value.parse::<u64>() {
+                    Ok(days) => flags.older_than_days = Some(days),
+                    _ => {
+                        eprintln!("--older-than-days requires a non-negative integer");
+                        usage();
+                        return Err(());
+                    }
+                },
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--dry-run" => flags.dry_run = true,
             "--unknown" => flags.unknown_only = true,
             "--once" => flags.once = true,
             "--interval-secs" => match iter.next() {
@@ -1355,6 +1419,7 @@ USAGE:
   autractl reconcile --journal <path> [--model <name>] [--workspace <dir>] [--policy <path>] <run-id>
   autractl daemon --journal <path> [--model <name>] [--workspace <dir>] [--interval-secs <n>] [--once]
   autractl cancel --journal <path> [--reason <text>] <run-id>
+  autractl gc --journal <path> [--older-than-days <n>] [--dry-run]
   autractl approve|reject --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>
   autractl demo
   autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
@@ -1378,6 +1443,8 @@ OPTIONS:
   --interval-secs <n> daemon polling interval (default 5)
   --once             run a single recovery pass and exit
   --reason <text>    cancellation reason recorded by `cancel`
+  --older-than-days <n> gc retention window (default 30)
+  --dry-run          report gc candidates without deleting
 
 ENVIRONMENT:
   OPENAI_API_KEY     required when a real model is used

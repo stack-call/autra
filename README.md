@@ -71,6 +71,7 @@ After building, the binary is `autractl` (or prefix with
 - `autractl snapshot --journal <path> <run-id>` — print the current Run snapshot as JSON.
 - `autractl approve|reject --journal <path> <run-id> <effect-id>` — record an approval decision for a pending effect.
 - `autractl cancel --journal <path> [--reason <text>] <run-id>` — persist a cancellation request.
+- `autractl gc --journal <path> [--older-than-days <n>] [--dry-run]` — remove old terminal Runs and their events/effects.
 - `autractl effects --journal <path> [--unknown] <run-id>` — list a Run's effects.
 - `autractl reconcile --journal <path> [--model <name>] <run-id>` — retry safe `OutcomeUnknown` effects.
 - `autractl outbox --journal <path> --model <name>` — drain due outbox rows, reclaiming expired leases.
@@ -128,6 +129,8 @@ append the result to the session history.
 | `--model-limit <n>` | global model concurrency (default 16) |
 | `--tool-limit <n>` | global tool concurrency (default 64) |
 | `--process-limit <n>` | global process concurrency (default 8) |
+| `--older-than-days <n>` | gc retention window (default 30) |
+| `--dry-run` | report gc candidates without deleting |
 | `--yes`, `-y` | approve `write_file`, `edit_file` and `run_command` without prompting |
 | `--read-only` | expose only read-only tools (`list_files`, `read_file`, `search_text`, `git_status`, `git_diff`) |
 

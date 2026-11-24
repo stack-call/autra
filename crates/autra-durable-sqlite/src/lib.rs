@@ -11,7 +11,10 @@ use autra_execution::{
     ApprovalRecord, ApprovalStore, ApprovalStoreError, DEFAULT_CLAIM_LEASE, DurableTransitionStore,
     EffectJournal, JournalError, LeaseRecord, OutboxEntry, now_unix_ms,
 };
+mod gc;
 pub mod session;
+
+pub use gc::GcReport;
 
 pub use session::SqliteSessionStore;
 
