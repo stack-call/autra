@@ -744,3 +744,11 @@ fn doctor_requires_a_journal_and_reports_health() {
     assert!(text.contains("runs: 0"));
     assert!(text.contains("writable=true"));
 }
+
+#[test]
+fn version_is_available() {
+    let output = autractl().arg("--version").output().unwrap();
+
+    assert!(output.status.success());
+    assert!(stdout(&output).starts_with("autractl "));
+}

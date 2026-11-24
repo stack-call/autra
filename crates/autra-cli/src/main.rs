@@ -25,6 +25,10 @@ async fn main() -> ExitCode {
     init_tracing();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("-V" | "--version") => {
+            println!("autractl {}", env!("CARGO_PKG_VERSION"));
+            ExitCode::SUCCESS
+        }
         None | Some("-h" | "--help" | "help") => {
             println!("{}", usage());
             ExitCode::SUCCESS
@@ -1499,6 +1503,7 @@ USAGE:
   autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
   autractl tools
   autractl --help
+  autractl --version
 
 OPTIONS:
   --workspace <dir>  workspace root (default ".")
