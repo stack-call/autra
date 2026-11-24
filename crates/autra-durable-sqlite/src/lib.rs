@@ -100,6 +100,11 @@ impl SqliteEffectJournal {
                     service TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL,
                     deadline_ms INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS cancel_requests (
+                    run_id TEXT PRIMARY KEY,
+                    reason TEXT NOT NULL,
+                    requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );",
             )
             .map_err(|error| JournalError::new(format!("cannot migrate journal: {error}")))?;
@@ -658,6 +663,52 @@ impl EffectJournal for SqliteEffectJournal {
                 params![service, owner_id],
             )
             .map_err(|error| JournalError::new(format!("cannot release service: {error}")))?;
+        Ok(())
+    }
+
+    fn request_cancel(&self, run_id: &RunId, reason: &str) -> Result<(), JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .execute(
+                "INSERT INTO cancel_requests (run_id, reason) VALUES (?1, ?2)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                   reason = excluded.reason,
+                   requested_at = CURRENT_TIMESTAMP",
+                params![run_id.as_str(), reason],
+            )
+            .map_err(|error| JournalError::new(format!("cannot request cancel: {error}")))?;
+        Ok(())
+    }
+
+    fn cancel_request(&self, run_id: &RunId) -> Result<Option<String>, JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .query_row(
+                "SELECT reason FROM cancel_requests WHERE run_id = ?1",
+                params![run_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| JournalError::new(format!("cannot read cancel request: {error}")))
+    }
+
+    fn clear_cancel(&self, run_id: &RunId) -> Result<(), JournalError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        connection
+            .execute(
+                "DELETE FROM cancel_requests WHERE run_id = ?1",
+                params![run_id.as_str()],
+            )
+            .map_err(|error| JournalError::new(format!("cannot clear cancel request: {error}")))?;
         Ok(())
     }
 }

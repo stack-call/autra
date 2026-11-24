@@ -17,7 +17,7 @@ pub use effect::{
     EffectStatus, ModelCallSpec, ToolCallSpec,
 };
 pub use event::{AcceptedEvent, EventKind};
-pub use ids::{EffectId, RunId, SessionId, TurnId};
+pub use ids::{AttemptId, EffectId, RunId, SessionId, TurnId};
 pub use message::{HistoryItem, ModelOutput, TokenUsage, ToolCallRequest, ToolOutcome, ToolSpec};
 pub use scope::{BudgetHandle, BudgetSnapshot, CancelFlag, ExecutionScope};
 pub use state::{AgentPhase, AgentState, EngineState};

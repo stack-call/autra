@@ -54,3 +54,4 @@ define_id!(SessionId, "session");
 define_id!(TurnId, "turn");
 define_id!(RunId, "run");
 define_id!(EffectId, "effect");
+define_id!(AttemptId, "attempt");

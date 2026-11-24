@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ids::EffectId;
+use crate::ids::{AttemptId, EffectId};
 use crate::message::{HistoryItem, ToolCallRequest, ToolOutcome, ToolSpec};
 
 /// An execution intent produced by the stepper and executed by the host.
@@ -77,9 +77,18 @@ pub enum AttemptStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectAttempt {
     pub attempt: u32,
+    /// Stable identity for this physical attempt. Older journals may omit it.
+    #[serde(default)]
+    pub id: Option<AttemptId>,
     pub status: AttemptStatus,
     pub result: Option<String>,
     pub error: Option<String>,
+    /// Executor that claimed the attempt, when the host records one.
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    /// Monotonic claim generation used to fence stale executors.
+    #[serde(default)]
+    pub fencing_token: Option<u64>,
 }
 
 /// Host-owned record of one accepted logical effect.
@@ -189,9 +198,12 @@ impl EffectRecord {
         }
         self.attempts.push(EffectAttempt {
             attempt,
+            id: Some(AttemptId::fresh()),
             status,
             result,
             error,
+            worker_id: None,
+            fencing_token: None,
         });
         attempt
     }

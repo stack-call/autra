@@ -1,7 +1,9 @@
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use autra_core::{EffectClass, ToolSpec};
@@ -204,11 +206,14 @@ impl LocalWorkspace {
     }
 
     /// Write through a temporary file in the same directory and rename it into
-    /// place, so a crash leaves either the old or the new contents.
+    /// place, so a crash leaves either the old or the new contents. The process
+    /// lock is backed by an OS file lock so separate local processes serialize
+    /// writes to the same workspace.
     pub fn write_atomic(&self, relative: &str, content: &str) -> Result<(), ToolError> {
         let _guard = WRITE_LOCK
             .lock()
             .map_err(|_| ToolError::new("workspace write lock poisoned"))?;
+        let _file_lock = self.lock_workspace()?;
         let path = self.resolve_for_write(relative)?;
         self.write_atomic_locked(&path, relative, content.as_bytes())
     }
@@ -224,6 +229,7 @@ impl LocalWorkspace {
         let _guard = WRITE_LOCK
             .lock()
             .map_err(|_| ToolError::new("workspace write lock poisoned"))?;
+        let _file_lock = self.lock_workspace()?;
         let path = self.resolve_for_write(relative)?;
         let current = std::fs::read_to_string(&path).map_err(|error| {
             ToolError::new(format!("cannot read `{relative}` before writing: {error}"))
@@ -234,6 +240,52 @@ impl LocalWorkspace {
             )));
         }
         self.write_atomic_locked(&path, relative, content.as_bytes())
+    }
+
+    fn lock_workspace(&self) -> Result<File, ToolError> {
+        use fs2::FileExt;
+
+        let directory = self.root.join(".autra");
+        std::fs::create_dir_all(&directory).map_err(|error| {
+            ToolError::new(format!(
+                "cannot create workspace lock directory `{}`: {error}",
+                directory.display()
+            ))
+        })?;
+        let path = directory.join("workspace.lock");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .map_err(|error| {
+                ToolError::new(format!(
+                    "cannot open workspace lock `{}`: {error}",
+                    path.display()
+                ))
+            })?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(file),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(ToolError::new(format!(
+                            "workspace `{}` is locked by another writer",
+                            self.root.display()
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(error) => {
+                    return Err(ToolError::new(format!(
+                        "cannot lock workspace `{}`: {error}",
+                        self.root.display()
+                    )));
+                }
+            }
+        }
     }
 
     fn write_atomic_locked(
@@ -554,7 +606,7 @@ const SEARCH_MAX_RESULTS: usize = 200;
 const SEARCH_MAX_FILE_BYTES: u64 = 1024 * 1024;
 const SEARCH_MAX_FILES: usize = 20_000;
 const SEARCH_MAX_LINE_CHARS: usize = 400;
-const SEARCH_SKIP_DIRS: [&str; 3] = [".git", "target", "node_modules"];
+const SEARCH_SKIP_DIRS: [&str; 4] = [".git", ".autra", "target", "node_modules"];
 
 /// Finds text in workspace files and reports `path:line: text` matches.
 pub struct SearchTextTool {
@@ -843,5 +895,30 @@ impl Tool for EditFileTool {
             args.path,
             unified_preview(&args.path, &old, &new, PREVIEW_MAX_BYTES)
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fs2::FileExt;
+
+    #[test]
+    fn the_workspace_file_lock_is_exclusive() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = LocalWorkspace::open(dir.path()).unwrap();
+        let first = workspace.lock_workspace().unwrap();
+        let path = dir.path().join(".autra/workspace.lock");
+        let second = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+
+        let blocked = second.try_lock_exclusive();
+        assert!(blocked.is_err());
+
+        drop(first);
+        second.try_lock_exclusive().unwrap();
     }
 }

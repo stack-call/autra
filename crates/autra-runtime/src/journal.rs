@@ -29,6 +29,7 @@ pub struct MemoryJournal {
     run_leases: Arc<Mutex<BTreeMap<RunId, LeaseRecord>>>,
     service_leases: Arc<Mutex<BTreeMap<String, LeaseRecord>>>,
     approvals: Arc<Mutex<BTreeMap<EffectId, ApprovalRecord>>>,
+    cancels: Arc<Mutex<BTreeMap<RunId, String>>>,
 }
 
 fn lease_deadline(lease: Duration) -> u64 {
@@ -376,6 +377,31 @@ impl EffectJournal for MemoryJournal {
         {
             leases.remove(service);
         }
+        Ok(())
+    }
+
+    fn request_cancel(&self, run_id: &RunId, reason: &str) -> Result<(), JournalError> {
+        self.cancels
+            .lock()
+            .expect("journal lock poisoned")
+            .insert(run_id.clone(), reason.to_owned());
+        Ok(())
+    }
+
+    fn cancel_request(&self, run_id: &RunId) -> Result<Option<String>, JournalError> {
+        Ok(self
+            .cancels
+            .lock()
+            .expect("journal lock poisoned")
+            .get(run_id)
+            .cloned())
+    }
+
+    fn clear_cancel(&self, run_id: &RunId) -> Result<(), JournalError> {
+        self.cancels
+            .lock()
+            .expect("journal lock poisoned")
+            .remove(run_id);
         Ok(())
     }
 }

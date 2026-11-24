@@ -69,10 +69,11 @@
 | 工具取消 | 缺口：`RunCommandTool` 不读取 `ToolContext.cancel` | 无进程树强制终止、无取消原因 |
 | Claim | 已有：`claim_id = pid + 计数器`；dispatch 写入统一走 `record_claimed`，非 owner 写入被拒绝 | — |
 | Lease | 已有：默认 60 秒，执行中按 1/3 TTL 续租，过期可回收 | 进程长时间暂停下的重复执行仍需故障注入验证 |
-| Run ownership | 已有：`run_leases` + 心跳；resume/reconcile 先 claim | 跨机器 fencing 不在本地范围 |
+| Run ownership | 已有：`run_leases` + 心跳；resume/reconcile 先 claim；`AttemptId`/worker/fencing 元数据 | 跨进程代际协议仍待故障注入验证 |
+| 取消 | 已有：持久化 `CancelRequest`、`autractl cancel`、lease 轮询与恢复前检查 | 取消原因/截止时间语义仍可继续细化 |
 | 恢复 daemon | 已有：`autractl daemon`；服务租约单实例、跳过活跃 owner、校验 Agent profile | 模型 provider 身份尚未纳入 profile |
 | Journal | 已有：WAL、`busy_timeout=5s`、`synchronous=NORMAL`、schema version | 无 retention/GC；多进程写者模型未定义 |
-| 文件写入 | 已有：同目录 temp + fsync + rename、拒绝 symlink、pre-image 校验、进程内写锁 | 跨进程写锁仍未实现 |
+| 文件写入 | 已有：同目录 temp + fsync + rename、拒绝 symlink、pre-image 校验、进程内写锁 + OS 文件锁 | Windows Job Object/资源上限仍未实现 |
 | 命令执行 | 已有：环境变量脱敏、输出上限、超时、取消、Unix 进程组、Windows `taskkill /T` | Windows Job Object 与资源限制仍未实现 |
 | 审批 | 已有：参数 digest、policy revision、TTL、actor、持久化复用 | actor 未验证；审批绑定的是文本而非结构化命令 |
 | Host/Sandbox | 已有：`ExecutionHost` / `SandboxBackend` 契约 | 无适配器；harness 工具绕过 Host 直接调用 OS |
@@ -85,13 +86,13 @@
 | P0-1 Effect ownership | 已实现 | claim 默认 60 秒并续租；`record_claimed` 校验 claim；`mark_dispatched`/终态写入均 fencing |
 | P0-2 Recovery daemon | 已实现 | Run lease + 心跳；daemon 服务租约保证单实例；跳过有活跃 owner 的 Run；恢复校验 Agent profile hash |
 | P0-3 工具取消与进程树 | 已实现（Windows best-effort） | `run_command` 接入 `CancelFlag`；Unix 进程组 SIGTERM→SIGKILL；Windows 保留 `taskkill /T`，Job Object 仍是后续项 |
-| P0-4 原子写与冲突 | 已实现（进程内） | 同目录 temp + fsync + rename；最终路径拒绝 symlink；`edit_file` 校验 pre-image；进程内写锁 |
+| P0-4 原子写与冲突 | 已实现 | 同目录 temp + fsync + rename；最终路径拒绝 symlink；`edit_file` 校验 pre-image；进程内写锁 + `.autra/workspace.lock` OS 文件锁 |
 | ReAct 历史复制 | 已优化 | `fork_state` 避免复制旧 engine payload；stepper 按 `state_version` 复用解码状态；每次转换只序列化一次 |
 
 仍待完成：
 
 - Windows Job Object 与更完整的内存/进程数限制；
-- 跨进程 workspace 写锁（当前只有进程内锁 + pre-image 校验）；
+- 跨进程/恢复场景的崩溃与租约故障注入矩阵；
 - journal retention/GC 与 effect 查询；
 - 模型 provider 身份尚未纳入 profile hash（`ModelProvider` 没有稳定 id）。
 - `ResumeRequested` / `CancelRequested` 仍会复制完整 `AgentState`。
@@ -231,7 +232,7 @@ Lease {
 
 ### P0-4 原子文件写入与写冲突
 
-**状态：已实现（进程内）。** 跨进程写锁仍需后续补齐。
+**状态：已实现。** 进程内写锁与 OS 文件锁共同串行化跨进程写入。
 
 **现象**
 

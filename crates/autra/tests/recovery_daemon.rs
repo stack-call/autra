@@ -249,3 +249,27 @@ async fn the_recovery_supervisor_holds_a_service_lease() {
     drop(lease);
     assert!(second.claim().is_ok());
 }
+
+#[tokio::test]
+async fn recovery_honours_a_persisted_cancel_request() {
+    let journal = MemoryJournal::new();
+    let run_id = RunId::new("recover-cancelled");
+    journal
+        .save_run(&base_state(&run_id, AgentPhase::AwaitingModel))
+        .unwrap();
+    let effect = model_effect();
+    journal.record(&run_id, &effect).unwrap();
+    journal.enqueue_effect(&run_id, &effect).unwrap();
+    journal.request_cancel(&run_id, "user asked").unwrap();
+    let agent = Agent::builder("daemon")
+        .model(FakeModel::new(Vec::new()))
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+
+    let report = agent.recover_once(10).await.unwrap();
+
+    assert_eq!(report.resumed, 1);
+    let stored = journal.load_run(&run_id).unwrap().unwrap();
+    assert_eq!(stored.phase, AgentPhase::Cancelled);
+}

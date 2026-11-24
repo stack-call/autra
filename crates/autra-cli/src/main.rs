@@ -38,6 +38,7 @@ async fn main() -> ExitCode {
         Some("effects") => effects_command(&args[1..]),
         Some("reconcile") => reconcile_command(&args[1..]).await,
         Some("daemon") => daemon_command(&args[1..]).await,
+        Some("cancel") => cancel_command(&args[1..]),
         Some("approve") => approval_command(&args[1..], ApprovalDecision::Approved),
         Some("reject") => approval_command(&args[1..], ApprovalDecision::Rejected),
         Some("demo") => demo_command().await,
@@ -63,6 +64,7 @@ struct Flags {
     model_limit: Option<usize>,
     tool_limit: Option<usize>,
     process_limit: Option<usize>,
+    reason: Option<String>,
     once: bool,
     interval_secs: Option<u64>,
     unknown_only: bool,
@@ -679,6 +681,40 @@ fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {
     }
 }
 
+fn cancel_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "cancel") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if flags.rest.len() != 1 {
+        eprintln!("usage: autractl cancel --journal <path> [--reason <text>] <run-id>");
+        return ExitCode::FAILURE;
+    }
+    let Some(path) = flags.journal.as_ref() else {
+        eprintln!("cancel requires --journal <path>");
+        return ExitCode::FAILURE;
+    };
+    let journal = match SqliteEffectJournal::open(path) {
+        Ok(journal) => journal,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let run_id = RunId::new(flags.rest[0].clone());
+    let reason = flags.reason.as_deref().unwrap_or("operator request");
+    match journal.request_cancel(&run_id, reason) {
+        Ok(()) => {
+            println!("cancel requested for run `{run_id}`");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("cannot request cancel: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn snapshot_command(args: &[String]) -> ExitCode {
     let flags = match parse_flags(args, "snapshot") {
         Ok(flags) => flags,
@@ -751,6 +787,7 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
         model_limit: None,
         tool_limit: None,
         process_limit: None,
+        reason: None,
         once: false,
         interval_secs: None,
         unknown_only: false,
@@ -806,6 +843,13 @@ fn parse_flags(args: &[String], command: &str) -> Result<Flags, ()> {
             },
             "--session" => match iter.next() {
                 Some(id) if !id.is_empty() => flags.session = Some(id.clone()),
+                _ => {
+                    usage();
+                    return Err(());
+                }
+            },
+            "--reason" => match iter.next() {
+                Some(reason) if !reason.is_empty() => flags.reason = Some(reason.clone()),
                 _ => {
                     usage();
                     return Err(());
@@ -1310,6 +1354,7 @@ USAGE:
   autractl effects --journal <path> [--unknown] <run-id>
   autractl reconcile --journal <path> [--model <name>] [--workspace <dir>] [--policy <path>] <run-id>
   autractl daemon --journal <path> [--model <name>] [--workspace <dir>] [--interval-secs <n>] [--once]
+  autractl cancel --journal <path> [--reason <text>] <run-id>
   autractl approve|reject --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>
   autractl demo
   autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]
@@ -1332,6 +1377,7 @@ OPTIONS:
   --context-chars <n> cap the model context (system, tools and history)
   --interval-secs <n> daemon polling interval (default 5)
   --once             run a single recovery pass and exit
+  --reason <text>    cancellation reason recorded by `cancel`
 
 ENVIRONMENT:
   OPENAI_API_KEY     required when a real model is used

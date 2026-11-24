@@ -134,6 +134,21 @@ pub trait EffectJournal: Send + Sync {
         Ok(())
     }
 
+    /// Persist an operator's cancellation intent. This is separate from the
+    /// accepted CancelRequested event so a killed process can still be seen as
+    /// cancelled by recovery.
+    fn request_cancel(&self, _run_id: &RunId, _reason: &str) -> Result<(), JournalError> {
+        Ok(())
+    }
+
+    fn cancel_request(&self, _run_id: &RunId) -> Result<Option<String>, JournalError> {
+        Ok(None)
+    }
+
+    fn clear_cancel(&self, _run_id: &RunId) -> Result<(), JournalError> {
+        Ok(())
+    }
+
     fn save_run(&self, _state: &AgentState) -> Result<(), JournalError> {
         Ok(())
     }

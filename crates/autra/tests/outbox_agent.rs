@@ -229,6 +229,9 @@ async fn a_tool_run_claims_each_effect_from_the_outbox() {
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].status, EffectStatus::Committed);
     assert_eq!(tools[0].result.as_deref(), Some("hi"));
+    assert!(tools[0].attempts[0].id.is_some());
+    assert!(tools[0].attempts[0].worker_id.is_some());
+    assert_eq!(tools[0].attempts[0].fencing_token, Some(1));
     let run_id = outcome.state().run_id.clone();
     assert_eq!(journal.load(&run_id).unwrap(), effects);
     assert_eq!(journal.enqueued(), 3);

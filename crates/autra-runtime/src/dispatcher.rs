@@ -490,6 +490,7 @@ async fn dispatch_entry(
                 None,
                 Some("the effect was in flight when its claim lease ended".to_owned()),
             );
+            stamp_attempt(record, claim_id, entry.attempts);
             journal.record_claimed(run_id, record, claim_id)?;
             journal.complete_outbox(&entry.effect_id, claim_id)?;
             return Ok(DispatchResult {
@@ -652,6 +653,7 @@ fn finish_entry(
         )));
     };
     apply_outcome(record, &outcome, known_tool);
+    stamp_attempt(record, claim_id, entry.attempts);
     if let Err(error) = journal.record_claimed(run_id, record, claim_id) {
         if !error.is_claim_lost() {
             let _ = journal.release_outbox(&entry.effect_id, claim_id);
@@ -663,6 +665,13 @@ fn finish_entry(
         effect_id: entry.effect_id.clone(),
         outcome,
     })
+}
+
+fn stamp_attempt(record: &mut EffectRecord, claim_id: &str, fencing_token: u32) {
+    if let Some(attempt) = record.attempts.last_mut() {
+        attempt.worker_id = Some(claim_id.to_owned());
+        attempt.fencing_token = Some(fencing_token as u64);
+    }
 }
 
 fn apply_outcome(record: &mut EffectRecord, outcome: &DispatchOutcome, known_tool: bool) {

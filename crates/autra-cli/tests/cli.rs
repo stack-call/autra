@@ -665,3 +665,42 @@ fn scheduler_limits_must_be_positive() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("--model-limit requires a positive integer"));
 }
+
+#[test]
+fn cancel_requires_a_journal() {
+    let output = autractl().args(["cancel", "run-1"]).output().unwrap();
+
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("requires --journal"));
+}
+
+#[test]
+fn cancel_records_a_persisted_request() {
+    use autra::EffectJournal;
+    use autra_core::RunId;
+    use autra_durable_sqlite::SqliteEffectJournal;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cancel.db");
+    let output = autractl()
+        .args([
+            "cancel",
+            "--journal",
+            path.to_str().unwrap(),
+            "--reason",
+            "user asked",
+            "run-cancel",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    assert_eq!(
+        journal
+            .cancel_request(&RunId::new("run-cancel"))
+            .unwrap()
+            .as_deref(),
+        Some("user asked")
+    );
+}

@@ -147,6 +147,13 @@ Tests observe public behaviour, not private helpers.
 39. **Recovery supervisor** (`autra`): only one supervisor can hold the service
     lease; dropping the lease allows another supervisor to claim it; the
     supervisor reuses `recover_once` instead of a second Run loop.
+40. **Cancel and attempt identity** (`autra-execution`, `autra-durable-sqlite`,
+    `autra`, `autra-cli`): a cancel request survives reopen, recovery cancels a
+    Run with a persisted request, CLI `cancel` records a reason, and outbox
+    attempts carry an `AttemptId`, worker id and fencing token.
+41. **Workspace write lock** (`autra-harness`): a second file handle cannot take
+    the workspace lock while the first is held; atomic writes release it on
+    drop.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

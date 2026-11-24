@@ -70,6 +70,7 @@ After building, the binary is `autractl` (or prefix with
 - `autractl resume --journal <path> --model <name> <run-id>` — continue a checkpointed run.
 - `autractl snapshot --journal <path> <run-id>` — print the current Run snapshot as JSON.
 - `autractl approve|reject --journal <path> <run-id> <effect-id>` — record an approval decision for a pending effect.
+- `autractl cancel --journal <path> [--reason <text>] <run-id>` — persist a cancellation request.
 - `autractl effects --journal <path> [--unknown] <run-id>` — list a Run's effects.
 - `autractl reconcile --journal <path> [--model <name>] <run-id>` — retry safe `OutcomeUnknown` effects.
 - `autractl outbox --journal <path> --model <name>` — drain due outbox rows, reclaiming expired leases.

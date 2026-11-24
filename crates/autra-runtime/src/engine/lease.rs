@@ -46,10 +46,18 @@ impl RunLeaseGuard {
         let renewal_owner = owner_id.clone();
         let renewal = tokio::spawn(async move {
             let period = (RUN_LEASE / 3).max(Duration::from_millis(100));
+            let poll = Duration::from_secs(1).min(period);
+            let mut last_renew = tokio::time::Instant::now();
             loop {
-                tokio::time::sleep(period).await;
+                tokio::time::sleep(poll).await;
+                if matches!(renewal_journal.cancel_request(&renewal_run), Ok(Some(_))) {
+                    cancel.cancel();
+                }
+                if last_renew.elapsed() < period {
+                    continue;
+                }
                 match renewal_journal.renew_run(&renewal_run, &renewal_owner, RUN_LEASE) {
-                    Ok(true) => {}
+                    Ok(true) => last_renew = tokio::time::Instant::now(),
                     _ => {
                         cancel.cancel();
                         break;

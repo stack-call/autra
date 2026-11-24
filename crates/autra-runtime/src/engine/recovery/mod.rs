@@ -45,6 +45,14 @@ impl LocalEngine {
             .journal
             .as_ref()
             .ok_or_else(|| RunError::Protocol("resume requires a journal".to_owned()))?;
+        let options = options;
+        if journal
+            .cancel_request(run_id)
+            .map_err(|error| RunError::Journal(error.to_string()))?
+            .is_some()
+        {
+            options.cancel.cancel();
+        }
         let state = journal
             .load_run(run_id)
             .map_err(|error| RunError::Journal(error.to_string()))?

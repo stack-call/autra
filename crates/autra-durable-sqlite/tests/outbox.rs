@@ -251,3 +251,59 @@ fn terminal_commits_use_the_expected_version() {
         "a stale terminal commit must not overwrite newer state"
     );
 }
+
+#[test]
+fn a_cancel_request_survives_reopen() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("cancel.db");
+    let run_id = RunId::new("run-cancel");
+
+    {
+        let journal = SqliteEffectJournal::open(&path).unwrap();
+        journal.request_cancel(&run_id, "user asked").unwrap();
+    }
+
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    assert_eq!(
+        journal.cancel_request(&run_id).unwrap().as_deref(),
+        Some("user asked")
+    );
+    journal.clear_cancel(&run_id).unwrap();
+    assert!(journal.cancel_request(&run_id).unwrap().is_none());
+}
+
+#[test]
+fn a_run_lease_survives_reopen_until_it_expires() {
+    use std::time::Duration;
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("run-lease.db");
+    let run_id = RunId::new("run-lease-reopen");
+
+    {
+        let journal = SqliteEffectJournal::open(&path).unwrap();
+        assert!(
+            journal
+                .claim_run(&run_id, "owner-1", Duration::from_secs(1))
+                .unwrap()
+        );
+    }
+
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    assert_eq!(
+        journal.run_lease(&run_id).unwrap().unwrap().owner_id,
+        "owner-1"
+    );
+    assert!(
+        !journal
+            .claim_run(&run_id, "owner-2", Duration::from_secs(1))
+            .unwrap()
+    );
+
+    std::thread::sleep(Duration::from_millis(2100));
+    assert!(
+        journal
+            .claim_run(&run_id, "owner-2", Duration::from_secs(1))
+            .unwrap()
+    );
+}
