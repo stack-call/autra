@@ -836,7 +836,7 @@ fn gc_command(args: &[String]) -> ExitCode {
     match journal.gc(older_than, flags.dry_run) {
         Ok(report) => {
             println!(
-                "runs={} events={} effects={} outbox={} approvals={} leases={} cancels={}{}",
+                "runs={} events={} effects={} outbox={} approvals={} leases={} cancels={} engine_snapshots={} engine_patches={}{}",
                 report.runs,
                 report.events,
                 report.effects,
@@ -844,6 +844,8 @@ fn gc_command(args: &[String]) -> ExitCode {
                 report.approvals,
                 report.leases,
                 report.cancels,
+                report.engine_snapshots,
+                report.engine_patches,
                 if report.dry_run { " (dry run)" } else { "" }
             );
             ExitCode::SUCCESS
