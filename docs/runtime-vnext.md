@@ -7,7 +7,7 @@
 >
 > **实现进展**：单机模块化骨架已落地。
 > `engine/coordinator/` 负责 Run 推进、TransitionCommitter、AuthorizationGate
-> 和 ResultCollector；`scheduler/` 提供 Model/Tool/Process 全局 FIFO Semaphore（加权公平与有界等待队列仍后续）；
+> 和 ResultCollector；`scheduler/` 提供 Model/Tool/Process 全局有界公平队列（按 Run 轮转）；
 > `engine/recovery/supervisor.rs` 提供带服务租约的 `RecoverySupervisor`；
 > `EffectExecutor` 保留。跨进程 Worker、PostgreSQL、Redis、AttemptId/Fencing
 > 和 SQLite 读写分离仍属于后续阶段。
@@ -59,7 +59,7 @@ RunHub / Metrics / Tracing（旁路）
 | TransitionCommitter | 已实现：`coordinator/transition.rs` |
 | AuthorizationGate | 已实现：`coordinator/authorization.rs` |
 | ResultCollector | 已实现：`coordinator/result.rs` 的事件队列 |
-| GlobalScheduler | 已实现本地版本：`scheduler/mod.rs`，Model/Tool/Process Semaphore |
+| GlobalScheduler | 已实现本地版本：`scheduler/mod.rs`，Model/Tool/Process 有界公平队列 |
 | EffectExecutor | 已实现：`engine/executor.rs` |
 | RecoverySupervisor | 已实现：`engine/recovery/supervisor.rs`，服务租约 + 周期扫描 |
 | Journal/Outbox | 已有，SQLite 单 Writer；cancel request、run/service lease、Attempt owner 元数据和 retention GC 已持久化；读写分离未实现 |
@@ -86,7 +86,7 @@ RunHub / Metrics / Tracing（旁路）
 
 | 缺口 | 影响 |
 |---|---|
-| Scheduler 只有 FIFO Semaphore | 有界等待队列、429 退避和加权公平尚未实现 |
+| Scheduler 的 429 协调和权重策略 | 当前按 Run 轮转 + 有界队列；供应商级退避仍在 provider |
 | `Attempt` 已有 `AttemptId` / worker / fencing 元数据 | 多进程接管所需的正式代际协议仍待实现 |
 | 取消意图没有独立的持久化记录 | 崩溃恢复只能看到未完成 Run，不能可靠区分用户取消与执行者失联 |
 | ResultCollector 目前只负责事件队列 | 跨恢复的去重、结果重放和全局排序尚未实现 |
@@ -180,8 +180,7 @@ Scheduler 回答：
 
 它还需要跨 Run 公平性，避免一个产生大量 Effect 的 Run 长期占满名额。
 
-**初期实现**：Tokio `Semaphore` + 有界队列 + 简单的加权公平/轮转即可，不需要 Redis。
-当前已落地 FIFO `Semaphore`；等待队列上限和加权公平仍未实现。
+**当前实现**：每个资源池是一个有界队列，按 Run 轮转授予 permit；等待者超过上限返回 `QueueFull`。429 退避仍在 provider 层，供应商级协调未实现。
 
 **关键细节**：不要先领取大量 Effect 再让它们在内存队列里等待。应先获得资源许可，再领取少量即将执行的 Effect；执行中若可能超过租约，必须续租。
 
@@ -571,9 +570,9 @@ Core 只认识通用状态和 Stepper；Harness 提供 ReActStepper，未来也�
 
 ### 第二轮：加入 GlobalScheduler（本地版本已完成）
 
-已实现 Model / Tool / Process 三类全局 `Semaphore`，并接入直接执行路径、
-outbox 派发、恢复与 reconcile。有界队列、429 退避、加权公平和 SQLite
-读写压测仍未完成。
+已实现 Model / Tool / Process 三类全局有界公平队列，并接入直接执行路径、
+outbox 派发、恢复与 reconcile。429 退避仍在 provider 层；SQLite 读写压测
+仍未完成。
 
 **验收**：同时启动 100 个 Run，严格遵守配置的模型/工具并发上限，不产生无界等待队列。
 

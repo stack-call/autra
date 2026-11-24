@@ -19,7 +19,7 @@ use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, OutboxDispatcher,
     await_with_cancel,
 };
-use crate::scheduler::ResourceKind;
+use crate::scheduler::{AcquireError, ResourceKind};
 
 use super::LocalEngine;
 use super::coordinator::emit_tool_result;
@@ -212,15 +212,21 @@ impl<'a> EffectExecutor<'a> {
                     }
                 }
                 None => {
-                    let Some(permit) = self
+                    let permit = match self
                         .engine
                         .scheduler
-                        .acquire(ResourceKind::Model, Some(cancel))
+                        .acquire(ResourceKind::Model, ctx.run_id, Some(cancel))
                         .await
-                    else {
-                        super::effect_mut(effects, effect_id)
-                            .set_status(EffectStatus::CancelledBeforeDispatch);
-                        return Ok(ModelStep::Cancelled);
+                    {
+                        Ok(permit) => permit,
+                        Err(AcquireError::Cancelled) => {
+                            super::effect_mut(effects, effect_id)
+                                .set_status(EffectStatus::CancelledBeforeDispatch);
+                            return Ok(ModelStep::Cancelled);
+                        }
+                        Err(AcquireError::QueueFull) => {
+                            return Err(RunError::Protocol("scheduler queue is full".to_owned()));
+                        }
                     };
                     super::effect_mut(effects, effect_id).set_status(EffectStatus::Dispatched);
                     let mut emit = move |text: String| delta(text);
@@ -428,10 +434,20 @@ impl<'a> EffectExecutor<'a> {
                     autra_execution::ToolResource::Process => ResourceKind::Process,
                     autra_execution::ToolResource::Tool => ResourceKind::Tool,
                 };
-                let Some(permit) = self.engine.scheduler.acquire(resource, Some(cancel)).await
-                else {
-                    cancelled = true;
-                    break;
+                let permit = match self
+                    .engine
+                    .scheduler
+                    .acquire(resource, ctx.run_id, Some(cancel))
+                    .await
+                {
+                    Ok(permit) => permit,
+                    Err(AcquireError::Cancelled) => {
+                        cancelled = true;
+                        break;
+                    }
+                    Err(AcquireError::QueueFull) => {
+                        return Err(RunError::Protocol("scheduler queue is full".to_owned()));
+                    }
                 };
                 ctx.effect_mut(&effect_id)
                     .set_status(EffectStatus::Dispatched);
@@ -468,9 +484,15 @@ impl<'a> EffectExecutor<'a> {
                         autra_execution::ToolResource::Process => ResourceKind::Process,
                         autra_execution::ToolResource::Tool => ResourceKind::Tool,
                     };
-                    let Some(permit) = scheduler.acquire(resource, Some(cancel)).await else {
-                        cancelled = true;
-                        break;
+                    let permit = match scheduler.acquire(resource, ctx.run_id, Some(cancel)).await {
+                        Ok(permit) => permit,
+                        Err(AcquireError::Cancelled) => {
+                            cancelled = true;
+                            break;
+                        }
+                        Err(AcquireError::QueueFull) => {
+                            return Err(RunError::Protocol("scheduler queue is full".to_owned()));
+                        }
                     };
                     let known_tool = self.engine.tools.get(&call.name).is_some();
                     ctx.effect_mut(effect_id)

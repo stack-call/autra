@@ -19,7 +19,7 @@ use autra_execution::{
 use futures_util::{FutureExt, StreamExt};
 
 use crate::journal::{EffectJournal, JournalError, OutboxEntry};
-use crate::scheduler::{GlobalScheduler, ResourceKind};
+use crate::scheduler::{AcquireError, GlobalScheduler, ResourceKind};
 
 /// Executes accepted effect intents. A custom Dispatcher can wrap a provider,
 /// a sandbox or a remote worker.
@@ -537,10 +537,10 @@ async fn dispatch_entry(
     };
     let permit = match options.scheduler.clone() {
         Some(scheduler) => {
-            let acquire = scheduler.acquire(resource, options.cancel);
+            let acquire = scheduler.acquire(resource, run_id, options.cancel);
             match await_with_lease(journal, &entry.effect_id, claim_id, lease, acquire).await {
-                Ok(Some(permit)) => Some(permit),
-                Ok(None) => {
+                Ok(Ok(permit)) => Some(permit),
+                Ok(Err(AcquireError::Cancelled)) => {
                     return finish_entry(
                         journal,
                         run_id,
@@ -549,6 +549,9 @@ async fn dispatch_entry(
                         known_tool,
                         claim_id,
                     );
+                }
+                Ok(Err(AcquireError::QueueFull)) => {
+                    return Err(JournalError::new("scheduler queue is full"));
                 }
                 Err(error) => return Err(error),
             }
