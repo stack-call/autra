@@ -409,6 +409,24 @@ EffectAttempt -> Outcome stored (effect_id + attempt_id)
 
 当前已有 `commit_transition` 和 event seq 唯一约束，可以在此基础上扩展，不需要重写。
 
+### 6.4 Engine state 的增量持久化
+
+ReAct 的完整 history 目前在 `engine_state` 里，每步 transition 会写全量
+state JSON。目标设计是把它拆成：
+
+```text
+最新 snapshot + 连续的 JSON Patch
+```
+
+- `TransitionProposal` 增加可选 `engine_delta`
+- Stepper 不提供 delta 时回退全量 snapshot
+- SQLite 使用 `run_engine_snapshots` 和 `run_engine_patches`
+- 每 32 步或 patch 超过 64 KiB 时写新 snapshot
+- `load_run` 从最新 snapshot 加 patch 重建
+- 无旧库迁移；schema v1 直接拒绝
+
+详见 [ADR-0059](adr/0059-engine-state-snapshots-and-patches.md)。
+
 ## 7. 多 Worker 路线
 
 ### 阶段 1：多个 Run 并发，Executor 在同一进程
