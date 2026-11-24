@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -17,6 +17,25 @@ pub use autra_execution::tool::{
 /// Serializes workspace writes inside one process. Cross-process writers still
 /// need the durable journal lease; this only removes in-process races.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(feature = "process")]
+async fn run_blocking<F, T>(task: F) -> Result<T, ToolError>
+where
+    F: FnOnce() -> Result<T, ToolError> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|error| ToolError::new(format!("blocking task failed: {error}")))?
+}
+
+#[cfg(not(feature = "process"))]
+async fn run_blocking<F, T>(task: F) -> Result<T, ToolError>
+where
+    F: FnOnce() -> Result<T, ToolError>,
+{
+    task()
+}
 
 pub struct EchoTool;
 
@@ -592,7 +611,10 @@ impl Tool for WriteFileTool {
                 "content exceeds {WRITE_FILE_MAX_BYTES} bytes"
             )));
         }
-        self.workspace.write_atomic(&args.path, &args.content)?;
+        let workspace = self.workspace.clone();
+        let path = args.path.clone();
+        let content = args.content.clone();
+        run_blocking(move || workspace.write_atomic(&path, &content)).await?;
         Ok(format!(
             "wrote {} bytes to {}",
             args.content.len(),
@@ -619,7 +641,7 @@ impl SearchTextTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct SearchTextArgs {
     query: String,
     #[serde(default = "default_path")]
@@ -664,87 +686,97 @@ impl Tool for SearchTextTool {
             return Err(ToolError::new("search query must not be empty"));
         }
         let start = self.workspace.resolve(&args.path)?;
-        let needle = if args.case_sensitive {
-            args.query.clone()
-        } else {
-            args.query.to_lowercase()
-        };
-        let limit = args.max_results.clamp(1, SEARCH_MAX_RESULTS);
-        let mut matches = Vec::new();
-        let mut files_read = 0_usize;
-        let mut truncated = false;
-        let mut stack = vec![start];
-
-        'walk: while let Some(path) = stack.pop() {
-            let metadata = match std::fs::symlink_metadata(&path) {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
-            };
-            if metadata.file_type().is_symlink() {
-                continue;
-            }
-            if metadata.is_dir() {
-                let entries = match std::fs::read_dir(&path) {
-                    Ok(entries) => entries,
-                    Err(_) => continue,
-                };
-                for entry in entries.flatten() {
-                    let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if is_dir && SEARCH_SKIP_DIRS.contains(&name.as_ref()) {
-                        continue;
-                    }
-                    stack.push(entry.path());
-                }
-                continue;
-            }
-            if !metadata.is_file() || metadata.len() > SEARCH_MAX_FILE_BYTES {
-                continue;
-            }
-            files_read += 1;
-            if files_read > SEARCH_MAX_FILES {
-                truncated = true;
-                break;
-            }
-            let bytes = match std::fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(_) => continue,
-            };
-            let Ok(text) = std::str::from_utf8(&bytes) else {
-                continue;
-            };
-            let relative = path.strip_prefix(self.workspace.root()).unwrap_or(&path);
-            for (index, line) in text.lines().enumerate() {
-                let matched = if args.case_sensitive {
-                    line.contains(&needle)
-                } else {
-                    line.to_lowercase().contains(&needle)
-                };
-                if matched {
-                    matches.push(format!(
-                        "{}:{}: {}",
-                        relative.display(),
-                        index + 1,
-                        truncate_line(line)
-                    ));
-                    if matches.len() >= limit {
-                        truncated = true;
-                        break 'walk;
-                    }
-                }
-            }
-        }
-
-        if matches.is_empty() {
-            return Ok(format!("no matches for `{}`", args.query));
-        }
-        let mut output = matches.join("\n");
-        if truncated {
-            output.push_str(&format!("\n[stopped at {limit} matches]"));
-        }
-        Ok(output)
+        let workspace = self.workspace.clone();
+        let search = args.clone();
+        return run_blocking(move || search_text_in_workspace(&workspace, &search, start)).await;
     }
+}
+
+fn search_text_in_workspace(
+    workspace: &LocalWorkspace,
+    args: &SearchTextArgs,
+    start: PathBuf,
+) -> Result<String, ToolError> {
+    let needle = if args.case_sensitive {
+        args.query.clone()
+    } else {
+        args.query.to_lowercase()
+    };
+    let limit = args.max_results.clamp(1, SEARCH_MAX_RESULTS);
+    let mut matches = Vec::new();
+    let mut files_read = 0_usize;
+    let mut truncated = false;
+    let mut stack = vec![start];
+
+    'walk: while let Some(path) = stack.pop() {
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            let entries = match std::fs::read_dir(&path) {
+                Ok(entries) => entries,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false);
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if is_dir && SEARCH_SKIP_DIRS.contains(&name.as_ref()) {
+                    continue;
+                }
+                stack.push(entry.path());
+            }
+            continue;
+        }
+        if !metadata.is_file() || metadata.len() > SEARCH_MAX_FILE_BYTES {
+            continue;
+        }
+        files_read += 1;
+        if files_read > SEARCH_MAX_FILES {
+            truncated = true;
+            break;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        let relative = path.strip_prefix(workspace.root()).unwrap_or(&path);
+        for (index, line) in text.lines().enumerate() {
+            let matched = if args.case_sensitive {
+                line.contains(&needle)
+            } else {
+                line.to_lowercase().contains(&needle)
+            };
+            if matched {
+                matches.push(format!(
+                    "{}:{}: {}",
+                    relative.display(),
+                    index + 1,
+                    truncate_line(line)
+                ));
+                if matches.len() >= limit {
+                    truncated = true;
+                    break 'walk;
+                }
+            }
+        }
+    }
+
+    if matches.is_empty() {
+        return Ok(format!("no matches for `{}`", args.query));
+    }
+    let mut output = matches.join("\n");
+    if truncated {
+        output.push_str(&format!("\n[stopped at {limit} matches]"));
+    }
+    Ok(output)
 }
 
 const PREVIEW_MAX_BYTES: usize = 4 * 1024;
@@ -888,8 +920,14 @@ impl Tool for EditFileTool {
         let args: EditFileArgs = serde_json::from_str(arguments)
             .map_err(|error| invalid_arguments("edit_file", error))?;
         let (old, new, count) = self.replacement(&args)?;
-        self.workspace
-            .write_atomic_if_unchanged(&args.path, &old, &new)?;
+        let workspace = self.workspace.clone();
+        let path = args.path.clone();
+        let old_for_write = old.clone();
+        let new_for_write = new.clone();
+        run_blocking(move || {
+            workspace.write_atomic_if_unchanged(&path, &old_for_write, &new_for_write)
+        })
+        .await?;
         Ok(format!(
             "replaced {count} occurrence(s) in {}\n{}",
             args.path,

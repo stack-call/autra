@@ -460,11 +460,7 @@ async fn dispatch_entry(
     claim_id: &str,
     lease: Duration,
 ) -> Result<DispatchResult, JournalError> {
-    let mut effects = journal.load(run_id)?;
-    let Some(record) = effects
-        .iter_mut()
-        .find(|record| record.id == entry.effect_id)
-    else {
+    let Some(mut record) = journal.load_effect(run_id, &entry.effect_id)? else {
         let _ = journal.release_outbox(&entry.effect_id, claim_id);
         return Err(JournalError::new(format!(
             "effect record `{}` not found",
@@ -490,8 +486,8 @@ async fn dispatch_entry(
                 None,
                 Some("the effect was in flight when its claim lease ended".to_owned()),
             );
-            stamp_attempt(record, claim_id, entry.attempts);
-            journal.record_claimed(run_id, record, claim_id)?;
+            stamp_attempt(&mut record, claim_id, entry.attempts);
+            journal.record_claimed(run_id, &record, claim_id)?;
             journal.complete_outbox(&entry.effect_id, claim_id)?;
             return Ok(DispatchResult {
                 effect_id: entry.effect_id.clone(),
@@ -615,11 +611,7 @@ fn mark_dispatched(
     entry: &OutboxEntry,
     claim_id: &str,
 ) -> Result<(), JournalError> {
-    let mut effects = journal.load(run_id)?;
-    let Some(record) = effects
-        .iter_mut()
-        .find(|record| record.id == entry.effect_id)
-    else {
+    let Some(mut record) = journal.load_effect(run_id, &entry.effect_id)? else {
         let _ = journal.release_outbox(&entry.effect_id, claim_id);
         return Err(JournalError::new(format!(
             "effect record `{}` not found",
@@ -627,7 +619,7 @@ fn mark_dispatched(
         )));
     };
     record.set_status(EffectStatus::Dispatched);
-    if let Err(error) = journal.record_claimed(run_id, record, claim_id) {
+    if let Err(error) = journal.record_claimed(run_id, &record, claim_id) {
         if !error.is_claim_lost() {
             let _ = journal.release_outbox(&entry.effect_id, claim_id);
         }
@@ -644,20 +636,16 @@ fn finish_entry(
     known_tool: bool,
     claim_id: &str,
 ) -> Result<DispatchResult, JournalError> {
-    let mut effects = journal.load(run_id)?;
-    let Some(record) = effects
-        .iter_mut()
-        .find(|record| record.id == entry.effect_id)
-    else {
+    let Some(mut record) = journal.load_effect(run_id, &entry.effect_id)? else {
         let _ = journal.release_outbox(&entry.effect_id, claim_id);
         return Err(JournalError::new(format!(
             "effect record `{}` not found",
             entry.effect_id
         )));
     };
-    apply_outcome(record, &outcome, known_tool);
-    stamp_attempt(record, claim_id, entry.attempts);
-    if let Err(error) = journal.record_claimed(run_id, record, claim_id) {
+    apply_outcome(&mut record, &outcome, known_tool);
+    stamp_attempt(&mut record, claim_id, entry.attempts);
+    if let Err(error) = journal.record_claimed(run_id, &record, claim_id) {
         if !error.is_claim_lost() {
             let _ = journal.release_outbox(&entry.effect_id, claim_id);
         }

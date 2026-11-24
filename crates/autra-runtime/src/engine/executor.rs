@@ -192,7 +192,7 @@ impl<'a> EffectExecutor<'a> {
                     let results = await_with_deltas(dispatch, &mut deltas, on_event)
                         .await
                         .map_err(|error| RunError::Journal(error.to_string()))?;
-                    super::sync_effects(journal.as_ref(), run_id, effects)?;
+                    super::sync_effect(journal.as_ref(), run_id, effect_id, effects)?;
                     let result = results
                         .into_iter()
                         .find(|result| result.effect_id == *effect_id)
@@ -590,13 +590,10 @@ impl<'a> EffectExecutor<'a> {
                 }
                 DispatchOutcome::Cancelled => cancelled = true,
                 DispatchOutcome::AlreadyResolved | DispatchOutcome::Interrupted => {
-                    let Ok(records) = journal.load(&run_id) else {
+                    let Ok(Some(record)) = journal.load_effect(&run_id, &result.effect_id) else {
                         return;
                     };
-                    let Some(record) = records.iter().find(|record| record.id == result.effect_id)
-                    else {
-                        return;
-                    };
+                    let record = &record;
                     let Some(outcome) = super::tool_outcome_from_record(record) else {
                         return;
                     };
@@ -633,7 +630,9 @@ impl<'a> EffectExecutor<'a> {
             .await
             .map_err(|error| RunError::Journal(error.to_string()))?;
         }
-        super::sync_effects(journal.journal(), &run_id, ctx.effects)?;
+        for effect_id in index_by_effect.keys() {
+            super::sync_effect(journal.journal(), &run_id, effect_id, ctx.effects)?;
+        }
         for (_, effect_id, _) in &dispatched {
             ctx.emit_resolved(effect_id);
         }

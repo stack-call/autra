@@ -274,18 +274,20 @@ fn tool_outcome_from_record(record: &EffectRecord) -> Option<ToolOutcome> {
     })
 }
 
-fn sync_effects(
+fn sync_effect(
     journal: &dyn EffectJournal,
     run_id: &RunId,
+    effect_id: &EffectId,
     effects: &mut [EffectRecord],
 ) -> Result<(), RunError> {
-    let stored = journal
-        .load(run_id)
-        .map_err(|error| RunError::Journal(error.to_string()))?;
-    for record in effects.iter_mut() {
-        if let Some(updated) = stored.iter().find(|stored| stored.id == record.id) {
-            *record = updated.clone();
-        }
+    let Some(updated) = journal
+        .load_effect(run_id, effect_id)
+        .map_err(|error| RunError::Journal(error.to_string()))?
+    else {
+        return Ok(());
+    };
+    if let Some(record) = effects.iter_mut().find(|record| record.id == *effect_id) {
+        *record = updated;
     }
     Ok(())
 }

@@ -174,6 +174,12 @@ Tests observe public behaviour, not private helpers.
     into larger `ModelDelta` events while preserving order and arriving before
     `ModelResult`; a Run with no hub subscribers does not clone events into a
     broadcast channel.
+48. **Effect-level journal access** (`autra-execution`, `autra-durable-sqlite`,
+    `autra-runtime`): dispatch loads and syncs only the affected Effect rows
+    instead of materializing the whole Run ledger.
+49. **Blocking file work** (`autra-harness`): write/edit/search run on Tokio's
+    blocking pool when the process feature is enabled, with a synchronous
+    fallback for library builds without it.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

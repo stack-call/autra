@@ -444,6 +444,28 @@ impl EffectJournal for SqliteEffectJournal {
         Ok(effects)
     }
 
+    fn load_effect(
+        &self,
+        run_id: &RunId,
+        effect_id: &EffectId,
+    ) -> Result<Option<EffectRecord>, JournalError> {
+        let connection = self.reader()?;
+        let payload: Option<String> = connection
+            .query_row(
+                "SELECT payload_json FROM effects WHERE effect_id = ?1 AND run_id = ?2",
+                params![effect_id.as_str(), run_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| JournalError::new(format!("cannot read effect: {error}")))?;
+        match payload {
+            Some(payload) => serde_json::from_str(&payload)
+                .map(Some)
+                .map_err(|error| JournalError::new(format!("cannot deserialize effect: {error}"))),
+            None => Ok(None),
+        }
+    }
+
     fn commit_event(
         &self,
         run_id: &RunId,

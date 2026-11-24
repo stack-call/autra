@@ -370,3 +370,22 @@ fn readers_are_separate_connections() {
     assert_eq!(health.readers, 3);
     assert!(health.write_queue_capacity >= health.write_queue_active);
 }
+
+#[test]
+fn effects_can_be_loaded_individually() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("effect-load.db");
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    let run_id = RunId::new("run-effect-load");
+    let first = authorized_effect();
+    let mut second = authorized_effect();
+    second.set_status(EffectStatus::Committed);
+    journal.record(&run_id, &first).unwrap();
+    journal.record(&run_id, &second).unwrap();
+
+    let loaded = journal.load_effect(&run_id, &first.id).unwrap().unwrap();
+    assert_eq!(loaded.id, first.id);
+    let subset = journal.load_effects(&run_id, &[second.id.clone()]).unwrap();
+    assert_eq!(subset.len(), 1);
+    assert_eq!(subset[0].id, second.id);
+}

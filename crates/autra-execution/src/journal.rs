@@ -58,6 +58,31 @@ pub trait EffectJournal: Send + Sync {
     fn record(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError>;
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError>;
 
+    /// Load one Effect without materializing the whole Run ledger.
+    fn load_effect(
+        &self,
+        run_id: &RunId,
+        effect_id: &EffectId,
+    ) -> Result<Option<EffectRecord>, JournalError> {
+        Ok(self
+            .load(run_id)?
+            .into_iter()
+            .find(|record| &record.id == effect_id))
+    }
+
+    /// Load only the requested Effects.
+    fn load_effects(
+        &self,
+        run_id: &RunId,
+        effect_ids: &[EffectId],
+    ) -> Result<Vec<EffectRecord>, JournalError> {
+        let all = self.load(run_id)?;
+        Ok(all
+            .into_iter()
+            .filter(|record| effect_ids.iter().any(|id| id == &record.id))
+            .collect())
+    }
+
     /// Write an effect only while `claim_id` still owns its outbox row.
     /// The default refuses the write: a journal that cannot fence must not
     /// silently allow a stale owner to record an outcome.

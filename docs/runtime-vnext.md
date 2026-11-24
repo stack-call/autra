@@ -62,7 +62,7 @@ RunHub / Metrics / Tracing（旁路）
 | GlobalScheduler | 已实现本地版本：`scheduler/mod.rs`，Model/Tool/Process 有界公平队列 |
 | EffectExecutor | 已实现：`engine/executor.rs` |
 | RecoverySupervisor | 已实现：`engine/recovery/supervisor.rs`，服务租约 + 周期扫描 |
-| Journal/Outbox | 已有，SQLite 单 Writer + 有界写队列 + 只读 Reader Pool；cancel/lease/Attempt 元数据、retention GC 和 JSON health/metrics 已持久化 |
+| Journal/Outbox | 已有，SQLite 单 Writer + 有界写队列 + 只读 Reader Pool；cancel/lease/Attempt 元数据、retention GC、JSON health/metrics、Effect ID 查询已持久化 |
 | 多进程 Worker / PostgreSQL / Redis | 未实现，属于阶段 3/4 |
 
 已经在本地单机模式中具备、并且应当保留的：
@@ -73,7 +73,7 @@ RunHub / Metrics / Tracing（旁路）
 | ReAct 行为 | `autra-harness` 的 `ReActStepper`，历史存在 `engine_state` |
 | 原子提交 | `commit_transition`：state + event + effects + Authorized outbox 同事务，`state_version` CAS |
 | 终态提交 | `commit_terminal`，带版本 CAS |
-| Effect 账本 | `EffectRecord`、`EffectAttempt`、状态机、结果与错误 |
+| Effect 账本 | `EffectRecord`、`EffectAttempt`、状态机；dispatch 按 Effect ID 读取/回写，不再整 Run 加载 |
 | 执行边界 | `EffectExecutor`、`Dispatcher`、`OutboxDispatcher` |
 | 全局调度 | `GlobalScheduler` 的 Model/Tool/Process FIFO Semaphore |
 | 审批 | Policy、ApprovalRequest/Record、digest、revision、TTL、持久化复用 |
