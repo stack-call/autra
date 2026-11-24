@@ -29,6 +29,11 @@ pub trait ModelProvider: Send + Sync {
         ModelCapabilities::default()
     }
 
+    /// Stable identity used by recovery profiles. It must not include secrets.
+    fn profile_id(&self) -> Option<String> {
+        None
+    }
+
     fn protocol_version(&self) -> u32 {
         MODEL_PROTOCOL_VERSION
     }

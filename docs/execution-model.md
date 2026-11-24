@@ -49,8 +49,9 @@ reconciliation. See §6.6 of the design spec.
 Core owns run id, session/turn references, phase, state version, budget, final
 answer, last error and an optional `agent_profile` hash. `engine_state {
 engine_id, schema_revision, data }` is opaque to Core. The profile lets resume
-refuse a Run created with different instructions, tools or policy; the model
-provider is not part of it because `ModelProvider` has no stable identity.
+refuse a Run created with different instructions, tools, policy or model
+provider. A provider supplies a secret-free `profile_id`; custom dispatchers
+use the `custom-dispatcher` marker.
 
 ReAct keeps its `history` and `pending_tool_calls` inside `engine_state` with
 `engine_id = "react"` and schema revision 1. `AgentStepper::initialize` seeds

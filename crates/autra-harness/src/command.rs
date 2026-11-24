@@ -30,6 +30,70 @@ pub(crate) struct ProcessOutput {
     pub stderr: String,
 }
 
+/// Windows Job Object keeps the whole child tree owned by the agent. Closing
+/// the job kills any process that outlived the direct child.
+#[cfg(windows)]
+struct ProcessJob(usize);
+
+#[cfg(windows)]
+impl ProcessJob {
+    fn assign(child: &tokio::process::Child) -> Option<Self> {
+        use std::ffi::c_void;
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        };
+
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            let Some(process) = child.raw_handle() else {
+                CloseHandle(job);
+                return None;
+            };
+            let assigned = AssignProcessToJobObject(job, process as HANDLE);
+            if configured == 0 || assigned == 0 {
+                CloseHandle(job);
+                return None;
+            }
+            Some(Self(job as usize))
+        }
+    }
+
+    fn terminate(&self) {
+        use windows_sys::Win32::Foundation::HANDLE;
+        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+        unsafe {
+            TerminateJobObject(self.0 as HANDLE, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        unsafe {
+            CloseHandle(self.0 as HANDLE);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+struct ProcessJob;
+
 /// Runs a program in the workspace root with a timeout and captured output.
 pub(crate) async fn run_program(
     root: &Path,
@@ -52,6 +116,10 @@ pub(crate) async fn run_program(
     let mut child = command
         .spawn()
         .map_err(|error| ToolError::new(format!("cannot start `{program}`: {error}")))?;
+    #[cfg(windows)]
+    let job = ProcessJob::assign(&child);
+    #[cfg(not(windows))]
+    let job: Option<ProcessJob> = None;
     let stdout = child
         .stdout
         .take()
@@ -91,20 +159,20 @@ pub(crate) async fn run_program(
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
         }),
         Completion::Done(Err(error)) => {
-            kill_tree(&mut child).await;
+            kill_tree(&mut child, job.as_ref()).await;
             Err(ToolError::new(format!(
                 "`{program}` failed to run: {error}"
             )))
         }
         Completion::TimedOut => {
-            kill_tree(&mut child).await;
+            kill_tree(&mut child, job.as_ref()).await;
             Err(ToolError::outcome_unknown(format!(
                 "`{program}` timed out after {}s; it may still have changed the workspace",
                 timeout.as_secs()
             )))
         }
         Completion::Cancelled => {
-            kill_tree(&mut child).await;
+            kill_tree(&mut child, job.as_ref()).await;
             Err(ToolError::outcome_unknown(format!(
                 "`{program}` was cancelled; it may still have changed the workspace"
             )))
@@ -183,7 +251,13 @@ fn is_sensitive_key(key: &std::ffi::OsStr) -> bool {
         || key.ends_with("_AUTH")
 }
 
-async fn kill_tree(child: &mut tokio::process::Child) {
+async fn kill_tree(child: &mut tokio::process::Child, job: Option<&ProcessJob>) {
+    #[cfg(windows)]
+    {
+        if let Some(job) = job {
+            job.terminate();
+        }
+    }
     #[cfg(unix)]
     {
         if let Some(pid) = child.id() {

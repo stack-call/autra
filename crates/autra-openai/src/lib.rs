@@ -82,6 +82,14 @@ impl ModelProvider for OpenAiCompatibleModel {
         }
     }
 
+    fn profile_id(&self) -> Option<String> {
+        Some(format!(
+            "openai:{}@{}",
+            self.config.model,
+            self.config.base_url.trim_end_matches('/')
+        ))
+    }
+
     async fn complete(&self, request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
         let body = mapping::build_request(&self.config.model, request, false)?;
         let url = format!(

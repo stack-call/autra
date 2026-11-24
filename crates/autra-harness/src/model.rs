@@ -11,6 +11,10 @@ pub struct EchoModel;
 
 #[async_trait]
 impl ModelProvider for EchoModel {
+    fn profile_id(&self) -> Option<String> {
+        Some("local-echo".to_owned())
+    }
+
     async fn complete(&self, request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
         let input = request
             .messages

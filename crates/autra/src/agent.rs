@@ -453,8 +453,17 @@ Maintain a short plan with `update_plan` and keep it current."
         } else {
             (self.instructions, None)
         };
+        let model_id = if self.dispatcher.is_some() {
+            "custom-dispatcher".to_owned()
+        } else {
+            self.model
+                .as_ref()
+                .and_then(|model| model.profile_id())
+                .unwrap_or_default()
+        };
         let agent_profile = agent_profile(ProfileInput {
             name: &self.name,
+            model_id: &model_id,
             instructions: instructions.as_deref(),
             tools: &tools,
             skills: &self.skills,
@@ -520,6 +529,7 @@ Maintain a short plan with `update_plan` and keep it current."
 /// the same provider and credentials.
 struct ProfileInput<'a> {
     name: &'a str,
+    model_id: &'a str,
     instructions: Option<&'a str>,
     tools: &'a ToolRegistry,
     skills: &'a SkillRegistry,
@@ -534,7 +544,7 @@ fn agent_profile(input: ProfileInput<'_>) -> String {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
-    for part in [input.name, input.instructions.unwrap_or("")] {
+    for part in [input.name, input.model_id, input.instructions.unwrap_or("")] {
         hasher.update(part.as_bytes());
         hasher.update([0]);
     }
