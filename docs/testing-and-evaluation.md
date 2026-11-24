@@ -160,6 +160,9 @@ Tests observe public behaviour, not private helpers.
 43. **Doctor** (`autra-durable-sqlite`, `autra-cli`): journal health reports
     live/expired Run leases and persisted cancel requests; `doctor` checks
     workspace writability and validates its journal flag.
+44. **Crash boundaries** (`autra`): a dispatched non-idempotent Effect is not
+    retried after restart, and a committed Effect left in the outbox is cleaned
+    up without executing the tool again.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at
