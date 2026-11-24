@@ -45,6 +45,7 @@ async fn main() -> ExitCode {
         Some("cancel") => cancel_command(&args[1..]),
         Some("gc") => gc_command(&args[1..]),
         Some("doctor") => doctor_command(&args[1..]),
+        Some("metrics") => metrics_command(&args[1..]),
         Some("approve") => approval_command(&args[1..], ApprovalDecision::Approved),
         Some("reject") => approval_command(&args[1..], ApprovalDecision::Rejected),
         Some("demo") => demo_command().await,
@@ -689,6 +690,44 @@ fn approval_command(args: &[String], decision: ApprovalDecision) -> ExitCode {
     }
 }
 
+fn metrics_command(args: &[String]) -> ExitCode {
+    let flags = match parse_flags(args, "metrics") {
+        Ok(flags) => flags,
+        Err(()) => return ExitCode::FAILURE,
+    };
+    if !flags.rest.is_empty() {
+        eprintln!("usage: autractl metrics --journal <path>");
+        return ExitCode::FAILURE;
+    }
+    let Some(path) = flags.journal.as_ref() else {
+        eprintln!("metrics requires --journal <path>");
+        return ExitCode::FAILURE;
+    };
+    let health = match SqliteEffectJournal::open(path) {
+        Ok(journal) => match journal.health(autra::now_unix_ms()) {
+            Ok(health) => health,
+            Err(error) => {
+                eprintln!("metrics failed: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match serde_json::to_string_pretty(&health) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("cannot encode metrics: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn doctor_command(args: &[String]) -> ExitCode {
     let flags = match parse_flags(args, "doctor") {
         Ok(flags) => flags,
@@ -728,12 +767,18 @@ fn doctor_command(args: &[String]) -> ExitCode {
 
     println!("journal: {path} ({size} bytes)");
     println!("schema: {}", health.schema_version);
-    println!("runs: {}", health.runs);
+    println!(
+        "runs: {} (completed {} failed {} cancelled {})",
+        health.runs, health.runs_completed, health.runs_failed, health.runs_cancelled
+    );
     println!(
         "run leases: {} live / {} expired",
         health.live_run_leases, health.expired_run_leases
     );
-    println!("effects: {}", health.effects);
+    println!(
+        "effects: {} (committed {} failed {} unknown {})",
+        health.effects, health.effects_committed, health.effects_failed, health.effects_unknown
+    );
     println!("pending outbox: {}", health.pending_outbox);
     println!("cancel requests: {}", health.cancel_requests);
     println!(
@@ -1503,6 +1548,7 @@ USAGE:
   autractl cancel --journal <path> [--reason <text>] <run-id>
   autractl gc --journal <path> [--older-than-days <n>] [--dry-run]
   autractl doctor --journal <path> [--workspace <dir>]
+  autractl metrics --journal <path>
   autractl approve|reject --journal <path> [--policy <path>] [--actor <name>] <run-id> <effect-id>
   autractl demo
   autractl tui [--workspace <dir>] [--model <name>] [--local] [--journal <path>] [--session <id>] [--policy <path>] [--actor <name>] [--yes] [--read-only]

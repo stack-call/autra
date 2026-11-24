@@ -62,7 +62,7 @@ RunHub / Metrics / Tracing（旁路）
 | GlobalScheduler | 已实现本地版本：`scheduler/mod.rs`，Model/Tool/Process 有界公平队列 |
 | EffectExecutor | 已实现：`engine/executor.rs` |
 | RecoverySupervisor | 已实现：`engine/recovery/supervisor.rs`，服务租约 + 周期扫描 |
-| Journal/Outbox | 已有，SQLite 单 Writer + 有界写队列 + 只读 Reader Pool；cancel/lease/Attempt 元数据和 retention GC 已持久化 |
+| Journal/Outbox | 已有，SQLite 单 Writer + 有界写队列 + 只读 Reader Pool；cancel/lease/Attempt 元数据、retention GC 和 JSON health/metrics 已持久化 |
 | 多进程 Worker / PostgreSQL / Redis | 未实现，属于阶段 3/4 |
 
 已经在本地单机模式中具备、并且应当保留的：

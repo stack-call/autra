@@ -168,6 +168,8 @@ Tests observe public behaviour, not private helpers.
 45. **SQLite read/write split** (`autra-durable-sqlite`): reads use a Reader
     Pool, writes use one gated writer with a bounded admission queue, the write
     gate rejects overflow, and health reports queue depth and reader count.
+46. **Metrics** (`autra-durable-sqlite`, `autra-cli`): health includes run and
+    Effect status counts; `metrics` prints the health document as JSON.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

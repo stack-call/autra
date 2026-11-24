@@ -752,3 +752,22 @@ fn version_is_available() {
     assert!(output.status.success());
     assert!(stdout(&output).starts_with("autractl "));
 }
+
+#[test]
+fn metrics_returns_json_health() {
+    let output = autractl().args(["metrics"]).output().unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("requires --journal"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("metrics.db");
+    let output = autractl()
+        .args(["metrics", "--journal", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(value["runs"], 0);
+    assert_eq!(value["schema_version"], 1);
+    assert!(value["readers"].as_u64().unwrap_or(0) >= 1);
+}

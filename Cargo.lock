@@ -99,6 +99,7 @@ dependencies = [
  "autra-execution",
  "autra-harness",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
