@@ -25,10 +25,7 @@ impl SqliteEffectJournal {
     /// A live Run lease is never removed, even if the timestamp is old.
     pub fn gc(&self, older_than: Duration, dry_run: bool) -> Result<GcReport, JournalError> {
         let modifier = format!("-{} seconds", older_than.as_secs());
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let mut connection = self.writer()?;
         let transaction = connection
             .transaction()
             .map_err(|error| JournalError::new(format!("cannot begin gc: {error}")))?;

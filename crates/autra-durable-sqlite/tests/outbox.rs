@@ -355,3 +355,18 @@ fn health_reports_live_leases_and_cancel_requests() {
     assert_eq!(health.expired_run_leases, 0);
     assert_eq!(health.cancel_requests, 1);
 }
+
+#[test]
+fn readers_are_separate_connections() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("readers.db");
+    let journal = SqliteEffectJournal::open_with_readers(&path, 3).unwrap();
+    let run_id = RunId::new("run-readers");
+    let state = AgentState::new(run_id.clone(), BudgetSnapshot::new(2, 2));
+    journal.save_run(&state).unwrap();
+
+    assert_eq!(journal.load_run(&run_id).unwrap().as_ref(), Some(&state));
+    let health = journal.health(autra_execution::now_unix_ms()).unwrap();
+    assert_eq!(health.readers, 3);
+    assert!(health.write_queue_capacity >= health.write_queue_active);
+}

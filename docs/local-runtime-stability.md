@@ -72,7 +72,7 @@
 | Run ownership | 已有：`run_leases` + 心跳；resume/reconcile 先 claim；`AttemptId`/worker/fencing 元数据 | 跨进程代际协议仍待故障注入验证 |
 | 取消 | 已有：持久化 `CancelRequest`、`autractl cancel`、lease 轮询与恢复前检查 | 取消原因/截止时间语义仍可继续细化 |
 | 恢复 daemon | 已有：`autractl daemon`；服务租约单实例、跳过活跃 owner、校验 Agent profile（含 provider/model） | 跨机器配置一致性仍待设计 |
-| Journal | 已有：WAL、`busy_timeout=5s`、`synchronous=NORMAL`、schema version、cancel/lease 表、`autractl gc`、`doctor` 健康检查 | SQLite 写者仍是单连接 |
+| Journal | 已有：WAL、`busy_timeout=5s`、`synchronous=NORMAL`、schema version、cancel/lease 表、`autractl gc`、`doctor`、单 Writer + 有界写队列 + Reader Pool | 容量与锁竞争仍需压测 |
 | 文件写入 | 已有：同目录 temp + fsync + rename、拒绝 symlink、pre-image 校验、进程内写锁 + OS 文件锁 | Windows Job Object/资源上限仍未实现 |
 | 命令执行 | 已有：环境变量脱敏、输出上限、超时、取消、Unix 进程组、Windows `taskkill /T` | Windows Job Object 与资源限制仍未实现 |
 | 审批 | 已有：参数 digest、policy revision、TTL、actor、持久化复用 | actor 未验证；审批绑定的是文本而非结构化命令 |

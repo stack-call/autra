@@ -2,8 +2,10 @@
 //! accepted events and the effect outbox; resume and reconciliation are future
 //! work.
 
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EffectStatus, RunId};
@@ -20,7 +22,7 @@ pub use health::{JournalHealth, ServiceLeaseInfo};
 
 pub use session::SqliteSessionStore;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 /// Version written to `PRAGMA user_version`. Future schema changes must bump
 /// it and add an explicit migration step.
@@ -50,12 +52,72 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), String
     Ok(())
 }
 
+/// Bounded admission for the single writer. A full queue fails fast instead of
+/// growing an unbounded set of waiting writers.
+struct WriteGate {
+    active: AtomicUsize,
+    capacity: usize,
+}
+
+impl WriteGate {
+    fn enter(&self) -> Result<GateGuard<'_>, JournalError> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        if active > self.capacity {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            return Err(JournalError::new(
+                "journal write queue is full; retry later",
+            ));
+        }
+        Ok(GateGuard { gate: self })
+    }
+}
+
+struct GateGuard<'a> {
+    gate: &'a WriteGate,
+}
+
+impl Drop for GateGuard<'_> {
+    fn drop(&mut self) {
+        self.gate.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct WriteGuard<'a> {
+    connection: MutexGuard<'a, Connection>,
+    _gate: GateGuard<'a>,
+}
+
+impl Deref for WriteGuard<'_> {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
+impl DerefMut for WriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.connection
+    }
+}
+
 pub struct SqliteEffectJournal {
     connection: Arc<Mutex<Connection>>,
+    readers: Arc<Vec<Mutex<Connection>>>,
+    next_reader: AtomicUsize,
+    write_gate: WriteGate,
 }
 
 impl SqliteEffectJournal {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, JournalError> {
+        Self::open_with_readers(path, 2)
+    }
+
+    pub fn open_with_readers(
+        path: impl AsRef<Path>,
+        read_connections: usize,
+    ) -> Result<Self, JournalError> {
+        let path = path.as_ref();
         let connection = Connection::open(path)
             .map_err(|error| JournalError::new(format!("cannot open journal: {error}")))?;
         configure_connection(&connection)
@@ -118,8 +180,53 @@ impl SqliteEffectJournal {
             "ALTER TABLE runs ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0",
             [],
         );
+        let mut readers = Vec::new();
+        for _ in 0..read_connections.max(1) {
+            let reader = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|error| {
+                    JournalError::new(format!("cannot open journal reader: {error}"))
+                })?;
+            reader
+                .busy_timeout(Duration::from_secs(5))
+                .map_err(|error| JournalError::new(format!("cannot configure reader: {error}")))?;
+            reader
+                .execute_batch("PRAGMA query_only=ON;")
+                .map_err(|error| JournalError::new(format!("cannot configure reader: {error}")))?;
+            readers.push(Mutex::new(reader));
+        }
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            readers: Arc::new(readers),
+            next_reader: AtomicUsize::new(0),
+            write_gate: WriteGate {
+                active: AtomicUsize::new(0),
+                capacity: 256,
+            },
+        })
+    }
+
+    pub(crate) fn reader(&self) -> Result<MutexGuard<'_, Connection>, JournalError> {
+        if self.readers.is_empty() {
+            return self
+                .connection
+                .lock()
+                .map_err(|_| JournalError::new("journal lock poisoned"));
+        }
+        let index = self.next_reader.fetch_add(1, Ordering::Relaxed) % self.readers.len();
+        self.readers[index]
+            .lock()
+            .map_err(|_| JournalError::new("journal reader lock poisoned"))
+    }
+
+    pub(crate) fn writer(&self) -> Result<WriteGuard<'_>, JournalError> {
+        let gate = self.write_gate.enter()?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        Ok(WriteGuard {
+            connection,
+            _gate: gate,
         })
     }
 }
@@ -133,10 +240,7 @@ impl SqliteEffectJournal {
         lease: Duration,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
         let modifier = format!("+{} seconds", lease.as_secs());
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let mut connection = self.writer()?;
         let transaction = connection
             .transaction()
             .map_err(|error| JournalError::new(format!("cannot begin claim: {error}")))?;
@@ -189,10 +293,7 @@ impl EffectJournal for SqliteEffectJournal {
     fn record(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError> {
         let payload = serde_json::to_string(effect)
             .map_err(|error| JournalError::new(format!("cannot serialize effect: {error}")))?;
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "INSERT INTO effects (effect_id, run_id, payload_json)
@@ -215,10 +316,7 @@ impl EffectJournal for SqliteEffectJournal {
     ) -> Result<(), JournalError> {
         let payload = serde_json::to_string(effect)
             .map_err(|error| JournalError::new(format!("cannot serialize effect: {error}")))?;
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let mut connection = self.writer()?;
         let transaction = connection
             .transaction()
             .map_err(|error| JournalError::new(format!("cannot begin claim write: {error}")))?;
@@ -257,10 +355,7 @@ impl EffectJournal for SqliteEffectJournal {
         lease: Duration,
     ) -> Result<bool, JournalError> {
         let modifier = format!("+{} seconds", lease.as_secs().max(1));
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         let changed = connection
             .execute(
                 "UPDATE effect_outbox
@@ -276,10 +371,7 @@ impl EffectJournal for SqliteEffectJournal {
     fn save_run(&self, state: &AgentState) -> Result<(), JournalError> {
         let payload = serde_json::to_string(state)
             .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "INSERT INTO runs (run_id, state_json, state_version) VALUES (?1, ?2, ?3)
@@ -294,10 +386,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn load_run(&self, run_id: &RunId) -> Result<Option<AgentState>, JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.reader()?;
         let mut statement = connection
             .prepare("SELECT state_json FROM runs WHERE run_id = ?1")
             .map_err(|error| JournalError::new(format!("cannot read run: {error}")))?;
@@ -319,10 +408,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn list_run_ids(&self) -> Result<Vec<RunId>, JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.reader()?;
         let mut statement = connection
             .prepare("SELECT run_id FROM runs")
             .map_err(|error| JournalError::new(format!("cannot list runs: {error}")))?;
@@ -339,10 +425,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.reader()?;
         let mut statement = connection
             .prepare("SELECT payload_json FROM effects WHERE run_id = ?1 ORDER BY rowid")
             .map_err(|error| JournalError::new(format!("cannot read journal: {error}")))?;
@@ -372,10 +455,7 @@ impl EffectJournal for SqliteEffectJournal {
             .map_err(|error| JournalError::new(format!("cannot serialize event: {error}")))?;
         let state_payload = serde_json::to_string(state)
             .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let mut connection = self.writer()?;
         let transaction = connection.transaction().map_err(|error| {
             JournalError::new(format!("cannot begin journal transaction: {error}"))
         })?;
@@ -422,10 +502,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn load_events(&self, run_id: &RunId) -> Result<Vec<AcceptedEvent>, JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.reader()?;
         let mut statement = connection
             .prepare("SELECT event_json FROM run_events WHERE run_id = ?1 ORDER BY seq")
             .map_err(|error| JournalError::new(format!("cannot read events: {error}")))?;
@@ -447,10 +524,7 @@ impl EffectJournal for SqliteEffectJournal {
         if effect.status != EffectStatus::Authorized || effect.intent_json.is_empty() {
             return Ok(());
         }
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "INSERT OR IGNORE INTO effect_outbox (effect_id, run_id, intent_json)
@@ -498,10 +572,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn complete_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "DELETE FROM effect_outbox
@@ -513,10 +584,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn release_outbox(&self, effect_id: &EffectId, claim_id: &str) -> Result<(), JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "UPDATE effect_outbox SET claim_id = NULL, claim_deadline = NULL
@@ -535,10 +603,7 @@ impl EffectJournal for SqliteEffectJournal {
     ) -> Result<bool, JournalError> {
         let now = now_unix_ms();
         let deadline = now.saturating_add(lease.as_millis() as u64);
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         let changed = connection
             .execute(
                 "INSERT INTO run_leases (run_id, owner_id, deadline_ms)
@@ -561,10 +626,7 @@ impl EffectJournal for SqliteEffectJournal {
     ) -> Result<bool, JournalError> {
         let now = now_unix_ms();
         let deadline = now.saturating_add(lease.as_millis() as u64);
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         let changed = connection
             .execute(
                 "UPDATE run_leases SET deadline_ms = ?3
@@ -576,10 +638,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn release_run(&self, run_id: &RunId, owner_id: &str) -> Result<(), JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "DELETE FROM run_leases WHERE run_id = ?1 AND owner_id = ?2",
@@ -590,10 +649,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn run_lease(&self, run_id: &RunId) -> Result<Option<LeaseRecord>, JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.reader()?;
         connection
             .query_row(
                 "SELECT owner_id, deadline_ms FROM run_leases WHERE run_id = ?1",
@@ -617,10 +673,7 @@ impl EffectJournal for SqliteEffectJournal {
     ) -> Result<bool, JournalError> {
         let now = now_unix_ms();
         let deadline = now.saturating_add(lease.as_millis() as u64);
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         let changed = connection
             .execute(
                 "INSERT INTO service_leases (service, owner_id, deadline_ms)
@@ -643,10 +696,7 @@ impl EffectJournal for SqliteEffectJournal {
     ) -> Result<bool, JournalError> {
         let now = now_unix_ms();
         let deadline = now.saturating_add(lease.as_millis() as u64);
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         let changed = connection
             .execute(
                 "UPDATE service_leases SET deadline_ms = ?3
@@ -658,10 +708,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn release_service(&self, service: &str, owner_id: &str) -> Result<(), JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "DELETE FROM service_leases WHERE service = ?1 AND owner_id = ?2",
@@ -672,10 +719,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn request_cancel(&self, run_id: &RunId, reason: &str) -> Result<(), JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "INSERT INTO cancel_requests (run_id, reason) VALUES (?1, ?2)
@@ -689,10 +733,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn cancel_request(&self, run_id: &RunId) -> Result<Option<String>, JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.reader()?;
         connection
             .query_row(
                 "SELECT reason FROM cancel_requests WHERE run_id = ?1",
@@ -704,10 +745,7 @@ impl EffectJournal for SqliteEffectJournal {
     }
 
     fn clear_cancel(&self, run_id: &RunId) -> Result<(), JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.writer()?;
         connection
             .execute(
                 "DELETE FROM cancel_requests WHERE run_id = ?1",
@@ -724,9 +762,8 @@ impl ApprovalStore for SqliteEffectJournal {
             ApprovalStoreError::new(format!("cannot serialize approval: {error}"))
         })?;
         let connection = self
-            .connection
-            .lock()
-            .map_err(|_| ApprovalStoreError::new("journal lock poisoned"))?;
+            .writer()
+            .map_err(|error| ApprovalStoreError::new(error.to_string()))?;
         connection
             .execute(
                 "INSERT INTO approvals (effect_id, payload_json) VALUES (?1, ?2)
@@ -744,9 +781,8 @@ impl ApprovalStore for SqliteEffectJournal {
         effect_id: &EffectId,
     ) -> Result<Option<ApprovalRecord>, ApprovalStoreError> {
         let connection = self
-            .connection
-            .lock()
-            .map_err(|_| ApprovalStoreError::new("journal lock poisoned"))?;
+            .reader()
+            .map_err(|error| ApprovalStoreError::new(error.to_string()))?;
         let payload: Option<String> = connection
             .query_row(
                 "SELECT payload_json FROM approvals WHERE effect_id = ?1",
@@ -785,10 +821,7 @@ impl DurableTransitionStore for SqliteEffectJournal {
             .map_err(|error| JournalError::new(format!("cannot serialize event: {error}")))?;
         let state_payload = serde_json::to_string(state)
             .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let mut connection = self.writer()?;
         let transaction = connection.transaction().map_err(|error| {
             JournalError::new(format!("cannot begin journal transaction: {error}"))
         })?;
@@ -878,10 +911,7 @@ impl DurableTransitionStore for SqliteEffectJournal {
         }
         let payload = serde_json::to_string(state)
             .map_err(|error| JournalError::new(format!("cannot serialize run: {error}")))?;
-        let mut connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let mut connection = self.writer()?;
         let transaction = connection.transaction().map_err(|error| {
             JournalError::new(format!("cannot begin terminal transaction: {error}"))
         })?;
@@ -937,5 +967,24 @@ impl DurableTransitionStore for SqliteEffectJournal {
             .commit()
             .map_err(|error| JournalError::new(format!("cannot commit terminal state: {error}")))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_write_gate_rejects_a_full_queue() {
+        let gate = WriteGate {
+            active: AtomicUsize::new(0),
+            capacity: 1,
+        };
+        let _first = gate.enter().unwrap();
+
+        let second = gate.enter();
+
+        assert!(second.is_err());
+        assert_eq!(gate.active.load(Ordering::SeqCst), 1);
     }
 }

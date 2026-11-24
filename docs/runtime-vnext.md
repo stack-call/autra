@@ -62,7 +62,7 @@ RunHub / Metrics / Tracing（旁路）
 | GlobalScheduler | 已实现本地版本：`scheduler/mod.rs`，Model/Tool/Process 有界公平队列 |
 | EffectExecutor | 已实现：`engine/executor.rs` |
 | RecoverySupervisor | 已实现：`engine/recovery/supervisor.rs`，服务租约 + 周期扫描 |
-| Journal/Outbox | 已有，SQLite 单 Writer；cancel request、run/service lease、Attempt owner 元数据和 retention GC 已持久化；读写分离未实现 |
+| Journal/Outbox | 已有，SQLite 单 Writer + 有界写队列 + 只读 Reader Pool；cancel/lease/Attempt 元数据和 retention GC 已持久化 |
 | 多进程 Worker / PostgreSQL / Redis | 未实现，属于阶段 3/4 |
 
 已经在本地单机模式中具备、并且应当保留的：
@@ -90,7 +90,7 @@ RunHub / Metrics / Tracing（旁路）
 | `Attempt` 已有 `AttemptId` / worker / fencing 元数据 | 多进程接管所需的正式代际协议仍待实现 |
 | 取消意图没有独立的持久化记录 | 崩溃恢复只能看到未完成 Run，不能可靠区分用户取消与执行者失联 |
 | ResultCollector 目前只负责事件队列 | 跨恢复的去重、结果重放和全局排序尚未实现 |
-| SQLite 是单个 `Arc<Mutex<Connection>>` | 读写路径未分离，长事务会阻塞其他 Run |
+| SQLite Reader Pool 与写队列只有固定容量 | 容量、锁竞争和长事务仍需压测调优 |
 | 没有崩溃/租约过期/fsync 失败的故障注入矩阵 | 无法证明恢复不会重复外部副作用 |
 | 没有 PostgreSQL / 远程 Worker / 消息队列 | 多机扩展缺少后端契约 |
 | 没有 Sandbox | 不可信命令仍以当前用户权限执行 |

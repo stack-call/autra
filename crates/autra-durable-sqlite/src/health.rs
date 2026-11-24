@@ -21,14 +21,14 @@ pub struct JournalHealth {
     pub pending_outbox: usize,
     pub cancel_requests: usize,
     pub service_leases: Vec<ServiceLeaseInfo>,
+    pub write_queue_active: usize,
+    pub write_queue_capacity: usize,
+    pub readers: usize,
 }
 
 impl SqliteEffectJournal {
     pub fn health(&self, now_unix_ms: u64) -> Result<JournalHealth, JournalError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let connection = self.reader()?;
         let schema_version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|error| JournalError::new(format!("cannot read schema version: {error}")))?;
@@ -80,6 +80,12 @@ impl SqliteEffectJournal {
             pending_outbox,
             cancel_requests,
             service_leases,
+            write_queue_active: self
+                .write_gate
+                .active
+                .load(std::sync::atomic::Ordering::Relaxed),
+            write_queue_capacity: self.write_gate.capacity,
+            readers: self.readers.len(),
         })
     }
 }

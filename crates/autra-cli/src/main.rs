@@ -736,6 +736,11 @@ fn doctor_command(args: &[String]) -> ExitCode {
     println!("effects: {}", health.effects);
     println!("pending outbox: {}", health.pending_outbox);
     println!("cancel requests: {}", health.cancel_requests);
+    println!(
+        "write queue: {} / {}",
+        health.write_queue_active, health.write_queue_capacity
+    );
+    println!("read connections: {}", health.readers);
     if health.service_leases.is_empty() {
         println!("service leases: none");
     } else {
