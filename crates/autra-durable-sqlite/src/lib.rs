@@ -159,10 +159,17 @@ fn load_engine_state(
             "run `{run_id}` has no engine snapshot at or before version {state_version}"
         )));
     };
-    let mut engine: autra_core::EngineState = serde_json::from_str(&payload)
+    let mut value: serde_json::Value = serde_json::from_str(&payload)
         .map_err(|error| JournalError::new(format!("cannot decode engine snapshot: {error}")))?;
-    let original_id = engine.engine_id.clone();
-    let original_revision = engine.schema_revision;
+    let original_id = value
+        .get("engine_id")
+        .and_then(|id| id.as_str())
+        .unwrap_or_default()
+        .to_owned();
+    let original_revision = value
+        .get("schema_revision")
+        .and_then(|revision| revision.as_u64())
+        .unwrap_or_default();
     for version in (snapshot_version as u64 + 1)..=state_version {
         let patch: Option<(i64, String)> = connection
             .query_row(
@@ -187,20 +194,17 @@ fn load_engine_state(
         let patch: json_patch::Patch = serde_json::from_str(&patch_json).map_err(|error| {
             JournalError::new(format!("cannot decode engine patch {version}: {error}"))
         })?;
-        let mut value = serde_json::to_value(&engine).map_err(|error| {
-            JournalError::new(format!("cannot encode engine state for patch: {error}"))
-        })?;
         json_patch::patch(&mut value, &patch).map_err(|error| {
             JournalError::new(format!("cannot apply engine patch {version}: {error}"))
         })?;
-        engine = serde_json::from_value(value).map_err(|error| {
-            JournalError::new(format!("cannot decode patched engine state: {error}"))
-        })?;
-        if engine.engine_id != original_id || engine.schema_revision != original_revision {
-            return Err(JournalError::new(format!(
-                "engine patch {version} changed engine identity"
-            )));
-        }
+    }
+    let engine: autra_core::EngineState = serde_json::from_value(value).map_err(|error| {
+        JournalError::new(format!("cannot decode patched engine state: {error}"))
+    })?;
+    if engine.engine_id != original_id || engine.schema_revision as u64 != original_revision {
+        return Err(JournalError::new(
+            "an engine patch changed the engine identity".to_owned(),
+        ));
     }
     Ok(engine)
 }
