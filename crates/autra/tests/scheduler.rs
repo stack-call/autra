@@ -245,3 +245,77 @@ async fn pooled_execution_resolves_approvals_before_dispatch() {
         .unwrap();
     assert_eq!(tool.status, autra_core::EffectStatus::Committed);
 }
+
+#[tokio::test]
+async fn a_pooled_run_is_woken_by_cancellation() {
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use autra_core::{CancelFlag, EffectClass, ModelOutput, ToolCallRequest, ToolSpec};
+    use autra_durable_sqlite::SqliteEffectJournal;
+    use autra_harness::{FakeModel, Tool, ToolError};
+
+    struct SlowTool;
+
+    #[async_trait]
+    impl Tool for SlowTool {
+        fn spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "slow".to_owned(),
+                description: "sleeps".to_owned(),
+                input_schema: "{}".to_owned(),
+            }
+        }
+
+        fn effect_class(&self) -> EffectClass {
+            EffectClass::ReadOnly
+        }
+
+        async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            Ok("done".to_owned())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pooled-cancel.db");
+    let agent = Agent::builder("pooled-cancel")
+        .model(FakeModel::new(vec![
+            ModelOutput {
+                usage: None,
+                text: None,
+                tool_calls: vec![ToolCallRequest {
+                    call_id: "call-1".to_owned(),
+                    name: "slow".to_owned(),
+                    arguments: "{}".to_owned(),
+                }],
+            },
+            ModelOutput {
+                usage: None,
+                text: Some("done".to_owned()),
+                tool_calls: Vec::new(),
+            },
+        ]))
+        .tool(SlowTool)
+        .journal(SqliteEffectJournal::open(&db).unwrap())
+        .pooled_execution(true)
+        .build()
+        .unwrap();
+    let cancel = CancelFlag::new();
+    let options = autra::RunOptions {
+        cancel: cancel.clone(),
+        ..Default::default()
+    };
+
+    let task = {
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            cancel.cancel();
+        })
+    };
+    let outcome = agent.run_with_options("go", options, |_| {}).await.unwrap();
+    task.await.unwrap();
+
+    assert_eq!(outcome.status(), autra::RunStatus::Cancelled);
+}

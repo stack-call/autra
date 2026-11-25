@@ -193,7 +193,10 @@ Tests observe public behaviour, not private helpers.
 53. **Pooled execution** (`autra`): a journaled Run executed from the separate
     executor loop produces the same answer, status and Effect statuses as the
     inline path; approvals are resolved by the coordinator before the executor
-    claims the Effect.
+    claims the Effect; cancellation wakes a pooled Run that is waiting.
+54. **Run inbox** (`autra-runtime`): every input — queued events, executor
+    reports and cancellation — enters through `RunInbox::next`, so a waiting
+    coordinator cannot miss a cancellation.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at
