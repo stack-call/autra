@@ -184,6 +184,7 @@ Moonshot, vLLM, Ollama or LM Studio.
 - [Plugins and capabilities (design only)](docs/plugins.md)
 - [Extension architecture v1.0 (design proposal)](docs/extension-architecture-v1.md)
 - [Roadmap](docs/roadmap.md) · [Runtime vNext (design proposal)](docs/runtime-vnext.md)
+- [Message-driven runtime (design proposal)](docs/message-driven-runtime.md)
 - [Architecture decisions](docs/adr/) · [OpenShell](docs/integrations/openshell.md) · [Restate](docs/integrations/restate.md)
 
 ## Architecture boundaries

@@ -11,7 +11,8 @@
 > `engine/recovery/supervisor.rs` 提供带服务租约的 `RecoverySupervisor`；
 > `EffectExecutor` 保留。跨进程 Worker、PostgreSQL、Redis、AttemptId/Fencing
 > 和 SQLite 读写分离仍属于后续阶段。
-> **相关**：[运行时演进](runtime-evolution.md)、[简化架构 RFC](autra-runtime-simplified-rfc.md)、
+> **相关**：[运行时演进](runtime-evolution.md)、[消息驱动设计](message-driven-runtime.md)、
+> [简化架构 RFC](autra-runtime-simplified-rfc.md)、
 > [本地运行时稳定性](local-runtime-stability.md)、[执行模型](execution-model.md)、
 > [持久化](durability.md)、ADR-0058。
 
@@ -187,6 +188,9 @@ Scheduler 回答：
 **为什么不能只靠 `max_parallel_tool_calls`**：那是单个 Run 的局部限制。100 个 Run 各允许 5 个工具，合计可能产生 500 个并行调用。
 
 ### 4.5 EffectExecutor
+
+> 执行侧如何从“Coordinator 内联调用”演进为“独立 Executor 循环”，见
+> [消息驱动设计](message-driven-runtime.md)。
 
 **职责**：执行已经授权、已经取得执行权的 Effect。
 

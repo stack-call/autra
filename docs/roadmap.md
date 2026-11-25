@@ -28,6 +28,10 @@ ResultCollector, GlobalScheduler and RecoverySupervisor) is described in
 [`runtime-vnext.md`](runtime-vnext.md). It is a proposal, not a roadmap
 commitment.
 
+Decoupling Run state progression from Effect execution through a persistent
+message boundary is described in
+[`message-driven-runtime.md`](message-driven-runtime.md).
+
 ### Dual-track view
 
 Execution reliability and Agent experience advance in parallel; neither waits for
