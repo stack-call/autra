@@ -680,6 +680,8 @@ outbox 派发、恢复与 reconcile。429 退避仍在 provider 层；SQLite 读
 建议后续形成 ADR：
 
 1. Coordinator 的职责边界与 `LocalEngine` 拆分顺序。
+   - 已实现：`engine/coordinator/`。
+   - 审批等待时的 Run 卸载见 [ADR-0060](adr/0060-a-run-can-park-on-an-approval-wait.md)。
 2. TransitionCommitter 的提交协议和 Apply 时机。
 3. GlobalScheduler 的资源池、公平性和领取顺序。
 4. AttemptId / fencing token 与结果接受协议。

@@ -305,6 +305,9 @@ Effect -> AwaitingApproval -> 持久化
       -> 审批事件 -> Authorized -> outbox
 ```
 
+让 Run 真正在等待点停下（而不是挂住协程）的设计见
+[ADR-0060](adr/0060-a-run-can-park-on-an-approval-wait.md)。
+
 ### 7.6 分布式额外成本
 
 消息驱动不等于分布式正确。多进程/多机仍然需要：
@@ -344,11 +347,15 @@ pooled 模式现在也把当前预算快照和 `ChildExecutionContext` 传给 ex
 
 ### 第三步：Run 可卸载
 
-- Coordinator 在 `AwaitingApproval` / 长等待时释放协程
-- 事件到达时重建 Coordinator，从 Journal 恢复
-- 增加“事件已消费”标记，避免重复唤醒
+- Coordinator 在审批等待时释放协程与 Run lease
+- 审批决定落盘后由 `resume` 唤醒
+- 恢复扫描跳过“无可用决定”的 parked Run，避免每轮重新挂起
 
-验收：审批等待期间进程重启，事件到达后正确继续；无重复事件。
+具体语义（三态审批、`RunStatus::AwaitingApproval`、不新增 Core phase）见
+[ADR-0060](adr/0060-a-run-can-park-on-an-approval-wait.md)。
+
+验收：审批等待期间进程重启，决定写入后 `resume` 正确继续；parked Run 不被
+恢复扫描反复重挂。
 
 ### 第四步：多进程
 
