@@ -319,3 +319,47 @@ async fn a_pooled_run_is_woken_by_cancellation() {
 
     assert_eq!(outcome.status(), autra::RunStatus::Cancelled);
 }
+
+#[tokio::test]
+async fn pooled_execution_can_spawn_a_subagent() {
+    use autra_core::{ModelOutput, ToolCallRequest};
+    use autra_durable_sqlite::SqliteEffectJournal;
+    use autra_harness::{EchoModel, FakeModel};
+
+    let child = Agent::builder("child").model(EchoModel).build().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("pooled-child.db");
+    let parent = Agent::builder("parent")
+        .model(FakeModel::new(vec![
+            ModelOutput {
+                usage: None,
+                text: None,
+                tool_calls: vec![ToolCallRequest {
+                    call_id: "call-1".to_owned(),
+                    name: "spawn_subagent".to_owned(),
+                    arguments: r#"{"agent":"helper","task":"hi"}"#.to_owned(),
+                }],
+            },
+            ModelOutput {
+                usage: None,
+                text: Some("done".to_owned()),
+                tool_calls: Vec::new(),
+            },
+        ]))
+        .subagent("helper", "echoes", child)
+        .journal(SqliteEffectJournal::open(&db).unwrap())
+        .pooled_execution(true)
+        .build()
+        .unwrap();
+
+    let outcome = parent.run("go").await.unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    let tool = outcome
+        .effects()
+        .iter()
+        .find(|effect| effect.kind == autra_core::EffectKind::ToolCall)
+        .unwrap();
+    assert_eq!(tool.status, autra_core::EffectStatus::Committed);
+    assert!(tool.result.as_deref().unwrap_or("").contains("echo: hi"));
+}

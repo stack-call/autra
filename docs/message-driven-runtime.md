@@ -327,7 +327,8 @@ Effect -> AwaitingApproval -> 持久化
 - 审批在 Coordinator 内完成，未授权的 Effect 不进入 outbox
 - 默认仍是内联执行，`AgentBuilder::pooled_execution(true)` 才启用
 
-限制：pooled 模式目前没有把 `BudgetHandle` 传给工具，子 Agent 的预算切片仍依赖内联路径。
+pooled 模式现在也把当前预算快照和 `ChildExecutionContext` 传给 executor，
+因此 `spawn_subagent` 在两种模式下行为一致。
 
 验收：现有全部测试通过；新增 pooled/inline 等价测试与 pooled 审批测试。
 

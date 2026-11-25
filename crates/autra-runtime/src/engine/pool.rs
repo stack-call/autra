@@ -5,11 +5,13 @@
 //! is the only place that calls the dispatcher. That is the message boundary
 //! described in `docs/message-driven-runtime.md`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use autra_core::{CancelFlag, EffectId, EffectKind, EventKind, RunId};
-use autra_execution::EffectJournal;
+use autra_core::{
+    BudgetHandle, BudgetSnapshot, CancelFlag, EffectId, EffectKind, EventKind, RunId,
+};
+use autra_execution::{ChildExecutionContext, EffectJournal};
 use tokio::sync::{Notify, mpsc::UnboundedSender};
 
 use crate::dispatcher::{DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, OutboxDispatcher};
@@ -38,6 +40,7 @@ pub(super) fn spawn(
     engine: &LocalEngine,
     run_id: RunId,
     cancel: CancelFlag,
+    budget: Arc<Mutex<BudgetSnapshot>>,
     events: UnboundedSender<PoolEvent>,
     wake: Arc<Notify>,
 ) -> tokio::task::JoinHandle<()> {
@@ -47,16 +50,22 @@ pub(super) fn spawn(
     let dispatcher = engine.dispatcher.clone();
     let scheduler = engine.scheduler.clone();
     let effect_timeout = engine.effect_timeout;
+    let child_execution = ChildExecutionContext {
+        journal: engine.journal.clone(),
+        approver: engine.approver.clone(),
+        depth: 0,
+    };
     tokio::spawn(async move {
         loop {
+            let snapshot = budget.lock().expect("budget lock poisoned").clone();
             let options = DispatchOptions {
                 limit: POOL_BATCH,
                 max_parallel: 4,
                 timeout: effect_timeout,
                 cancel: Some(&cancel),
                 lease: DEFAULT_CLAIM_LEASE,
-                budget: None,
-                child_execution: None,
+                budget: Some(BudgetHandle::new(snapshot)),
+                child_execution: Some(child_execution.clone()),
                 delta: None,
                 scheduler: Some(scheduler.clone()),
             };

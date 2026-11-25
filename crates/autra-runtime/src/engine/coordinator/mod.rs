@@ -99,11 +99,13 @@ impl LocalEngine {
         let pooled = self.pooled_execution && self.journal.is_some();
         let (pool_events, pool_inbox) = tokio::sync::mpsc::unbounded_channel();
         let pool_wake = Arc::new(tokio::sync::Notify::new());
+        let pool_budget = Arc::new(std::sync::Mutex::new(state.budget.clone()));
         let _pool = PoolGuard(if pooled {
             Some(pool::spawn(
                 self,
                 run_id.clone(),
                 options.cancel.clone(),
+                pool_budget.clone(),
                 pool_events,
                 pool_wake.clone(),
             ))
@@ -307,6 +309,9 @@ impl LocalEngine {
                         &mut on_event,
                     )
                     .await?;
+                }
+                if let Ok(mut budget) = pool_budget.lock() {
+                    *budget = state.budget.clone();
                 }
                 pool_wake.notify_one();
                 continue;

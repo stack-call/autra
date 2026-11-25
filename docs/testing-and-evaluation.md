@@ -197,6 +197,9 @@ Tests observe public behaviour, not private helpers.
 54. **Run inbox** (`autra-runtime`): every input — queued events, executor
     reports and cancellation — enters through `RunInbox::next`, so a waiting
     coordinator cannot miss a cancellation.
+55. **Pooled subagents** (`autra`): a pooled Run can spawn a subagent because
+    the executor receives the current budget snapshot and child execution
+    context.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at
