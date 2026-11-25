@@ -8,6 +8,7 @@ use autra_core::{
 use autra_execution::RunError;
 
 use crate::approval::digest_intent;
+use crate::blocking::run_journal_with;
 
 use super::super::{LocalEngine, validator};
 
@@ -88,52 +89,59 @@ impl<'a> TransitionCommitter<'a> {
         }
     }
 
-    /// Commit the transition as one durable fact. The caller applies `next`
-    /// only after this returns `Ok`.
-    pub(super) fn commit(
+    /// Commit the transition as one durable fact on the blocking pool. The
+    /// caller applies the returned state only after this succeeds.
+    pub(super) async fn commit(
         &self,
         run_id: &RunId,
         expected_version: u64,
         event: &AcceptedEvent,
-        next: &AgentState,
-        new_effects: &[EffectRecord],
-        delta: Option<&EngineStateDelta>,
-    ) -> Result<(), RunError> {
-        if let Some(journal) = &self.engine.journal {
-            if let Some(delta) = delta {
-                if delta.base_version != expected_version {
-                    return Err(RunError::Protocol(format!(
-                        "engine delta base_version {} does not match expected {expected_version}",
-                        delta.base_version
-                    )));
-                }
+        next: AgentState,
+        new_effects: Vec<EffectRecord>,
+        delta: Option<EngineStateDelta>,
+    ) -> Result<AgentState, RunError> {
+        let Some(journal) = self.engine.journal.clone() else {
+            return Ok(next);
+        };
+        if let Some(delta) = &delta {
+            if delta.base_version != expected_version {
+                return Err(RunError::Protocol(format!(
+                    "engine delta base_version {} does not match expected {expected_version}",
+                    delta.base_version
+                )));
             }
-            journal
-                .commit_transition_with_engine_delta(
-                    run_id,
-                    expected_version,
-                    event,
-                    next,
-                    new_effects,
-                    delta,
-                )
-                .map_err(|error| RunError::Journal(error.to_string()))?;
         }
-        Ok(())
+        let run_id = run_id.clone();
+        let event = event.clone();
+        run_journal_with(move || {
+            let result = journal.commit_transition_with_engine_delta(
+                &run_id,
+                expected_version,
+                &event,
+                &next,
+                &new_effects,
+                delta.as_ref(),
+            );
+            (next, result)
+        })
+        .await
     }
 
     /// Commit a terminal state produced outside a stepper transition.
-    pub(super) fn commit_terminal(
+    pub(super) async fn commit_terminal(
         &self,
         run_id: &RunId,
         expected_version: u64,
-        state: &AgentState,
-    ) -> Result<(), RunError> {
-        if let Some(journal) = &self.engine.journal {
-            journal
-                .commit_terminal(run_id, expected_version, state)
-                .map_err(|error| RunError::Journal(error.to_string()))?;
-        }
-        Ok(())
+        state: AgentState,
+    ) -> Result<AgentState, RunError> {
+        let Some(journal) = self.engine.journal.clone() else {
+            return Ok(state);
+        };
+        let run_id = run_id.clone();
+        run_journal_with(move || {
+            let result = journal.commit_terminal(&run_id, expected_version, &state);
+            (state, result)
+        })
+        .await
     }
 }

@@ -117,7 +117,9 @@ impl LocalEngine {
                     on_event(&RunEvent::RunFailed {
                         message: message.clone(),
                     });
-                    committer.commit_terminal(&run_id, expected_version, &state)?;
+                    state = committer
+                        .commit_terminal(&run_id, expected_version, state)
+                        .await?;
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
                     }
@@ -146,7 +148,9 @@ impl LocalEngine {
                 state.last_error = Some(message.clone());
                 state.state_version = expected_version + 1;
                 on_event(&RunEvent::RunFailed { message });
-                committer.commit_terminal(&run_id, expected_version, &state)?;
+                state = committer
+                    .commit_terminal(&run_id, expected_version, state)
+                    .await?;
                 if let Some(observer) = &self.observer {
                     observer.on_run_finished(&run_id, &state.phase);
                 }
@@ -160,17 +164,18 @@ impl LocalEngine {
                 tool_calls,
                 model_requests,
             } = committer.prepare(&run_id, &mut effects, intents);
-            committer.commit(
-                &run_id,
-                expected_version,
-                &event,
-                &next,
-                &effects[first_new..],
-                engine_delta.as_ref(),
-            )?;
-            // Apply only after the authoritative transition succeeded. If the
-            // commit fails, the in-memory state is left untouched.
-            state = next;
+            state = committer
+                .commit(
+                    &run_id,
+                    expected_version,
+                    &event,
+                    next,
+                    effects[first_new..].to_vec(),
+                    engine_delta,
+                )
+                .await?;
+            // The commit returns the state it persisted; the in-memory state is
+            // only replaced after that succeeds.
             if let Some(observer) = &self.observer {
                 for effect in &effects[first_new..] {
                     observer.on_effect_committed(&run_id, effect);
@@ -281,7 +286,9 @@ impl LocalEngine {
                         state.last_error = Some(message.clone());
                         state.state_version = current_version + 1;
                         on_event(&RunEvent::RunFailed { message });
-                        committer.commit_terminal(&run_id, current_version, &state)?;
+                        state = committer
+                            .commit_terminal(&run_id, current_version, state)
+                            .await?;
                         if let Some(observer) = &self.observer {
                             observer.on_run_finished(&run_id, &state.phase);
                         }

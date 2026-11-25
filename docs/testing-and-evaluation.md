@@ -185,8 +185,11 @@ Tests observe public behaviour, not private helpers.
     the bounded write gate remain active.
 51. **Engine state snapshots and patches** (`autra`, `autra-durable-sqlite`):
     a multi-step Run round-trips through one snapshot plus contiguous patches,
-    a corrupt patch is rejected on load, and schema v1 is rejected without
-    migration.
+    a corrupt patch is rejected on load, schema v1 is rejected without
+    migration, and superseded snapshots/patches are pruned.
+52. **Benchmarks** (`autra`): `cargo bench -p autra --bench runtime` reports
+    per-step latency for memory and SQLite journals, journal growth, and
+    concurrent-Run throughput.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

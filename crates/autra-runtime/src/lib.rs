@@ -5,6 +5,7 @@
 //! optional crates.
 
 pub mod approval;
+mod blocking;
 pub mod child;
 pub mod dispatcher;
 pub mod engine;

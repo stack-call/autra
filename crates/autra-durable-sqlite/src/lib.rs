@@ -109,6 +109,18 @@ fn write_engine_snapshot(
             payload
         ])
         .map_err(|error| JournalError::new(format!("cannot write snapshot: {error}")))?;
+    // Recovery only reads the newest snapshot at or before the target version,
+    // so older snapshots and the patches they cover can be dropped.
+    transaction
+        .prepare_cached("DELETE FROM run_engine_snapshots WHERE run_id = ?1 AND version < ?2")
+        .map_err(|error| JournalError::new(format!("cannot prepare snapshot prune: {error}")))?
+        .execute(params![run_id.as_str(), state.state_version as i64])
+        .map_err(|error| JournalError::new(format!("cannot prune snapshots: {error}")))?;
+    transaction
+        .prepare_cached("DELETE FROM run_engine_patches WHERE run_id = ?1 AND version <= ?2")
+        .map_err(|error| JournalError::new(format!("cannot prepare patch prune: {error}")))?
+        .execute(params![run_id.as_str(), state.state_version as i64])
+        .map_err(|error| JournalError::new(format!("cannot prune patches: {error}")))?;
     Ok(())
 }
 

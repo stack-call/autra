@@ -83,3 +83,62 @@ async fn a_corrupt_patch_is_rejected_on_load() {
     let error = reader.load_run(&outcome.state().run_id).unwrap_err();
     assert!(error.to_string().contains("engine patch"));
 }
+
+#[tokio::test]
+async fn snapshots_are_pruned_to_the_newest_one() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("prune.db");
+    let steps = 70usize;
+    let mut outputs = Vec::new();
+    for index in 0..steps {
+        outputs.push(ModelOutput {
+            usage: None,
+            text: None,
+            tool_calls: vec![ToolCallRequest {
+                call_id: format!("call-{index}"),
+                name: "echo".to_owned(),
+                arguments: format!(r#"{{"text":"step-{index}"}}"#),
+            }],
+        });
+    }
+    outputs.push(ModelOutput {
+        usage: None,
+        text: Some("done".to_owned()),
+        tool_calls: Vec::new(),
+    });
+    let agent = Agent::builder("prune")
+        .model(FakeModel::new(outputs))
+        .tool(EchoTool)
+        .max_turns(steps as u32 + 2)
+        .max_tool_calls(steps as u32 + 2)
+        .journal(SqliteEffectJournal::open(&path).unwrap())
+        .build()
+        .unwrap();
+    let outcome = agent.run("go").await.unwrap();
+
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    let snapshots: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM run_engine_snapshots WHERE run_id = ?1",
+            rusqlite::params![outcome.state().run_id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let patches: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM run_engine_patches WHERE run_id = ?1",
+            rusqlite::params![outcome.state().run_id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(snapshots, 1, "only the newest snapshot should remain");
+    assert!(
+        patches < steps as i64,
+        "patches covered by a snapshot should be pruned"
+    );
+
+    let reader = SqliteEffectJournal::open(&path).unwrap();
+    let loaded = reader.load_run(&outcome.state().run_id).unwrap().unwrap();
+    assert_eq!(&loaded, outcome.state());
+}

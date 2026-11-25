@@ -5,9 +5,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[[bench]]
+name = "runtime"
+harness = false
+
 [dev-dependencies]
+autra-durable-sqlite = { path = "../autra-durable-sqlite" }
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time"] }
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
 
 [dependencies]
