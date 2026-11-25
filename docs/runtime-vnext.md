@@ -624,10 +624,15 @@ outbox 派发、恢复与 reconcile。429 退避仍在 provider 层；SQLite 读
   steps=50    per_step=128 µs
   steps=100   per_step=220 µs
 
-单 Run，SQLite journal
-  steps=10    per_step=4.9 ms   journal=   4 KiB
-  steps=50    per_step=3.1 ms   journal= 480 KiB
-  steps=100   per_step=2.9 ms   journal=1.6 MiB
+单 Run，SQLite journal（inline）
+  steps=10    per_step=3.8 ms   journal=   4 KiB
+  steps=50    per_step=3.2 ms   journal= 480 KiB
+  steps=100   per_step=3.1 ms   journal=1.6 MiB
+
+单 Run，SQLite journal（pooled executor）
+  steps=10    per_step=5.5 ms
+  steps=50    per_step=3.0 ms
+  steps=100   per_step=3.4 ms
 
 并发 Run（echo 模型）
   runs=10     per_run= 27 µs
@@ -639,6 +644,8 @@ outbox 派发、恢复与 reconcile。429 退避仍在 provider 层；SQLite 读
 - 内存路径的每步成本随 history 增长，符合“每步序列化完整 history”的结构。
 - SQLite 每步约 3 ms，主要来自事务与 fsync，而不是 patch 大小。
 - 并发 Run 的调度开销远小于单次模型延迟，Scheduler 不是瓶颈。
+- pooled executor 与 inline 在长 Run 上成本接近；短 Run 多出的约 1–2 ms 来自
+  任务启动与空闲轮询。
 - journal 体积仍随步数增长：`effects.intent_json` 保存了完整 `ModelCallSpec`
   （包含当时的 messages），这是下一个可优化点。
 

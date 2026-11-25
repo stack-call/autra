@@ -36,11 +36,16 @@ fn tool_chain(steps: usize) -> FakeModel {
 }
 
 fn chain_agent(steps: usize, journal: Option<SqliteEffectJournal>) -> Agent {
+    chain_agent_with(steps, journal, false)
+}
+
+fn chain_agent_with(steps: usize, journal: Option<SqliteEffectJournal>, pooled: bool) -> Agent {
     let builder = Agent::builder("bench")
         .model(tool_chain(steps))
         .tool(EchoTool)
         .max_turns(steps as u32 + 2)
-        .max_tool_calls(steps as u32 + 2);
+        .max_tool_calls(steps as u32 + 2)
+        .pooled_execution(pooled);
     let builder = match journal {
         Some(journal) => builder.journal(journal),
         None => builder,
@@ -72,11 +77,11 @@ async fn single_run_in_memory(steps: usize) -> Duration {
     started.elapsed()
 }
 
-async fn single_run_with_journal(steps: usize) -> (Duration, u64) {
+async fn single_run_with_journal(steps: usize, pooled: bool) -> (Duration, u64) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bench.db");
     let journal = SqliteEffectJournal::open(&path).unwrap();
-    let agent = chain_agent(steps, Some(journal));
+    let agent = chain_agent_with(steps, Some(journal), pooled);
     let started = Instant::now();
     let outcome = agent.run("go").await.unwrap();
     assert_eq!(outcome.answer(), Some("done"));
@@ -112,13 +117,19 @@ async fn main() {
         summarize("memory", steps, elapsed, None);
     }
 
-    println!("\n== single Run, SQLite journal ==");
+    println!("== single Run, SQLite journal (inline) ==");
     for steps in [10usize, 50, 100] {
-        let (elapsed, bytes) = single_run_with_journal(steps).await;
-        summarize("sqlite", steps, elapsed, Some(bytes));
+        let (elapsed, bytes) = single_run_with_journal(steps, false).await;
+        summarize("sqlite-inline", steps, elapsed, Some(bytes));
     }
 
-    println!("\n== concurrent Runs (echo model) ==");
+    println!("== single Run, SQLite journal (pooled executor) ==");
+    for steps in [10usize, 50, 100] {
+        let (elapsed, bytes) = single_run_with_journal(steps, true).await;
+        summarize("sqlite-pooled", steps, elapsed, Some(bytes));
+    }
+
+    println!("== concurrent Runs (echo model) ==");
     for runs in [10usize, 100] {
         let elapsed = concurrent_runs(runs).await;
         println!(
