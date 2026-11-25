@@ -102,6 +102,11 @@ struct State {
     approval: std::collections::VecDeque<(ApprovalRequest, Sender<ApprovalDecision>)>,
     should_quit: bool,
     cancel: Option<CancelFlag>,
+    /// Wrapped committed lines, rebuilt only when the width changes or new
+    /// messages arrive. Streaming text is wrapped separately each frame.
+    wrapped: Vec<Line<'static>>,
+    wrapped_width: usize,
+    wrapped_count: usize,
 }
 
 impl State {
@@ -137,6 +142,9 @@ impl State {
             approval: std::collections::VecDeque::new(),
             should_quit: false,
             cancel: None,
+            wrapped: Vec::new(),
+            wrapped_width: 0,
+            wrapped_count: 0,
         }
     }
 
@@ -608,22 +616,56 @@ fn visible_range(total: usize, view: usize, scroll_back: usize) -> std::ops::Ran
     start..end
 }
 
-fn build_lines(state: &State, width: usize) -> Vec<Line<'static>> {
+fn wrap_chat_lines(messages: &[ChatLine], width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for message in &state.lines {
+    for message in messages {
         for part in wrap_text(&message.text, width) {
             lines.push(Line::from(Span::styled(part, message.style)));
         }
     }
-    if let Some(stream) = &state.streaming {
-        for part in wrap_text(stream, width) {
-            lines.push(Line::from(Span::styled(
-                part,
-                Style::default().fg(Color::Green),
-            )));
-        }
-    }
     lines
+}
+
+impl State {
+    /// Refresh the wrapped-line cache and return only the visible window, so a
+    /// long conversation does not get re-wrapped or cloned every frame.
+    fn visible_lines(
+        &mut self,
+        width: usize,
+        view: usize,
+        scroll_back: usize,
+    ) -> Vec<Line<'static>> {
+        if width != self.wrapped_width || self.lines.len() < self.wrapped_count {
+            self.wrapped = wrap_chat_lines(&self.lines, width);
+            self.wrapped_width = width;
+            self.wrapped_count = self.lines.len();
+        } else if self.lines.len() > self.wrapped_count {
+            let fresh = wrap_chat_lines(&self.lines[self.wrapped_count..], width);
+            self.wrapped.extend(fresh);
+            self.wrapped_count = self.lines.len();
+        }
+        let tail: Vec<Line<'static>> = self
+            .streaming
+            .as_deref()
+            .map(|stream| {
+                wrap_text(stream, width)
+                    .into_iter()
+                    .map(|part| Line::from(Span::styled(part, Style::default().fg(Color::Green))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let total = self.wrapped.len() + tail.len();
+        let range = visible_range(total, view, scroll_back);
+        let mut visible = Vec::with_capacity(range.len());
+        for index in range {
+            if index < self.wrapped.len() {
+                visible.push(self.wrapped[index].clone());
+            } else {
+                visible.push(tail[index - self.wrapped.len()].clone());
+            }
+        }
+        visible
+    }
 }
 
 fn history_lines(history: &[HistoryItem]) -> Vec<ChatLine> {
@@ -716,10 +758,8 @@ impl State {
         let conversation = Block::default().borders(Borders::ALL).title("Conversation");
         let inner = conversation.inner(chunks[1]);
         let width = inner.width as usize;
-        let content = build_lines(self, width);
         let view = inner.height as usize;
-        let range = visible_range(content.len(), view, self.scroll_back);
-        let visible: Vec<Line> = content[range].to_vec();
+        let visible = self.visible_lines(width, view, self.scroll_back);
         frame.render_widget(Paragraph::new(visible).block(conversation), chunks[1]);
 
         if let Some((request, _)) = self.approval.front() {
