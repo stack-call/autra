@@ -1,6 +1,7 @@
 # 消息驱动：状态推进与 Effect 执行的解耦
 
-> **状态**：设计提案。当前实现是“持久化边界 + 协程内调用”，不是完整的消息驱动。
+> **状态**：设计提案，第一步已实现为可选模式（`pooled_execution`）。
+> 默认仍是“持久化边界 + 协程内调用”。
 > **基线**：`mvp-v1`，包含 Coordinator 拆分、GlobalScheduler、RecoverySupervisor、
 > EngineState snapshot + patch。
 > **相关**：[Runtime vNext](runtime-vnext.md)、[运行时演进](runtime-evolution.md)、
@@ -318,14 +319,17 @@ Effect -> AwaitingApproval -> 持久化
 
 不推翻现有架构，分四步。
 
-### 第一步：抽出 Executor 循环（单进程）
+### 第一步：抽出 Executor 循环（单进程）——已实现（可选）
 
-- 新增 `ExecutorPool`：按资源池领取 outbox 中的 Effect
-- Coordinator 不再调用 `EffectExecutor`，只提交 outbox
-- 结果写入后，通过事件入口唤醒 Coordinator
-- 保留现有直接路径作为 fallback
+- `engine/pool.rs`：每个 Run 一个 executor task，从 outbox 领取已授权 Effect
+- Coordinator 在 `pooled_execution` 模式下不再调用 `EffectExecutor`，只提交 outbox
+- 执行结果通过 `PoolEvent` 回到 Coordinator 的事件队列
+- 审批在 Coordinator 内完成，未授权的 Effect 不进入 outbox
+- 默认仍是内联执行，`AgentBuilder::pooled_execution(true)` 才启用
 
-验收：现有全部测试通过；`drive` 中不再有 `execute_tool_batch` / `execute_model` 调用。
+限制：pooled 模式目前没有把 `BudgetHandle` 传给工具，子 Agent 的预算切片仍依赖内联路径。
+
+验收：现有全部测试通过；新增 pooled/inline 等价测试与 pooled 审批测试。
 
 ### 第二步：统一事件入口
 

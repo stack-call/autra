@@ -190,6 +190,10 @@ Tests observe public behaviour, not private helpers.
 52. **Benchmarks** (`autra`): `cargo bench -p autra --bench runtime` reports
     per-step latency for memory and SQLite journals, journal growth, and
     concurrent-Run throughput.
+53. **Pooled execution** (`autra`): a journaled Run executed from the separate
+    executor loop produces the same answer, status and Effect statuses as the
+    inline path; approvals are resolved by the coordinator before the executor
+    claims the Effect.
 
 CLI smoke tests cover `--help`, `tools`, the demo success/failure exit codes,
 workspace flags and a missing provider key. Core `/implement` tests remain at

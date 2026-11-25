@@ -249,6 +249,7 @@ pub struct AgentBuilder {
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
     scheduler_limits: SchedulerLimits,
+    pooled_execution: bool,
     approver: Option<Arc<dyn Approver>>,
     skills: SkillRegistry,
     context_budget_chars: Option<usize>,
@@ -278,6 +279,7 @@ impl AgentBuilder {
             max_tool_calls: 8,
             max_parallel_tool_calls: 1,
             scheduler_limits: SchedulerLimits::default(),
+            pooled_execution: false,
             approver: None,
             skills: SkillRegistry::new(),
             context_budget_chars: None,
@@ -314,6 +316,13 @@ impl AgentBuilder {
     /// Run driven by this Agent.
     pub fn scheduler_limits(mut self, limits: SchedulerLimits) -> Self {
         self.scheduler_limits = limits;
+        self
+    }
+
+    /// Execute Effects from a separate executor loop instead of inline in the
+    /// coordinator. Requires a journal.
+    pub fn pooled_execution(mut self, pooled: bool) -> Self {
+        self.pooled_execution = pooled;
         self
     }
 
@@ -490,6 +499,7 @@ Maintain a short plan with `update_plan` and keep it current."
             )
             .with_effect_timeout(self.effect_timeout)
             .with_scheduler_limits(self.scheduler_limits)
+            .with_pooled_execution(self.pooled_execution)
             .with_agent_profile(agent_profile);
         if let Some(journal) = self.journal {
             engine = engine.with_journal(journal);

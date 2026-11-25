@@ -112,3 +112,136 @@ async fn one_hundred_runs_respect_the_global_tool_limit() {
         "tool concurrency exceeded the global limit"
     );
 }
+
+#[tokio::test]
+async fn a_pooled_execution_run_matches_the_inline_result() {
+    use autra::EffectJournal;
+    use autra_core::{ModelOutput, ToolCallRequest};
+    use autra_durable_sqlite::SqliteEffectJournal;
+    use autra_harness::{EchoTool, FakeModel};
+
+    fn model() -> FakeModel {
+        FakeModel::new(vec![
+            ModelOutput {
+                usage: None,
+                text: None,
+                tool_calls: vec![ToolCallRequest {
+                    call_id: "call-1".to_owned(),
+                    name: "echo".to_owned(),
+                    arguments: r#"{"text":"hi"}"#.to_owned(),
+                }],
+            },
+            ModelOutput {
+                usage: None,
+                text: Some("done".to_owned()),
+                tool_calls: Vec::new(),
+            },
+        ])
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let inline_path = dir.path().join("inline.db");
+    let inline = Agent::builder("pooled")
+        .model(model())
+        .tool(EchoTool)
+        .journal(SqliteEffectJournal::open(&inline_path).unwrap())
+        .build()
+        .unwrap();
+    let inline_outcome = inline.run("go").await.unwrap();
+
+    let pooled_path = dir.path().join("pooled.db");
+    let pooled = Agent::builder("pooled")
+        .model(model())
+        .tool(EchoTool)
+        .journal(SqliteEffectJournal::open(&pooled_path).unwrap())
+        .pooled_execution(true)
+        .build()
+        .unwrap();
+    let pooled_outcome = pooled.run("go").await.unwrap();
+
+    assert_eq!(pooled_outcome.answer(), inline_outcome.answer());
+    assert_eq!(pooled_outcome.status(), inline_outcome.status());
+    assert_eq!(
+        pooled_outcome.effects().len(),
+        inline_outcome.effects().len()
+    );
+    assert_eq!(
+        pooled_outcome
+            .effects()
+            .iter()
+            .map(|e| e.status)
+            .collect::<Vec<_>>(),
+        inline_outcome
+            .effects()
+            .iter()
+            .map(|e| e.status)
+            .collect::<Vec<_>>()
+    );
+    let journal = SqliteEffectJournal::open(&pooled_path).unwrap();
+    assert_eq!(
+        journal
+            .load_run(&pooled_outcome.state().run_id)
+            .unwrap()
+            .unwrap(),
+        *pooled_outcome.state()
+    );
+}
+
+#[tokio::test]
+async fn pooled_execution_resolves_approvals_before_dispatch() {
+    use async_trait::async_trait;
+    use autra::{ApprovalDecision, ApprovalRequest, Approver};
+    use autra_core::{ModelOutput, ToolCallRequest};
+    use autra_durable_sqlite::SqliteEffectJournal;
+    use autra_harness::{FakeModel, LocalWorkspace, WriteFileTool};
+
+    struct Approve;
+
+    #[async_trait]
+    impl Approver for Approve {
+        async fn approve(&self, _request: &ApprovalRequest) -> ApprovalDecision {
+            ApprovalDecision::Approved
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+    let db = dir.path().join("pooled-approval.db");
+    let agent = Agent::builder("pooled-approval")
+        .model(FakeModel::new(vec![
+            ModelOutput {
+                usage: None,
+                text: None,
+                tool_calls: vec![ToolCallRequest {
+                    call_id: "call-1".to_owned(),
+                    name: "write_file".to_owned(),
+                    arguments: r#"{"path":"note.txt","content":"hello"}"#.to_owned(),
+                }],
+            },
+            ModelOutput {
+                usage: None,
+                text: Some("done".to_owned()),
+                tool_calls: Vec::new(),
+            },
+        ]))
+        .tool(WriteFileTool::new(workspace))
+        .approver(Approve)
+        .journal(SqliteEffectJournal::open(&db).unwrap())
+        .pooled_execution(true)
+        .build()
+        .unwrap();
+
+    let outcome = agent.run("go").await.unwrap();
+
+    assert_eq!(outcome.answer(), Some("done"));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+        "hello"
+    );
+    let tool = outcome
+        .effects()
+        .iter()
+        .find(|effect| effect.kind == autra_core::EffectKind::ToolCall)
+        .unwrap();
+    assert_eq!(tool.status, autra_core::EffectStatus::Committed);
+}

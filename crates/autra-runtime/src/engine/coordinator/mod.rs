@@ -18,6 +18,7 @@ use crate::hub::RunHub;
 
 use super::executor::{EffectExecutor, ModelExecutionContext, ModelStep, ToolBatchContext};
 use super::lease::RunLeaseGuard;
+use super::pool::{self, PoolEvent};
 use super::{LocalEngine, cancel_staged_effects, validator};
 use result::ResultCollector;
 pub(super) use result::{emit_tool_result, enqueue};
@@ -93,6 +94,20 @@ impl LocalEngine {
             }
             forward(event);
         };
+        let pooled = self.pooled_execution && self.journal.is_some();
+        let (pool_events, mut pool_inbox) = tokio::sync::mpsc::unbounded_channel();
+        let pool_wake = Arc::new(tokio::sync::Notify::new());
+        let _pool = PoolGuard(if pooled {
+            Some(pool::spawn(
+                self,
+                run_id.clone(),
+                options.cancel.clone(),
+                pool_events,
+                pool_wake.clone(),
+            ))
+        } else {
+            None
+        });
         let mut results = ResultCollector::new(queue);
         let mut hub_guard = HubGuard::new(
             self.hub.clone(),
@@ -103,9 +118,67 @@ impl LocalEngine {
                 results.cancel();
             }
 
-            let event = results
-                .pop_front()
-                .ok_or_else(|| RunError::Protocol("no accepted event to process".to_owned()))?;
+            let event = match results.pop_front() {
+                Some(event) => event,
+                None if pooled => {
+                    let message = pool_inbox.recv().await.ok_or_else(|| {
+                        RunError::Protocol("executor loop ended without a result".to_owned())
+                    })?;
+                    match message {
+                        PoolEvent::Accepted(effect_id, kind) => {
+                            results.enqueue(kind);
+                            if let Some(journal) = &self.journal {
+                                super::sync_effect(
+                                    journal.journal(),
+                                    &run_id,
+                                    &effect_id,
+                                    &mut effects,
+                                )?;
+                            }
+                            continue;
+                        }
+                        PoolEvent::Cancelled(effect_id) => {
+                            if let Some(journal) = &self.journal {
+                                super::sync_effect(
+                                    journal.journal(),
+                                    &run_id,
+                                    &effect_id,
+                                    &mut effects,
+                                )?;
+                            }
+                            results.cancel();
+                            continue;
+                        }
+                        PoolEvent::ModelFailed(message) => {
+                            let expected_version = state.state_version;
+                            state.phase = AgentPhase::Failed;
+                            state.last_error = Some(message.clone());
+                            state.state_version = expected_version + 1;
+                            on_event(&RunEvent::RunFailed {
+                                message: message.clone(),
+                            });
+                            state = committer
+                                .commit_terminal(&run_id, expected_version, state)
+                                .await?;
+                            if let Some(observer) = &self.observer {
+                                observer.on_run_finished(&run_id, &state.phase);
+                            }
+                            hub_guard.update(RunSnapshot::from_state(
+                                &state,
+                                results.seq(),
+                                effects.len(),
+                            ));
+                            hub_guard.finish();
+                            return Err(RunError::Model(autra_execution::ModelError::new(message)));
+                        }
+                    }
+                }
+                None => {
+                    return Err(RunError::Protocol(
+                        "no accepted event to process".to_owned(),
+                    ));
+                }
+            };
             let expected_version = state.state_version;
             let transition = match stepper.transition(&state, &event) {
                 Ok(transition) => transition,
@@ -230,6 +303,25 @@ impl LocalEngine {
                 continue;
             }
 
+            if pooled {
+                // Authorization happens here, not in the executor. Once every
+                // staged Effect is Authorized it is in the outbox, and the
+                // executor loop picks it up.
+                if let Some(journal) = &self.journal {
+                    self.resolve_pending_approvals(
+                        journal.as_ref(),
+                        stepper.as_ref(),
+                        &state,
+                        &mut effects[first_new..],
+                        approver.as_ref(),
+                        &mut on_event,
+                    )
+                    .await?;
+                }
+                pool_wake.notify_one();
+                continue;
+            }
+
             if !tool_calls.is_empty() {
                 let budget = BudgetHandle::new(state.budget.clone());
                 let mut context = ToolBatchContext {
@@ -297,6 +389,17 @@ impl LocalEngine {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Aborts the executor loop when the coordinator returns.
+struct PoolGuard(Option<tokio::task::JoinHandle<()>>);
+
+impl Drop for PoolGuard {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
         }
     }
 }

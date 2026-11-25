@@ -7,6 +7,7 @@ mod coordinator;
 mod executor;
 mod lease;
 mod outbox;
+mod pool;
 mod recovery;
 
 pub use recovery::{RecoveryLease, RecoverySupervisor};
@@ -42,6 +43,7 @@ pub struct LocalEngine {
     max_parallel_tool_calls: u32,
     effect_timeout: Option<Duration>,
     scheduler: Arc<GlobalScheduler>,
+    pooled_execution: bool,
     agent_profile: Option<String>,
     approver: Option<Arc<dyn Approver>>,
     policy: PolicyChain,
@@ -62,6 +64,7 @@ impl LocalEngine {
             max_parallel_tool_calls: 1,
             effect_timeout: None,
             scheduler: Arc::new(GlobalScheduler::default()),
+            pooled_execution: false,
             agent_profile: None,
             approver: None,
             policy: PolicyChain::new(),
@@ -113,6 +116,17 @@ impl LocalEngine {
 
     pub fn scheduler(&self) -> &Arc<GlobalScheduler> {
         &self.scheduler
+    }
+
+    /// Execute Effects from a separate executor loop instead of inline in the
+    /// coordinator. Requires a journal; see `docs/message-driven-runtime.md`.
+    pub fn with_pooled_execution(mut self, pooled: bool) -> Self {
+        self.pooled_execution = pooled;
+        self
+    }
+
+    pub fn pooled_execution(&self) -> bool {
+        self.pooled_execution
     }
 
     pub fn with_approver(mut self, approver: Arc<dyn Approver>) -> Self {
@@ -237,7 +251,7 @@ impl LocalEngine {
     }
 }
 
-fn tool_outcome_from_record(record: &EffectRecord) -> Option<ToolOutcome> {
+pub(super) fn tool_outcome_from_record(record: &EffectRecord) -> Option<ToolOutcome> {
     let call_id = record.call_id.clone()?;
     let name = record.tool_name.clone()?;
     let (content, is_error, outcome_unknown) = match record.status {
