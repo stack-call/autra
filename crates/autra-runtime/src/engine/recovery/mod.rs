@@ -126,15 +126,16 @@ impl LocalEngine {
         let approver = options.approver.clone().or_else(|| self.approver.clone());
         match state.phase {
             AgentPhase::AwaitingTool => {
-                self.resolve_pending_approvals(
-                    journal.as_ref(),
-                    stepper.as_ref(),
-                    &state,
-                    &mut effects,
-                    approver.as_ref(),
-                    &mut on_event,
-                )
-                .await?;
+                self.authorization_gate()
+                    .resolve_pending_approvals(
+                        journal.as_ref(),
+                        stepper.as_ref(),
+                        &state,
+                        &mut effects,
+                        approver.as_ref(),
+                        &mut on_event,
+                    )
+                    .await?;
                 let outcomes = self
                     .reconcile_tool_effects(
                         stepper.as_ref(),

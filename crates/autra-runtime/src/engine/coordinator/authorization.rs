@@ -14,8 +14,27 @@ use autra_execution::{
 use crate::approval::{ApprovalDecision, ApprovalRequest};
 
 use super::super::LocalEngine;
-
+#[derive(Clone)]
+pub(in crate::engine) struct AuthorizationGate {
+    pub tools: autra_execution::ToolRegistry,
+    pub journal: Option<Arc<dyn DurableTransitionStore>>,
+    pub policy: autra_execution::PolicyChain,
+    pub actor: Option<String>,
+    pub approval_ttl: Option<std::time::Duration>,
+}
 impl LocalEngine {
+    pub(in crate::engine) fn authorization_gate(&self) -> AuthorizationGate {
+        AuthorizationGate {
+            tools: self.tools.clone(),
+            journal: self.journal.clone(),
+            policy: self.policy.clone(),
+            actor: self.actor.clone(),
+            approval_ttl: self.approval_ttl,
+        }
+    }
+}
+
+impl AuthorizationGate {
     pub(in crate::engine) fn policy_decision(
         &self,
         run_id: &RunId,
@@ -45,7 +64,7 @@ impl LocalEngine {
     }
 }
 
-impl LocalEngine {
+impl AuthorizationGate {
     pub(in crate::engine) fn approval_request(
         &self,
         run_id: &RunId,

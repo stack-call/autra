@@ -5,6 +5,7 @@
 
 mod coordinator;
 mod executor;
+pub use executor::{EffectExecutor, ExecutionDependencies};
 mod lease;
 mod outbox;
 mod pool;
@@ -74,6 +75,18 @@ impl LocalEngine {
         }
     }
 
+    pub fn effect_executor(&self) -> EffectExecutor {
+        EffectExecutor::new(ExecutionDependencies {
+            dispatcher: self.dispatcher.clone(),
+            tools: self.tools.clone(),
+            journal: self.journal.clone(),
+            scheduler: self.scheduler.clone(),
+            approver: self.approver.clone(),
+            policy: self.policy.clone(),
+            actor: self.actor.clone(),
+            approval_ttl: self.approval_ttl,
+        })
+    }
     pub fn with_journal(mut self, journal: Arc<dyn DurableTransitionStore>) -> Self {
         self.journal = Some(journal);
         self

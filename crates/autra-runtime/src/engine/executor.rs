@@ -21,8 +21,11 @@ use crate::dispatcher::{
 };
 use crate::scheduler::{AcquireError, ResourceKind};
 
-use super::LocalEngine;
+use super::coordinator::authorization::AuthorizationGate;
 use super::coordinator::emit_tool_result;
+use crate::dispatcher::Dispatcher;
+use crate::scheduler::GlobalScheduler;
+use autra_execution::{PolicyChain, ToolRegistry};
 
 pub(super) enum ModelStep {
     Output(ModelOutput),
@@ -121,13 +124,56 @@ pub(super) struct ToolBatchOutcome {
     pub cancelled: bool,
 }
 
-pub(super) struct EffectExecutor<'a> {
-    engine: &'a LocalEngine,
+/// Execution facilities, without RunState or a borrowed engine.
+#[derive(Clone)]
+pub struct ExecutionDependencies {
+    pub dispatcher: Arc<dyn Dispatcher>,
+    pub tools: ToolRegistry,
+    pub journal: Option<Arc<dyn DurableTransitionStore>>,
+    pub scheduler: Arc<GlobalScheduler>,
+    pub approver: Option<Arc<dyn Approver>>,
+    pub policy: PolicyChain,
+    pub actor: Option<String>,
+    pub approval_ttl: Option<Duration>,
 }
-
-impl<'a> EffectExecutor<'a> {
-    pub(super) fn new(engine: &'a LocalEngine) -> Self {
-        Self { engine }
+/// Executes already committed Effects and never advances authoritative RunState.
+#[derive(Clone)]
+pub struct EffectExecutor {
+    dependencies: ExecutionDependencies,
+    authorization: AuthorizationGate,
+}
+impl EffectExecutor {
+    pub fn new(dependencies: ExecutionDependencies) -> Self {
+        let authorization = AuthorizationGate {
+            tools: dependencies.tools.clone(),
+            journal: dependencies.journal.clone(),
+            policy: dependencies.policy.clone(),
+            actor: dependencies.actor.clone(),
+            approval_ttl: dependencies.approval_ttl,
+        };
+        Self {
+            dependencies,
+            authorization,
+        }
+    }
+    /// Can be hosted by a task independent of LocalEngine or its coordinator.
+    pub async fn execute_pending(
+        &self,
+        run_id: &RunId,
+        mut options: DispatchOptions<'_>,
+    ) -> Result<Vec<DispatchResult>, autra_execution::JournalError> {
+        let journal = self.dependencies.journal.as_ref().ok_or_else(|| {
+            autra_execution::JournalError::new("independent execution requires a journal")
+        })?;
+        options.scheduler = Some(self.dependencies.scheduler.clone());
+        OutboxDispatcher::run_once_for_run_with(
+            journal.journal(),
+            run_id,
+            options,
+            self.dependencies.dispatcher.as_ref(),
+            |_| {},
+        )
+        .await
     }
 
     pub(super) async fn execute_model<F>(
@@ -150,7 +196,7 @@ impl<'a> EffectExecutor<'a> {
         if cancel.is_cancelled() {
             let record = super::effect_mut(effects, effect_id);
             record.set_status(EffectStatus::CancelledBeforeDispatch);
-            if let Some(journal) = &self.engine.journal {
+            if let Some(journal) = &self.dependencies.journal {
                 journal
                     .record(run_id, record)
                     .map_err(|error| RunError::Journal(error.to_string()))?;
@@ -169,7 +215,7 @@ impl<'a> EffectExecutor<'a> {
         let model_span = tracing::info_span!("gen_ai.model.call", turn);
         let output_result = async {
             let (delta, mut deltas) = delta_channel();
-            match &self.engine.journal {
+            match &self.dependencies.journal {
                 Some(journal) => {
                     let options = DispatchOptions {
                         limit: 1,
@@ -180,13 +226,13 @@ impl<'a> EffectExecutor<'a> {
                         budget: None,
                         child_execution: None,
                         delta: Some(delta),
-                        scheduler: Some(self.engine.scheduler.clone()),
+                        scheduler: Some(self.dependencies.scheduler.clone()),
                     };
                     let dispatch = OutboxDispatcher::run_once_for_run_with(
                         journal.as_ref(),
                         run_id,
                         options,
-                        self.engine.dispatcher.as_ref(),
+                        self.dependencies.dispatcher.as_ref(),
                         |_| {},
                     );
                     let results = await_with_deltas(dispatch, &mut deltas, on_event)
@@ -213,7 +259,7 @@ impl<'a> EffectExecutor<'a> {
                 }
                 None => {
                     let permit = match self
-                        .engine
+                        .dependencies
                         .scheduler
                         .acquire(ResourceKind::Model, ctx.run_id, Some(cancel))
                         .await
@@ -230,12 +276,12 @@ impl<'a> EffectExecutor<'a> {
                     };
                     super::effect_mut(effects, effect_id).set_status(EffectStatus::Dispatched);
                     let mut emit = move |text: String| delta(text);
-                    let call = self.engine.dispatcher.call_model_streaming(
+                    let call = self.dependencies.dispatcher.call_model_streaming(
                         request,
                         effect_timeout,
                         &mut emit,
                     );
-                    drop(permit);
+                    let _permit = permit;
                     match await_with_cancel(
                         await_with_deltas(call, &mut deltas, on_event),
                         Some(cancel),
@@ -264,7 +310,7 @@ impl<'a> EffectExecutor<'a> {
                         total_tokens: usage.total_tokens,
                     });
                 }
-                if self.engine.journal.is_none() {
+                if self.dependencies.journal.is_none() {
                     super::effect_mut(effects, effect_id).apply_model_success(output.text.clone());
                 }
                 if let Some(observer) = observer {
@@ -283,7 +329,7 @@ impl<'a> EffectExecutor<'a> {
                 Ok(ModelStep::Cancelled)
             }
             Err(error) => {
-                if self.engine.journal.is_none() {
+                if self.dependencies.journal.is_none() {
                     super::effect_mut(effects, effect_id).apply_model_failure(error.to_string());
                 }
                 if let Some(observer) = observer {
@@ -310,8 +356,8 @@ impl<'a> EffectExecutor<'a> {
         let limit = limit.max(1) as usize;
         let run_id = ctx.run_id.clone();
         let child_execution = ChildExecutionContext {
-            journal: self.engine.journal.clone(),
-            approver: self.engine.approver.clone(),
+            journal: self.dependencies.journal.clone(),
+            approver: self.dependencies.approver.clone(),
             depth: 0,
         };
         let mut outcomes: Vec<Option<ToolOutcome>> = vec![None; calls.len()];
@@ -323,14 +369,14 @@ impl<'a> EffectExecutor<'a> {
                 cancelled = true;
                 break;
             }
-            let decision = match self.engine.policy_decision(&run_id, call) {
+            let decision = match self.authorization.policy_decision(&run_id, call) {
                 Some(decision) => decision,
                 None => {
                     // Unknown tools are dispatched so the outcome is a normal
                     // tool error, not an approval prompt.
                     ctx.effect_mut(effect_id)
                         .set_status(EffectStatus::Authorized);
-                    if self.engine.journal.is_none() {
+                    if self.dependencies.journal.is_none() {
                         ctx.emit_authorized(effect_id);
                     }
                     approved[index] = Some((effect_id.clone(), call.clone()));
@@ -338,11 +384,12 @@ impl<'a> EffectExecutor<'a> {
                 }
             };
             if decision == autra_execution::PolicyDecision::Deny {
-                let outcome = super::policy_denied_outcome(call, &self.engine.policy.revision());
+                let outcome =
+                    super::policy_denied_outcome(call, &self.dependencies.policy.revision());
                 let record = ctx.effect_mut(effect_id);
                 record.set_status(EffectStatus::Rejected);
                 record.error = Some(outcome.content.clone());
-                if let Some(journal) = &self.engine.journal {
+                if let Some(journal) = &self.dependencies.journal {
                     journal
                         .record(&run_id, record)
                         .map_err(|error| RunError::Journal(error.to_string()))?;
@@ -355,14 +402,16 @@ impl<'a> EffectExecutor<'a> {
             if decision == autra_execution::PolicyDecision::Ask {
                 ctx.effect_mut(effect_id)
                     .set_status(EffectStatus::AwaitingApproval);
-                let request = self.engine.approval_request(ctx.run_id, effect_id, call);
+                let request = self
+                    .authorization
+                    .approval_request(ctx.run_id, effect_id, call);
                 ctx.emit_stream(&RunEvent::ApprovalRequested {
                     call_id: request.call_id.clone(),
                     tool_name: request.tool_name.clone(),
                     argument_digest: request.argument_digest.clone(),
                 });
                 let decision = self
-                    .engine
+                    .authorization
                     .resolve_approval(&request, effect_id, ctx.approver)
                     .await?;
                 let is_approved = decision == crate::approval::ApprovalDecision::Approved;
@@ -375,7 +424,7 @@ impl<'a> EffectExecutor<'a> {
                     let record = ctx.effect_mut(effect_id);
                     record.set_status(EffectStatus::Rejected);
                     record.error = Some(outcome.content.clone());
-                    if let Some(journal) = &self.engine.journal {
+                    if let Some(journal) = &self.dependencies.journal {
                         journal
                             .record(&run_id, record)
                             .map_err(|error| RunError::Journal(error.to_string()))?;
@@ -388,7 +437,7 @@ impl<'a> EffectExecutor<'a> {
             }
             ctx.effect_mut(effect_id)
                 .set_status(EffectStatus::Authorized);
-            if self.engine.journal.is_none() {
+            if self.dependencies.journal.is_none() {
                 ctx.emit_authorized(effect_id);
             }
             approved[index] = Some((effect_id.clone(), call.clone()));
@@ -401,14 +450,14 @@ impl<'a> EffectExecutor<'a> {
             .collect();
 
         if cancelled {
-            mark_cancelled_before_dispatch(ctx, self.engine.journal.as_deref())?;
+            mark_cancelled_before_dispatch(ctx, self.dependencies.journal.as_deref())?;
             return Ok(ToolBatchOutcome {
                 outcomes: outcomes.into_iter().flatten().collect(),
                 cancelled,
             });
         }
 
-        if let Some(journal) = &self.engine.journal {
+        if let Some(journal) = &self.dependencies.journal {
             let (was_cancelled, dispatched) = self
                 .execute_claimed_tool_batch(
                     journal.as_ref(),
@@ -429,13 +478,13 @@ impl<'a> EffectExecutor<'a> {
                     cancelled = true;
                     break;
                 }
-                let known_tool = self.engine.tools.get(&call.name).is_some();
-                let resource = match self.engine.dispatcher.tool_resource(&call.name) {
+                let known_tool = self.dependencies.tools.get(&call.name).is_some();
+                let resource = match self.dependencies.dispatcher.tool_resource(&call.name) {
                     autra_execution::ToolResource::Process => ResourceKind::Process,
                     autra_execution::ToolResource::Tool => ResourceKind::Tool,
                 };
                 let permit = match self
-                    .engine
+                    .dependencies
                     .scheduler
                     .acquire(resource, ctx.run_id, Some(cancel))
                     .await
@@ -461,7 +510,7 @@ impl<'a> EffectExecutor<'a> {
                     child_execution: Some(child_execution.clone()),
                 };
                 let outcome = self
-                    .engine
+                    .dependencies
                     .dispatcher
                     .call_tool_with_context(&context, &call, effect_timeout)
                     .await;
@@ -472,7 +521,7 @@ impl<'a> EffectExecutor<'a> {
                 outcomes[index] = Some(outcome);
             }
         } else {
-            let scheduler = self.engine.scheduler.clone();
+            let scheduler = self.dependencies.scheduler.clone();
             for chunk in approved_calls.chunks(limit) {
                 let mut prepared = Vec::new();
                 for (index, effect_id, call) in chunk {
@@ -480,7 +529,7 @@ impl<'a> EffectExecutor<'a> {
                         cancelled = true;
                         break;
                     }
-                    let resource = match self.engine.dispatcher.tool_resource(&call.name) {
+                    let resource = match self.dependencies.dispatcher.tool_resource(&call.name) {
                         autra_execution::ToolResource::Process => ResourceKind::Process,
                         autra_execution::ToolResource::Tool => ResourceKind::Tool,
                     };
@@ -494,13 +543,13 @@ impl<'a> EffectExecutor<'a> {
                             return Err(RunError::Protocol("scheduler queue is full".to_owned()));
                         }
                     };
-                    let known_tool = self.engine.tools.get(&call.name).is_some();
+                    let known_tool = self.dependencies.tools.get(&call.name).is_some();
                     ctx.effect_mut(effect_id)
                         .set_status(EffectStatus::Dispatched);
                     ctx.start_tool(call);
                     let index = *index;
                     let effect_id = effect_id.clone();
-                    let dispatcher = self.engine.dispatcher.clone();
+                    let dispatcher = self.dependencies.dispatcher.clone();
                     let call = call.clone();
                     let run_id = ctx.run_id.clone();
                     let context = autra_execution::ToolContext {
@@ -542,7 +591,7 @@ impl<'a> EffectExecutor<'a> {
         }
 
         if cancelled || cancel.is_cancelled() {
-            mark_cancelled_before_dispatch(ctx, self.engine.journal.as_deref())?;
+            mark_cancelled_before_dispatch(ctx, self.dependencies.journal.as_deref())?;
             cancelled = true;
         }
         Ok(ToolBatchOutcome {
@@ -613,18 +662,18 @@ impl<'a> EffectExecutor<'a> {
                 lease: DEFAULT_CLAIM_LEASE,
                 budget: Some(budget),
                 child_execution: Some(ChildExecutionContext {
-                    journal: self.engine.journal.clone(),
-                    approver: self.engine.approver.clone(),
+                    journal: self.dependencies.journal.clone(),
+                    approver: self.dependencies.approver.clone(),
                     depth: 0,
                 }),
                 delta: None,
-                scheduler: Some(self.engine.scheduler.clone()),
+                scheduler: Some(self.dependencies.scheduler.clone()),
             };
             OutboxDispatcher::run_once_for_run_with(
                 journal,
                 &run_id,
                 options,
-                self.engine.dispatcher.as_ref(),
+                self.dependencies.dispatcher.as_ref(),
                 &mut on_result,
             )
             .await

@@ -191,3 +191,13 @@ impl ToolRegistry {
         self.tools.is_empty()
     }
 }
+
+impl From<crate::EnvironmentError> for ToolError {
+    fn from(error: crate::EnvironmentError) -> Self {
+        if matches!(error, crate::EnvironmentError::OutcomeUnknown(_)) {
+            Self::outcome_unknown(error.to_string())
+        } else {
+            Self::new(error.to_string())
+        }
+    }
+}

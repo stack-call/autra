@@ -6,6 +6,9 @@
 #[cfg(feature = "process")]
 pub mod command;
 pub mod context;
+pub mod environment;
+#[cfg(feature = "process")]
+mod environment_process;
 #[cfg(feature = "process")]
 pub mod git;
 pub mod middleware;
@@ -14,6 +17,7 @@ pub mod planning;
 pub mod react;
 pub mod skills;
 pub mod tools;
+mod workspace;
 
 pub use autra_core::{HistoryItem, ModelCallSpec, ModelOutput, ToolCallRequest, ToolOutcome};
 #[cfg(feature = "process")]
@@ -38,3 +42,5 @@ pub use tools::{
     TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor, ToolError, ToolInput,
     ToolOutput, ToolRegistry, WriteFileTool,
 };
+
+pub use environment::{LocalEnvironment, LocalEnvironmentProvider};

@@ -93,4 +93,44 @@ pub trait SandboxBackend: Send + Sync {
     async fn inspect(&self, handle: &SandboxHandle) -> Result<SandboxStatus, SandboxError>;
 
     async fn release(&self, handle: SandboxHandle) -> Result<(), SandboxError>;
+
+    async fn metadata(
+        &self,
+        _handle: &SandboxHandle,
+        _path: &str,
+    ) -> Result<crate::FileMetadata, SandboxError> {
+        Err(SandboxError::Unsupported("file_api".into()))
+    }
+    async fn read_file(
+        &self,
+        _handle: &SandboxHandle,
+        _path: &str,
+        _max_bytes: usize,
+    ) -> Result<crate::FileRead, SandboxError> {
+        Err(SandboxError::Unsupported("file_api".into()))
+    }
+    async fn list_directory(
+        &self,
+        _handle: &SandboxHandle,
+        _path: &str,
+    ) -> Result<Vec<crate::DirectoryEntry>, SandboxError> {
+        Err(SandboxError::Unsupported("file_api".into()))
+    }
+    async fn write_file(
+        &self,
+        _handle: &SandboxHandle,
+        _path: &str,
+        _content: &str,
+    ) -> Result<(), SandboxError> {
+        Err(SandboxError::Unsupported("file_api".into()))
+    }
+    async fn write_file_if_unchanged(
+        &self,
+        _handle: &SandboxHandle,
+        _path: &str,
+        _expected: &str,
+        _content: &str,
+    ) -> Result<(), SandboxError> {
+        Err(SandboxError::Unsupported("atomic_compare_write".into()))
+    }
 }

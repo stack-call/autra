@@ -30,3 +30,8 @@ pub use autra_runtime::{
 };
 pub use session::Session;
 pub use subagent::{Subagent, SubagentRegistry, SubagentTool};
+
+pub use autra_execution::environment::*;
+pub use autra_harness::{LocalEnvironment, LocalEnvironmentProvider};
+
+pub use autra_runtime::{EffectExecutor, ExecutionDependencies, SandboxEnvironmentProvider};

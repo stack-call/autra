@@ -57,7 +57,10 @@ impl<'a> TransitionCommitter<'a> {
             let intent_json = serde_json::to_string(&intent).unwrap_or_default();
             let requires_approval = match &intent {
                 EffectIntent::CallModel(_) => false,
-                EffectIntent::CallTool(spec) => self.engine.tool_needs_gate(run_id, &spec.call),
+                EffectIntent::CallTool(spec) => self
+                    .engine
+                    .authorization_gate()
+                    .tool_needs_gate(run_id, &spec.call),
             };
             let mut record = match &intent {
                 EffectIntent::CallModel(_) => {

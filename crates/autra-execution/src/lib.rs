@@ -5,6 +5,7 @@
 //! `autra-core` only; no Tokio, database or product facade.
 
 pub mod approval;
+pub mod environment;
 pub mod error;
 pub mod hooks;
 pub mod host;
@@ -43,3 +44,5 @@ pub use tool::{
     ChildExecutionContext, TOOL_PROTOCOL_VERSION, Tool, ToolContext, ToolContract, ToolDescriptor,
     ToolError, ToolInput, ToolOutput, ToolRegistry, ToolResource,
 };
+
+pub use environment::*;

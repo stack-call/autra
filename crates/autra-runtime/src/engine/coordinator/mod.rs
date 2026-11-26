@@ -1,7 +1,7 @@
 //! Run coordination: the per-Run event loop, transition commit, authorization
 //! and result collection.
 
-mod authorization;
+pub(super) mod authorization;
 mod inbox;
 mod result;
 mod transition;
@@ -17,7 +17,7 @@ use autra_execution::{RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot};
 
 use crate::hub::RunHub;
 
-use super::executor::{EffectExecutor, ModelExecutionContext, ModelStep, ToolBatchContext};
+use super::executor::{ModelExecutionContext, ModelStep, ToolBatchContext};
 use super::lease::RunLeaseGuard;
 use super::pool;
 use super::{LocalEngine, cancel_staged_effects, validator};
@@ -300,15 +300,16 @@ impl LocalEngine {
                 // staged Effect is Authorized it is in the outbox, and the
                 // executor loop picks it up.
                 if let Some(journal) = &self.journal {
-                    self.resolve_pending_approvals(
-                        journal.as_ref(),
-                        stepper.as_ref(),
-                        &state,
-                        &mut effects[first_new..],
-                        approver.as_ref(),
-                        &mut on_event,
-                    )
-                    .await?;
+                    self.authorization_gate()
+                        .resolve_pending_approvals(
+                            journal.as_ref(),
+                            stepper.as_ref(),
+                            &state,
+                            &mut effects[first_new..],
+                            approver.as_ref(),
+                            &mut on_event,
+                        )
+                        .await?;
                 }
                 if let Ok(mut budget) = pool_budget.lock() {
                     *budget = state.budget.clone();
@@ -327,7 +328,8 @@ impl LocalEngine {
                     budget: &budget,
                     observer: self.observer.as_ref(),
                 };
-                let batch = EffectExecutor::new(self)
+                let batch = self
+                    .effect_executor()
                     .execute_tool_batch(
                         tool_calls,
                         parallel_limit,
@@ -355,7 +357,8 @@ impl LocalEngine {
                     effect_timeout,
                     turn: state.budget.turns_used,
                 };
-                match EffectExecutor::new(self)
+                match self
+                    .effect_executor()
                     .execute_model(&effect_id, &request, &mut context)
                     .await
                 {

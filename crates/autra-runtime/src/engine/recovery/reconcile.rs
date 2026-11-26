@@ -69,7 +69,8 @@ impl LocalEngine {
                             .ok()
                             .and_then(EffectIntent::into_tool_call);
                         let denied = intent_call.as_ref().is_some_and(|call| {
-                            self.policy_decision(run_id, call) == Some(PolicyDecision::Deny)
+                            self.authorization_gate().policy_decision(run_id, call)
+                                == Some(PolicyDecision::Deny)
                         });
                         if denied {
                             reason = Some("denied by current policy".to_owned());
@@ -89,7 +90,8 @@ impl LocalEngine {
                             }
                             let approval_ok = !tool.contract().requires_approval
                                 || intent_call.as_ref().is_some_and(|call| {
-                                    self.has_valid_approval(run_id, &record.id, call)
+                                    self.authorization_gate()
+                                        .has_valid_approval(run_id, &record.id, call)
                                 });
                             if !approval_ok {
                                 reason =

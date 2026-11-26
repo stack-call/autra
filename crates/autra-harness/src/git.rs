@@ -1,14 +1,18 @@
 //! Read-only git tools for workspace inspection.
 
+use crate::environment::LocalEnvironment;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{LocalWorkspace, Tool, ToolError};
 use async_trait::async_trait;
 use autra_core::{EffectClass, ToolSpec};
-use autra_execution::ToolResource;
+use autra_execution::{
+    CommandOutput as ProcessOutput, EnvironmentCommand, ExecutionEnvironment, ToolResource,
+};
 use serde::Deserialize;
 
-use crate::command::{ProcessOutput, run_program, truncate_output};
+use crate::command::truncate_output;
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 const GIT_MAX_BYTES: usize = 32 * 1024;
@@ -30,12 +34,16 @@ fn ensure_success(label: &str, output: &ProcessOutput) -> Result<(), ToolError> 
 
 /// Shows the workspace git status in short format. Read-only.
 pub struct GitStatusTool {
-    workspace: LocalWorkspace,
+    environment: Arc<dyn ExecutionEnvironment>,
 }
 
 impl GitStatusTool {
+    pub fn in_environment(environment: Arc<dyn ExecutionEnvironment>) -> Self {
+        Self { environment }
+    }
+
     pub fn new(workspace: LocalWorkspace) -> Self {
-        Self { workspace }
+        Self::in_environment(Arc::new(LocalEnvironment::new(workspace)))
     }
 }
 
@@ -58,34 +66,40 @@ impl Tool for GitStatusTool {
     }
 
     async fn call(&self, _arguments: &str) -> Result<String, ToolError> {
-        let mut output = run_program(
-            self.workspace.root(),
-            "git",
-            &[
-                "status".to_owned(),
-                "--short".to_owned(),
-                "--branch".to_owned(),
-            ],
-            GIT_TIMEOUT,
-            None,
-        )
-        .await?;
-        // Git for Windows occasionally returns exit 0 with empty output on the
-        // first status after `git init`. A read-only retry is safe and avoids
-        // reporting a populated tree as clean.
-        if output.code == Some(0) && output.stdout.trim().is_empty() {
-            output = run_program(
-                self.workspace.root(),
-                "git",
-                &[
-                    "status".to_owned(),
-                    "--short".to_owned(),
-                    "--branch".to_owned(),
-                ],
+        let mut output = self
+            .environment
+            .execute(
+                EnvironmentCommand::Program {
+                    program: "git".to_owned(),
+                    args: vec![
+                        "status".to_owned(),
+                        "--short".to_owned(),
+                        "--branch".to_owned(),
+                    ],
+                },
                 GIT_TIMEOUT,
                 None,
             )
             .await?;
+        // Git for Windows occasionally returns exit 0 with empty output on the
+        // first status after `git init`. A read-only retry is safe and avoids
+        // reporting a populated tree as clean.
+        if output.code == Some(0) && output.stdout.trim().is_empty() {
+            output = self
+                .environment
+                .execute(
+                    EnvironmentCommand::Program {
+                        program: "git".to_owned(),
+                        args: vec![
+                            "status".to_owned(),
+                            "--short".to_owned(),
+                            "--branch".to_owned(),
+                        ],
+                    },
+                    GIT_TIMEOUT,
+                    None,
+                )
+                .await?;
         }
         ensure_success("git status", &output)?;
         let text = output.stdout.trim_end();
@@ -99,12 +113,16 @@ impl Tool for GitStatusTool {
 
 /// Shows the workspace git diff. Read-only.
 pub struct GitDiffTool {
-    workspace: LocalWorkspace,
+    environment: Arc<dyn ExecutionEnvironment>,
 }
 
 impl GitDiffTool {
+    pub fn in_environment(environment: Arc<dyn ExecutionEnvironment>) -> Self {
+        Self { environment }
+    }
+
     pub fn new(workspace: LocalWorkspace) -> Self {
-        Self { workspace }
+        Self::in_environment(Arc::new(LocalEnvironment::new(workspace)))
     }
 }
 
@@ -150,18 +168,21 @@ impl Tool for GitDiffTool {
             command_args.push("--staged".to_owned());
         }
         if let Some(path) = &args.path {
-            self.workspace.resolve(path)?;
+            self.environment.metadata(path).await?;
             command_args.push("--".to_owned());
             command_args.push(path.clone());
         }
-        let output = run_program(
-            self.workspace.root(),
-            "git",
-            &command_args,
-            GIT_TIMEOUT,
-            None,
-        )
-        .await?;
+        let output = self
+            .environment
+            .execute(
+                EnvironmentCommand::Program {
+                    program: "git".to_owned(),
+                    args: command_args,
+                },
+                GIT_TIMEOUT,
+                None,
+            )
+            .await?;
         ensure_success("git diff", &output)?;
         let text = output.stdout.trim_end();
         if text.is_empty() {
