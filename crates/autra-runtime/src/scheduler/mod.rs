@@ -4,7 +4,9 @@
 //! already-authorized Effect may execute; it never changes the Effect or the
 //! Run state.
 
-use std::collections::VecDeque;
+mod placement;
+pub use placement::{EffectPermit, ScheduleError};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -65,7 +67,7 @@ pub enum AcquireError {
 struct Waiter {
     id: u64,
     run_id: RunId,
-    sender: oneshot::Sender<()>,
+    sender: oneshot::Sender<SchedulerPermit>,
 }
 
 struct PoolState {
@@ -110,12 +112,17 @@ impl FairPool {
         run_id: RunId,
         cancel: Option<&CancelFlag>,
     ) -> Result<SchedulerPermit, AcquireError> {
+        if cancel.is_some_and(CancelFlag::is_cancelled) {
+            return Err(AcquireError::Cancelled);
+        }
         let (mut receiver, waiter_id) = {
             let mut state = self.state.lock().expect("scheduler lock poisoned");
             if state.active < self.limit && state.queue.is_empty() {
                 state.active += 1;
                 state.last_run = Some(run_id);
-                return Ok(SchedulerPermit { pool: self.clone() });
+                return Ok(SchedulerPermit {
+                    pool: Some(self.clone()),
+                });
             }
             if state.queue.len() >= self.max_waiters {
                 return Err(AcquireError::QueueFull);
@@ -127,52 +134,22 @@ impl FairPool {
             (receiver, id)
         };
 
-        let Some(cancel) = cancel else {
-            return receiver
-                .await
-                .map(|()| SchedulerPermit { pool: self.clone() })
-                .map_err(|_| AcquireError::Cancelled);
+        let _waiter = WaiterGuard {
+            pool: self.clone(),
+            id: waiter_id,
         };
-        if cancel.is_cancelled() {
-            self.cancel_waiter(waiter_id, receiver).await;
-            return Err(AcquireError::Cancelled);
-        }
-
+        let Some(cancel) = cancel else {
+            return receiver.await.map_err(|_| AcquireError::Cancelled);
+        };
         loop {
             tokio::select! {
-                result = &mut receiver => {
-                    return result
-                        .map(|()| SchedulerPermit { pool: self.clone() })
-                        .map_err(|_| AcquireError::Cancelled);
-                }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    if cancel.is_cancelled() {
-                        self.cancel_waiter(waiter_id, receiver).await;
-                        return Err(AcquireError::Cancelled);
-                    }
-                }
+                result=&mut receiver=>return result.map_err(|_|AcquireError::Cancelled),
+                _=tokio::time::sleep(Duration::from_millis(20))=>{if cancel.is_cancelled(){return Err(AcquireError::Cancelled);}}
             }
         }
     }
 
-    /// Remove a cancelled waiter. If a release already handed it a permit, give
-    /// that permit back before reporting cancellation.
-    async fn cancel_waiter(self: &Arc<Self>, waiter_id: u64, receiver: oneshot::Receiver<()>) {
-        let removed = {
-            let mut state = self.state.lock().expect("scheduler lock poisoned");
-            let index = state.queue.iter().position(|waiter| waiter.id == waiter_id);
-            if let Some(index) = index {
-                state.queue.remove(index);
-            }
-            index.is_some()
-        };
-        if !removed && receiver.await.is_ok() {
-            // The release raced with cancellation and granted the slot.
-            drop(SchedulerPermit { pool: self.clone() });
-        }
-    }
-
-    fn release(&self) {
+    fn release(self: &Arc<Self>) {
         let mut state = self.state.lock().expect("scheduler lock poisoned");
         loop {
             let Some(waiter) = Self::next_waiter(&mut state) else {
@@ -181,19 +158,42 @@ impl FairPool {
                 return;
             };
             state.last_run = Some(waiter.run_id.clone());
-            if waiter.sender.send(()).is_ok() {
-                return;
+            match waiter.sender.send(SchedulerPermit {
+                pool: Some(self.clone()),
+            }) {
+                Ok(()) => return,
+                Err(mut permit) => {
+                    permit.pool = None;
+                }
             }
             // The waiter cancelled between being selected and notified.
         }
     }
 }
 
+struct WaiterGuard {
+    pool: Arc<FairPool>,
+    id: u64,
+}
+impl Drop for WaiterGuard {
+    fn drop(&mut self) {
+        self.pool
+            .state
+            .lock()
+            .expect("scheduler lock poisoned")
+            .queue
+            .retain(|w| w.id != self.id);
+    }
+}
 /// Global scheduler shared by every Run driven by one engine.
 pub struct GlobalScheduler {
     model: Arc<FairPool>,
     tool: Arc<FairPool>,
     process: Arc<FairPool>,
+    environments: Mutex<BTreeMap<String, placement::EnvironmentSlot>>,
+    environment_provider: Option<Arc<dyn autra_execution::EnvironmentProvider>>,
+    environment_limit: usize,
+    max_waiters: usize,
 }
 
 impl GlobalScheduler {
@@ -202,6 +202,10 @@ impl GlobalScheduler {
             model: Arc::new(FairPool::new(limits.model, limits.max_waiters)),
             tool: Arc::new(FairPool::new(limits.tool, limits.max_waiters)),
             process: Arc::new(FairPool::new(limits.process, limits.max_waiters)),
+            environments: Mutex::new(BTreeMap::new()),
+            environment_provider: None,
+            environment_limit: limits.tool.max(1),
+            max_waiters: limits.max_waiters,
         }
     }
 
@@ -234,12 +238,14 @@ impl Default for GlobalScheduler {
 
 /// RAII permit. Dropping it hands the slot to the next waiter.
 pub struct SchedulerPermit {
-    pool: Arc<FairPool>,
+    pool: Option<Arc<FairPool>>,
 }
 
 impl Drop for SchedulerPermit {
     fn drop(&mut self) {
-        self.pool.release();
+        if let Some(pool) = self.pool.take() {
+            pool.release();
+        }
     }
 }
 

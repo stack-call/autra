@@ -91,6 +91,32 @@ struct ReadFileArgs {
 
 #[async_trait]
 impl Tool for ReadFileTool {
+    fn environment(&self) -> Option<Arc<dyn ExecutionEnvironment>> {
+        Some(self.environment.clone())
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: Some(autra_core::EnvironmentAffinity::Required(
+                self.environment.id().to_owned(),
+            )),
+            file_api: true,
+            command_execution: false,
+        }
+    }
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let mut tool = Self::in_environment(
+            context
+                .environment
+                .unwrap_or_else(|| self.environment.clone()),
+        );
+        tool.max_bytes = self.max_bytes;
+        tool.call(&input.arguments).await.map(ToolOutput::text)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read_file".to_owned(),
@@ -154,6 +180,31 @@ fn default_path() -> String {
 
 #[async_trait]
 impl Tool for ListFilesTool {
+    fn environment(&self) -> Option<Arc<dyn ExecutionEnvironment>> {
+        Some(self.environment.clone())
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: Some(autra_core::EnvironmentAffinity::Required(
+                self.environment.id().to_owned(),
+            )),
+            file_api: true,
+            command_execution: false,
+        }
+    }
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let tool = Self::in_environment(
+            context
+                .environment
+                .unwrap_or_else(|| self.environment.clone()),
+        );
+        tool.call(&input.arguments).await.map(ToolOutput::text)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "list_files".to_owned(),
@@ -231,6 +282,31 @@ struct WriteFileArgs {
 
 #[async_trait]
 impl Tool for WriteFileTool {
+    fn environment(&self) -> Option<Arc<dyn ExecutionEnvironment>> {
+        Some(self.environment.clone())
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: Some(autra_core::EnvironmentAffinity::Required(
+                self.environment.id().to_owned(),
+            )),
+            file_api: true,
+            command_execution: false,
+        }
+    }
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let tool = Self::in_environment(
+            context
+                .environment
+                .unwrap_or_else(|| self.environment.clone()),
+        );
+        tool.call(&input.arguments).await.map(ToolOutput::text)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "write_file".to_owned(),
@@ -336,6 +412,31 @@ fn truncate_line(line: &str) -> String {
 
 #[async_trait]
 impl Tool for SearchTextTool {
+    fn environment(&self) -> Option<Arc<dyn ExecutionEnvironment>> {
+        Some(self.environment.clone())
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: Some(autra_core::EnvironmentAffinity::Required(
+                self.environment.id().to_owned(),
+            )),
+            file_api: true,
+            command_execution: false,
+        }
+    }
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let tool = Self::in_environment(
+            context
+                .environment
+                .unwrap_or_else(|| self.environment.clone()),
+        );
+        tool.call(&input.arguments).await.map(ToolOutput::text)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "search_text".to_owned(),
@@ -549,6 +650,31 @@ struct EditFileArgs {
 
 #[async_trait]
 impl Tool for EditFileTool {
+    fn environment(&self) -> Option<Arc<dyn ExecutionEnvironment>> {
+        Some(self.environment.clone())
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: Some(autra_core::EnvironmentAffinity::Required(
+                self.environment.id().to_owned(),
+            )),
+            file_api: true,
+            command_execution: false,
+        }
+    }
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let tool = Self::in_environment(
+            context
+                .environment
+                .unwrap_or_else(|| self.environment.clone()),
+        );
+        tool.call(&input.arguments).await.map(ToolOutput::text)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "edit_file".to_owned(),

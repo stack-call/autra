@@ -166,6 +166,7 @@ mod tests {
 
     fn context(run_id: &str) -> ToolContext {
         ToolContext {
+            environment: None,
             run_id: RunId::new(run_id),
             call_id: "call-1".to_owned(),
             parent_run_id: None,

@@ -6,7 +6,7 @@
 mod coordinator;
 mod executor;
 pub use executor::{EffectExecutor, ExecutionDependencies};
-mod lease;
+pub(crate) mod lease;
 mod outbox;
 mod pool;
 mod recovery;
@@ -124,6 +124,11 @@ impl LocalEngine {
     /// driven by this engine, including child Runs.
     pub fn with_scheduler_limits(mut self, limits: SchedulerLimits) -> Self {
         self.scheduler = Arc::new(GlobalScheduler::new(limits));
+        self
+    }
+
+    pub fn with_scheduler(mut self, scheduler: Arc<GlobalScheduler>) -> Self {
+        self.scheduler = scheduler;
         self
     }
 
@@ -268,7 +273,11 @@ pub(super) fn tool_outcome_from_record(record: &EffectRecord) -> Option<ToolOutc
     let call_id = record.call_id.clone()?;
     let name = record.tool_name.clone()?;
     let (content, is_error, outcome_unknown) = match record.status {
-        EffectStatus::Committed => (record.result.clone().unwrap_or_default(), false, false),
+        EffectStatus::Committed => (
+            record.result.clone().unwrap_or_default(),
+            record.error.is_some(),
+            false,
+        ),
         EffectStatus::Failed | EffectStatus::Rejected => (
             record
                 .error

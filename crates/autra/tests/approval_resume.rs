@@ -10,7 +10,7 @@ use autra_core::{
     AgentPhase, AgentState, BudgetSnapshot, EffectId, EffectIntent, EffectKind, EffectRecord,
     EffectStatus, HistoryItem, ModelOutput, RunId, ToolCallRequest, ToolCallSpec,
 };
-use autra_harness::{FakeModel, LocalWorkspace, WriteFileTool, react_engine_state};
+use autra_harness::{FakeModel, LocalWorkspace, Tool, WriteFileTool, react_engine_state};
 use tempfile::tempdir;
 
 #[derive(Clone)]
@@ -48,7 +48,12 @@ fn call() -> ToolCallRequest {
     }
 }
 
-fn checkpoint(journal: &MemoryJournal, run_id: &RunId, call: &ToolCallRequest) -> EffectRecord {
+fn checkpoint(
+    journal: &MemoryJournal,
+    run_id: &RunId,
+    call: &ToolCallRequest,
+    workspace: Option<&LocalWorkspace>,
+) -> EffectRecord {
     let mut state = AgentState::new(run_id.clone(), BudgetSnapshot::new(8, 8));
     state.phase = AgentPhase::AwaitingTool;
     state.engine_state = react_engine_state(
@@ -73,6 +78,9 @@ fn checkpoint(journal: &MemoryJournal, run_id: &RunId, call: &ToolCallRequest) -
         "digest".to_owned(),
     )
     .with_intent_json(serde_json::to_string(&intent).unwrap());
+    if let Some(workspace) = workspace {
+        effect.requirements = WriteFileTool::new(workspace.clone()).execution_requirements();
+    }
     effect.set_status(EffectStatus::AwaitingApproval);
     journal.record(run_id, &effect).unwrap();
     effect
@@ -156,7 +164,7 @@ async fn resume_reuses_a_persisted_approval_without_asking() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let run_id = RunId::new("run-approval");
     let call = call();
-    let effect = checkpoint(&journal, &run_id, &call);
+    let effect = checkpoint(&journal, &run_id, &call, Some(&workspace));
     save_decision(
         &journal,
         &run_id,
@@ -186,7 +194,7 @@ async fn resume_re_asks_when_the_approval_expired() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let run_id = RunId::new("run-expired");
     let call = call();
-    let effect = checkpoint(&journal, &run_id, &call);
+    let effect = checkpoint(&journal, &run_id, &call, Some(&workspace));
     save_decision(
         &journal,
         &run_id,
@@ -215,7 +223,7 @@ async fn resume_honours_a_persisted_rejection() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let run_id = RunId::new("run-rejected");
     let call = call();
-    let effect = checkpoint(&journal, &run_id, &call);
+    let effect = checkpoint(&journal, &run_id, &call, Some(&workspace));
     save_decision(
         &journal,
         &run_id,
@@ -248,7 +256,7 @@ async fn resume_re_asks_when_the_policy_revision_changed() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let run_id = RunId::new("run-policy");
     let call = call();
-    let effect = checkpoint(&journal, &run_id, &call);
+    let effect = checkpoint(&journal, &run_id, &call, Some(&workspace));
     save_decision(
         &journal,
         &run_id,
@@ -273,7 +281,7 @@ async fn resume_applies_a_deny_policy_without_asking() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let run_id = RunId::new("run-denied");
     let call = call();
-    checkpoint(&journal, &run_id, &call);
+    checkpoint(&journal, &run_id, &call, Some(&workspace));
     let approver = RecordingApprover::new(ApprovalDecision::Approved);
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
@@ -311,7 +319,7 @@ async fn resume_authorizes_a_read_only_pending_call_without_asking() {
         name: "echo".to_owned(),
         arguments: r#"{"text":"hi"}"#.to_owned(),
     };
-    checkpoint(&journal, &run_id, &call);
+    checkpoint(&journal, &run_id, &call, None);
     let approver = RecordingApprover::new(ApprovalDecision::Rejected);
     let agent = Agent::builder("resume")
         .model(FakeModel::new(vec![ModelOutput {
@@ -336,4 +344,26 @@ async fn resume_authorizes_a_read_only_pending_call_without_asking() {
         .unwrap();
     assert_eq!(tool.status, EffectStatus::Committed);
     assert_eq!(tool.result.as_deref(), Some("hi"));
+}
+
+#[tokio::test]
+async fn legacy_workspace_effects_require_an_explicit_environment_identity() {
+    let journal = MemoryJournal::new();
+    let dir = tempdir().unwrap();
+    let workspace = LocalWorkspace::open(dir.path()).unwrap();
+    let run = RunId::new("legacy-unbound");
+    checkpoint(&journal, &run, &call(), None);
+    let a = agent(
+        &journal,
+        workspace,
+        RecordingApprover::new(ApprovalDecision::Approved),
+    );
+    assert!(
+        a.resume(&run)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("no environment identity")
+    );
+    assert!(!dir.path().join("note.txt").exists());
 }

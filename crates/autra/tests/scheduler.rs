@@ -354,6 +354,8 @@ async fn pooled_execution_can_spawn_a_subagent() {
 
     let outcome = parent.run("go").await.unwrap();
 
+    assert_eq!(outcome.state().budget.turns_used, 3);
+    assert_eq!(outcome.state().budget.tool_calls_used, 5);
     assert_eq!(outcome.answer(), Some("done"));
     let tool = outcome
         .effects()

@@ -20,6 +20,7 @@ pub(in crate::engine) struct AuthorizationGate {
     pub journal: Option<Arc<dyn DurableTransitionStore>>,
     pub policy: autra_execution::PolicyChain,
     pub actor: Option<String>,
+    pub owner_id: Option<String>,
     pub approval_ttl: Option<std::time::Duration>,
 }
 impl LocalEngine {
@@ -30,11 +31,16 @@ impl LocalEngine {
             policy: self.policy.clone(),
             actor: self.actor.clone(),
             approval_ttl: self.approval_ttl,
+            owner_id: None,
         }
     }
 }
 
 impl AuthorizationGate {
+    pub(in crate::engine) fn with_owner(mut self, owner: Option<String>) -> Self {
+        self.owner_id = owner;
+        self
+    }
     pub(in crate::engine) fn policy_decision(
         &self,
         run_id: &RunId,
@@ -99,7 +105,7 @@ impl AuthorizationGate {
         F: FnMut(&RunEvent),
     {
         for call in stepper.pending_tool_calls(state)? {
-            let Some(record) = effects.iter_mut().find(|record| {
+            let Some(record) = effects.iter_mut().rev().find(|record| {
                 record.kind == EffectKind::ToolCall
                     && record.call_id.as_deref() == Some(call.call_id.as_str())
             }) else {
@@ -122,19 +128,12 @@ impl AuthorizationGate {
                         "denied by policy `{}`; the tool was not executed",
                         self.policy.revision()
                     ));
-                    journal
-                        .record(&state.run_id, record)
-                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    self.persist_rejected(journal, &state.run_id, record)?;
                     continue;
                 }
                 Some(PolicyDecision::Allow) => {
                     record.set_status(EffectStatus::Authorized);
-                    journal
-                        .enqueue_effect(&state.run_id, record)
-                        .map_err(|error| RunError::Journal(error.to_string()))?;
-                    journal
-                        .record(&state.run_id, record)
-                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    self.persist_authorized(journal, &state.run_id, record)?;
                     continue;
                 }
                 _ => {}
@@ -155,20 +154,54 @@ impl AuthorizationGate {
             });
             if approved {
                 record.set_status(EffectStatus::Authorized);
-                journal
-                    .enqueue_effect(&state.run_id, record)
-                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                self.persist_authorized(journal, &state.run_id, record)?;
             } else {
                 record.set_status(EffectStatus::Rejected);
                 record.error = Some("approval rejected; the tool was not executed".to_owned());
             }
-            journal
-                .record(&state.run_id, record)
-                .map_err(|error| RunError::Journal(error.to_string()))?;
+            if !approved {
+                self.persist_rejected(journal, &state.run_id, record)?;
+            }
         }
         Ok(())
     }
 
+    pub(in crate::engine) fn persist_authorized(
+        &self,
+        journal: &dyn DurableTransitionStore,
+        run: &RunId,
+        record: &EffectRecord,
+    ) -> Result<(), RunError> {
+        if let Some(owner) = &self.owner_id {
+            return journal
+                .resolve_effect_owned(run, record, owner)
+                .map_err(|e| RunError::Journal(e.to_string()));
+        }
+        if journal.supports_result_inbox() {
+            journal
+                .authorize_effect(run, record)
+                .map_err(|e| RunError::Journal(e.to_string()))
+        } else {
+            journal
+                .record(run, record)
+                .map_err(|e| RunError::Journal(e.to_string()))?;
+            journal
+                .enqueue_effect(run, record)
+                .map_err(|e| RunError::Journal(e.to_string()))
+        }
+    }
+    pub(in crate::engine) fn persist_rejected(
+        &self,
+        journal: &dyn DurableTransitionStore,
+        run: &RunId,
+        record: &EffectRecord,
+    ) -> Result<(), RunError> {
+        match &self.owner_id {
+            Some(owner) => journal.resolve_effect_owned(run, record, owner),
+            None => journal.record(run, record),
+        }
+        .map_err(|e| RunError::Journal(e.to_string()))
+    }
     pub(in crate::engine) async fn resolve_approval(
         &self,
         request: &ApprovalRequest,

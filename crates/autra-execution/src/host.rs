@@ -10,6 +10,7 @@ pub struct HostCapabilities {
     pub durable_wait: bool,
     pub crash_recovery: bool,
     pub effect_reconciliation: bool,
+    /// Legacy compatibility; resource adapters report EnvironmentCapabilities::snapshot.
     pub workspace_snapshot: bool,
 }
 

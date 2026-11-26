@@ -45,6 +45,7 @@ impl LocalEngine {
             .journal
             .as_ref()
             .ok_or_else(|| RunError::Protocol("resume requires a journal".to_owned()))?;
+        let _lease = RunLeaseGuard::acquire(self.journal.clone(), run_id, options.cancel.clone())?;
         let options = options;
         if journal
             .cancel_request(run_id)
@@ -121,12 +122,76 @@ impl LocalEngine {
                 )));
             }
         }
-        let _lease = RunLeaseGuard::acquire(self.journal.clone(), run_id, options.cancel.clone())?;
         let mut queue: VecDeque<AcceptedEvent> = VecDeque::new();
         let approver = options.approver.clone().or_else(|| self.approver.clone());
+        if self.pooled_execution || effects.iter().any(|r| r.result_inbox) {
+            if !journal.supports_result_inbox() {
+                return Err(RunError::Protocol(
+                    "pooled execution requires an atomic result inbox".into(),
+                ));
+            }
+            self.authorization_gate()
+                .with_owner(_lease.commit_owner())
+                .resolve_pending_approvals(
+                    journal.as_ref(),
+                    stepper.as_ref(),
+                    &state,
+                    &mut effects,
+                    approver.as_ref(),
+                    &mut on_event,
+                )
+                .await?;
+            let pending = journal
+                .pending_results(run_id, usize::MAX)
+                .map_err(|e| RunError::Journal(e.to_string()))?;
+            if state.phase == AgentPhase::AwaitingModel
+                && pending.is_empty()
+                && effects
+                    .iter()
+                    .filter(|r| r.kind == autra_core::EffectKind::ModelCall)
+                    .all(|r| {
+                        matches!(
+                            r.status,
+                            autra_core::EffectStatus::Committed
+                                | autra_core::EffectStatus::Failed
+                                | autra_core::EffectStatus::OutcomeUnknown
+                                | autra_core::EffectStatus::CancelledBeforeDispatch
+                        )
+                    })
+            {
+                enqueue(&mut queue, &mut seq, EventKind::ResumeRequested);
+            }
+            for call in stepper.pending_tool_calls(&state)? {
+                if let Some(r) = effects
+                    .iter()
+                    .rev()
+                    .find(|r| r.call_id.as_deref() == Some(&call.call_id))
+                {
+                    if !pending.iter().any(|p| p.identity.effect_id == r.id) {
+                        if let Some(o) = super::tool_outcome_from_record(r) {
+                            enqueue(&mut queue, &mut seq, EventKind::ToolResult(o));
+                        }
+                    }
+                }
+            }
+            return self
+                .clone()
+                .with_pooled_execution(true)
+                .drive(
+                    stepper,
+                    state,
+                    queue,
+                    effects,
+                    options,
+                    on_event,
+                    _lease.commit_owner(),
+                )
+                .await;
+        }
         match state.phase {
             AgentPhase::AwaitingTool => {
                 self.authorization_gate()
+                    .with_owner(_lease.commit_owner())
                     .resolve_pending_approvals(
                         journal.as_ref(),
                         stepper.as_ref(),
@@ -156,8 +221,16 @@ impl LocalEngine {
             _ => unreachable!(),
         }
 
-        self.drive(stepper, state, queue, effects, options, on_event)
-            .await
+        self.drive(
+            stepper,
+            state,
+            queue,
+            effects,
+            options,
+            on_event,
+            _lease.commit_owner(),
+        )
+        .await
     }
 
     /// Resume every run parked at a recoverable checkpoint, up to `limit`.

@@ -19,7 +19,7 @@ use autra_execution::{
 use futures_util::{FutureExt, StreamExt};
 
 use crate::journal::{EffectJournal, JournalError, OutboxEntry};
-use crate::scheduler::{AcquireError, GlobalScheduler, ResourceKind};
+use crate::scheduler::{AcquireError, EffectPermit, GlobalScheduler, ResourceKind, ScheduleError};
 
 /// Executes accepted effect intents. A custom Dispatcher can wrap a provider,
 /// a sandbox or a remote worker.
@@ -61,6 +61,12 @@ pub trait Dispatcher: Send + Sync {
         self.call_tool(&context.run_id, call, timeout).await
     }
 
+    fn tool_environment(
+        &self,
+        _name: &str,
+    ) -> Option<Arc<dyn autra_execution::ExecutionEnvironment>> {
+        None
+    }
     /// Whether the named tool can be executed here. A dispatcher that cannot
     /// answer keeps the default; the outbox loop uses this to tell an unknown
     /// tool apart from a tool that returned an error.
@@ -108,6 +114,7 @@ impl Dispatcher for LocalDispatcher {
         timeout: Option<Duration>,
     ) -> ToolOutcome {
         let context = ToolContext {
+            environment: None,
             run_id: run_id.clone(),
             call_id: call.call_id.clone(),
             parent_run_id: Some(run_id.clone()),
@@ -141,6 +148,12 @@ impl Dispatcher for LocalDispatcher {
         }
     }
 
+    fn tool_environment(
+        &self,
+        name: &str,
+    ) -> Option<Arc<dyn autra_execution::ExecutionEnvironment>> {
+        self.tools.get(name).and_then(|t| t.environment())
+    }
     fn knows_tool(&self, name: &str) -> bool {
         self.tools.get(name).is_some()
     }
@@ -246,6 +259,8 @@ pub struct DispatchOptions<'a> {
     pub delta: Option<DeltaSink>,
     /// Global resource pools. `None` keeps the historical unbounded behavior.
     pub scheduler: Option<Arc<GlobalScheduler>>,
+    /// Publish full results atomically for a message-driven Coordinator.
+    pub result_inbox: bool,
 }
 
 /// Claim-driven outbox loop. It executes only claimed effects, records the
@@ -274,6 +289,7 @@ impl OutboxDispatcher {
                 child_execution: None,
                 delta: None,
                 scheduler: None,
+                result_inbox: false,
             },
             dispatcher,
             |_| {},
@@ -295,6 +311,14 @@ impl OutboxDispatcher {
     where
         F: FnMut(&DispatchResult),
     {
+        if options.result_inbox && !journal.supports_result_inbox() {
+            return Err(JournalError::new(
+                "journal does not support an atomic result inbox",
+            ));
+        }
+        if options.scheduler.is_some() && journal.supports_result_inbox() {
+            return dispatch_scheduled(journal, Some(run_id), options, dispatcher, on_result).await;
+        }
         let claim_id = next_claim_id("local-dispatcher");
         let lease = options.lease;
         let entries = journal.claim_due_effects_for_run_with_lease(
@@ -330,6 +354,7 @@ impl OutboxDispatcher {
                 child_execution: None,
                 delta: None,
                 scheduler: None,
+                result_inbox: false,
             },
             dispatcher,
             |_| {},
@@ -346,6 +371,14 @@ impl OutboxDispatcher {
     where
         F: FnMut(&DispatchResult),
     {
+        if options.result_inbox && !journal.supports_result_inbox() {
+            return Err(JournalError::new(
+                "journal does not support an atomic result inbox",
+            ));
+        }
+        if options.scheduler.is_some() && journal.supports_result_inbox() {
+            return dispatch_scheduled(journal, None, options, dispatcher, on_result).await;
+        }
         let claim_id = next_claim_id("outbox-drain");
         let lease = options.lease;
         let entries = journal.claim_due_effects_with_lease(options.limit, &claim_id, lease)?;
@@ -406,14 +439,7 @@ where
 }
 
 fn next_claim_id(prefix: &str) -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    format!(
-        "{prefix}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    )
+    crate::engine::lease::next_owner_id(prefix)
 }
 
 async fn dispatch_entries<F>(
@@ -421,7 +447,7 @@ async fn dispatch_entries<F>(
     entries: Vec<OutboxEntry>,
     options: DispatchOptions<'_>,
     dispatcher: &dyn Dispatcher,
-    claim_id: &str,
+    claim: &str,
     lease: Duration,
     mut on_result: F,
 ) -> Result<Vec<DispatchResult>, JournalError>
@@ -429,51 +455,58 @@ where
     F: FnMut(&DispatchResult),
 {
     let mut futures = Vec::with_capacity(entries.len());
-    for entry in &entries {
+    for e in &entries {
         futures.push(dispatch_entry(
-            journal,
-            &entry.run_id,
-            entry,
-            dispatcher,
-            &options,
-            claim_id,
-            lease,
+            journal, e, dispatcher, &options, claim, lease, None,
         ));
     }
-    let mut stream =
+    let mut pending =
         futures_util::stream::iter(futures).buffer_unordered(options.max_parallel.max(1));
-    let mut results = Vec::with_capacity(entries.len());
-    while let Some(result) = stream.next().await {
-        let result = result?;
-        on_result(&result);
-        results.push(result);
+    let mut results = Vec::new();
+    while let Some(r) = pending.next().await {
+        let r = r?;
+        on_result(&r);
+        results.push(r);
     }
     Ok(results)
 }
-
 async fn dispatch_entry(
     journal: &dyn EffectJournal,
-    run_id: &RunId,
     entry: &OutboxEntry,
     dispatcher: &dyn Dispatcher,
     options: &DispatchOptions<'_>,
-    claim_id: &str,
+    claim: &str,
     lease: Duration,
+    reservation: Option<EffectPermit>,
 ) -> Result<DispatchResult, JournalError> {
-    let Some(mut record) = journal.load_effect(run_id, &entry.effect_id)? else {
-        let _ = journal.release_outbox(&entry.effect_id, claim_id);
-        return Err(JournalError::new(format!(
-            "effect record `{}` not found",
-            entry.effect_id
-        )));
+    let run = &entry.run_id;
+    let Some(mut record) = journal.load_effect(run, &entry.effect_id)? else {
+        let _ = journal.release_outbox(&entry.effect_id, claim);
+        return Err(JournalError::new("effect record is missing"));
     };
+    if record.result_inbox && !journal.supports_result_inbox() {
+        return Err(JournalError::new(
+            "journal does not support this Effect's result inbox",
+        ));
+    }
     match record.status {
         EffectStatus::Committed
         | EffectStatus::Failed
         | EffectStatus::Rejected
         | EffectStatus::OutcomeUnknown
         | EffectStatus::CancelledBeforeDispatch => {
-            journal.complete_outbox(&entry.effect_id, claim_id)?;
+            if options.result_inbox || record.result_inbox {
+                publish_result(
+                    journal,
+                    entry,
+                    &record,
+                    claim,
+                    outcome_from_record(&record),
+                    options.budget.as_ref(),
+                )?;
+            } else {
+                journal.complete_outbox(&entry.effect_id, claim)?;
+            }
             return Ok(DispatchResult {
                 effect_id: entry.effect_id.clone(),
                 outcome: DispatchOutcome::AlreadyResolved,
@@ -484,102 +517,135 @@ async fn dispatch_entry(
             record.record_attempt(
                 AttemptStatus::OutcomeUnknown,
                 None,
-                Some("the effect was in flight when its claim lease ended".to_owned()),
+                Some("the effect was in flight when its claim lease ended".into()),
             );
-            stamp_attempt(&mut record, claim_id, entry.attempts);
-            journal.record_claimed(run_id, &record, claim_id)?;
-            journal.complete_outbox(&entry.effect_id, claim_id)?;
+            stamp_attempt(&mut record, claim, entry.attempts);
+            if options.result_inbox || record.result_inbox {
+                publish_result(
+                    journal,
+                    entry,
+                    &record,
+                    claim,
+                    outcome_from_record(&record),
+                    options.budget.as_ref(),
+                )?;
+            } else {
+                journal.record_claimed(run, &record, claim)?;
+                journal.complete_outbox(&entry.effect_id, claim)?;
+            }
             return Ok(DispatchResult {
                 effect_id: entry.effect_id.clone(),
                 outcome: DispatchOutcome::Interrupted,
             });
         }
-        _ => {}
+        EffectStatus::Authorized => {}
+        _ => {
+            let _ = journal.release_outbox(&entry.effect_id, claim);
+            return Err(JournalError::new("effect is not authorized for dispatch"));
+        }
     }
-
-    if options
-        .cancel
-        .map(CancelFlag::is_cancelled)
-        .unwrap_or(false)
-    {
+    if options.cancel.is_some_and(CancelFlag::is_cancelled) {
         return finish_entry(
             journal,
-            run_id,
             entry,
             DispatchOutcome::Cancelled,
             true,
-            claim_id,
+            claim,
+            options,
         );
     }
-    let intent: EffectIntent = match serde_json::from_str(&entry.intent_json) {
-        Ok(intent) => intent,
-        Err(error) => {
-            let _ = journal.release_outbox(&entry.effect_id, claim_id);
-            return Err(JournalError::new(format!(
-                "cannot decode effect intent: {error}"
-            )));
-        }
+    let intent: EffectIntent = serde_json::from_str(&entry.intent_json)
+        .map_err(|e| JournalError::new(format!("cannot decode effect intent: {e}")))?;
+    let (known, resource, fallback) = match &intent {
+        EffectIntent::CallModel(_) => (true, ResourceKind::Model, None),
+        EffectIntent::CallTool(spec) => (
+            dispatcher.knows_tool(&spec.call.name),
+            match dispatcher.tool_resource(&spec.call.name) {
+                ToolResource::Process => ResourceKind::Process,
+                ToolResource::Tool => ResourceKind::Tool,
+            },
+            dispatcher.tool_environment(&spec.call.name),
+        ),
     };
-    let known_tool = match &intent {
-        EffectIntent::CallModel(_) => true,
-        EffectIntent::CallTool(spec) => dispatcher.knows_tool(&spec.call.name),
-    };
-    let resource = match &intent {
-        EffectIntent::CallModel(_) => ResourceKind::Model,
-        EffectIntent::CallTool(spec) => match dispatcher.tool_resource(&spec.call.name) {
-            ToolResource::Process => ResourceKind::Process,
-            ToolResource::Tool => ResourceKind::Tool,
-        },
-    };
-    let permit = match options.scheduler.clone() {
+    let environment = reservation.as_ref().and_then(|p| p.environment.clone());
+    let _reservation = reservation;
+    let permit = match options.scheduler.clone().filter(|_| _reservation.is_none()) {
         Some(scheduler) => {
-            let acquire = scheduler.acquire(resource, run_id, options.cancel);
-            match await_with_lease(journal, &entry.effect_id, claim_id, lease, acquire).await {
-                Ok(Ok(permit)) => Some(permit),
-                Ok(Err(AcquireError::Cancelled)) => {
+            if fallback.is_some() && record.requirements.environment.is_none() {
+                return Err(JournalError::new(
+                    "recorded effect has no environment identity; refusing to infer a workspace during recovery",
+                ));
+            }
+            let acquire = scheduler.acquire_effect(
+                resource,
+                run,
+                options.cancel,
+                &record.requirements,
+                fallback,
+            );
+            match await_with_lease(journal, &entry.effect_id, claim, lease, acquire).await? {
+                Ok(p) => Some(p),
+                Err(ScheduleError::Resource(AcquireError::Cancelled)) => {
                     return finish_entry(
                         journal,
-                        run_id,
                         entry,
                         DispatchOutcome::Cancelled,
-                        known_tool,
-                        claim_id,
+                        known,
+                        claim,
+                        options,
                     );
                 }
-                Ok(Err(AcquireError::QueueFull)) => {
-                    return Err(JournalError::new("scheduler queue is full"));
-                }
-                Err(error) => return Err(error),
+                Err(e) => return Err(JournalError::new(e.to_string())),
             }
         }
         None => None,
     };
-    mark_dispatched(journal, run_id, entry, claim_id)?;
+    let environment = environment.or_else(|| permit.as_ref().and_then(|p| p.environment.clone()));
+    if record.requirements.environment.is_some() && environment.is_none() {
+        let _ = journal.release_outbox(&entry.effect_id, claim);
+        return Err(JournalError::new(
+            "environment requirements need an environment-aware scheduler",
+        ));
+    }
+    mark_dispatched(journal, entry, claim, environment.as_ref())?;
+    if let (Some(budget), Some(state)) = (&options.budget, journal.load_run(run)?) {
+        if !budget.advance_to(&state.budget) {
+            return Err(JournalError::new(
+                "execution budget limits do not match the Run",
+            ));
+        }
+    }
     let call = async {
         match &intent {
             EffectIntent::CallModel(spec) => {
-                let result = match options.delta.clone() {
+                let output = match options.delta.clone() {
                     Some(sink) => {
-                        let mut on_delta = move |text: String| sink(text);
-                        let call =
-                            dispatcher.call_model_streaming(spec, options.timeout, &mut on_delta);
-                        await_with_cancel(call, options.cancel).await
+                        let mut emit = move |text: String| sink(text);
+                        await_with_cancel(
+                            dispatcher.call_model_streaming(spec, options.timeout, &mut emit),
+                            options.cancel,
+                        )
+                        .await
                     }
                     None => {
-                        let call = dispatcher.call_model(spec, options.timeout);
-                        await_with_cancel(call, options.cancel).await
+                        await_with_cancel(
+                            dispatcher.call_model(spec, options.timeout),
+                            options.cancel,
+                        )
+                        .await
                     }
                 };
-                match result {
-                    Some(result) => DispatchOutcome::Model(result),
+                match output {
+                    Some(output) => DispatchOutcome::Model(output),
                     None => DispatchOutcome::Cancelled,
                 }
             }
             EffectIntent::CallTool(spec) => {
                 let context = ToolContext {
-                    run_id: run_id.clone(),
+                    environment: environment.clone(),
+                    run_id: run.clone(),
                     call_id: spec.call.call_id.clone(),
-                    parent_run_id: Some(run_id.clone()),
+                    parent_run_id: Some(run.clone()),
                     cancel: options.cancel.cloned(),
                     budget: options.budget.clone(),
                     child_execution: options.child_execution.clone(),
@@ -592,87 +658,246 @@ async fn dispatch_entry(
             }
         }
     };
-    let outcome = match await_with_lease(journal, &entry.effect_id, claim_id, lease, call).await {
+    let outcome = match await_with_lease(journal, &entry.effect_id, claim, lease, call).await {
         Ok(outcome) => outcome,
-        Err(error) => {
-            if !error.is_claim_lost() {
-                let _ = journal.release_outbox(&entry.effect_id, claim_id);
+        Err(e) => {
+            if !e.is_claim_lost() {
+                let _ = journal.release_outbox(&entry.effect_id, claim);
             }
-            return Err(error);
+            return Err(e);
         }
     };
     drop(permit);
-    finish_entry(journal, run_id, entry, outcome, known_tool, claim_id)
+    finish_entry(journal, entry, outcome, known, claim, options)
 }
-
 fn mark_dispatched(
     journal: &dyn EffectJournal,
-    run_id: &RunId,
     entry: &OutboxEntry,
-    claim_id: &str,
+    claim: &str,
+    environment: Option<&Arc<dyn autra_execution::ExecutionEnvironment>>,
 ) -> Result<(), JournalError> {
-    let Some(mut record) = journal.load_effect(run_id, &entry.effect_id)? else {
-        let _ = journal.release_outbox(&entry.effect_id, claim_id);
-        return Err(JournalError::new(format!(
-            "effect record `{}` not found",
-            entry.effect_id
-        )));
-    };
-    record.set_status(EffectStatus::Dispatched);
-    if let Err(error) = journal.record_claimed(run_id, &record, claim_id) {
-        if !error.is_claim_lost() {
-            let _ = journal.release_outbox(&entry.effect_id, claim_id);
-        }
-        return Err(error);
+    let mut r = journal
+        .load_effect(&entry.run_id, &entry.effect_id)?
+        .ok_or_else(|| JournalError::new("effect record is missing"))?;
+    if let Some(env) = environment {
+        r.requirements.environment = Some(autra_core::EnvironmentAffinity::Required(
+            env.id().to_owned(),
+        ));
     }
-    Ok(())
+    r.set_status(EffectStatus::Dispatched);
+    journal.record_claimed(&entry.run_id, &r, claim)
 }
-
 fn finish_entry(
     journal: &dyn EffectJournal,
-    run_id: &RunId,
     entry: &OutboxEntry,
     outcome: DispatchOutcome,
-    known_tool: bool,
-    claim_id: &str,
+    known: bool,
+    claim: &str,
+    options: &DispatchOptions<'_>,
 ) -> Result<DispatchResult, JournalError> {
-    let Some(mut record) = journal.load_effect(run_id, &entry.effect_id)? else {
-        let _ = journal.release_outbox(&entry.effect_id, claim_id);
-        return Err(JournalError::new(format!(
-            "effect record `{}` not found",
-            entry.effect_id
-        )));
-    };
-    apply_outcome(&mut record, &outcome, known_tool);
-    stamp_attempt(&mut record, claim_id, entry.attempts);
-    if let Err(error) = journal.record_claimed(run_id, &record, claim_id) {
-        if !error.is_claim_lost() {
-            let _ = journal.release_outbox(&entry.effect_id, claim_id);
+    let mut record = journal
+        .load_effect(&entry.run_id, &entry.effect_id)?
+        .ok_or_else(|| JournalError::new("effect record is missing"))?;
+    match &outcome {
+        DispatchOutcome::Model(Ok(o)) => record.apply_model_success(o.text.clone()),
+        DispatchOutcome::Model(Err(e)) => record.apply_model_failure(e.to_string()),
+        DispatchOutcome::Tool(o) => record.apply_tool_outcome(o, known),
+        DispatchOutcome::Cancelled => {
+            if record.status == EffectStatus::Dispatched {
+                record.set_status(EffectStatus::OutcomeUnknown);
+                record.record_attempt(
+                    AttemptStatus::OutcomeUnknown,
+                    None,
+                    Some("cancelled after dispatch; outcome unknown".into()),
+                );
+            } else {
+                record.set_status(EffectStatus::CancelledBeforeDispatch);
+            }
         }
-        return Err(error);
+        DispatchOutcome::AlreadyResolved | DispatchOutcome::Interrupted => {}
     }
-    journal.complete_outbox(&entry.effect_id, claim_id)?;
+    stamp_attempt(&mut record, claim, entry.attempts);
+    if options.result_inbox || record.result_inbox {
+        let result = match &outcome {
+            DispatchOutcome::Model(Ok(o)) => autra_execution::EffectOutcome::Model(o.clone()),
+            DispatchOutcome::Model(Err(e)) => {
+                autra_execution::EffectOutcome::ModelFailed(e.to_string())
+            }
+            DispatchOutcome::Tool(o) => autra_execution::EffectOutcome::Tool(o.clone()),
+            DispatchOutcome::Cancelled => autra_execution::EffectOutcome::Cancelled,
+            _ => outcome_from_record(&record),
+        };
+        publish_result(
+            journal,
+            entry,
+            &record,
+            claim,
+            result,
+            options.budget.as_ref(),
+        )?;
+    } else {
+        journal.record_claimed(&entry.run_id, &record, claim)?;
+        journal.complete_outbox(&entry.effect_id, claim)?;
+    }
     Ok(DispatchResult {
         effect_id: entry.effect_id.clone(),
         outcome,
     })
 }
-
-fn stamp_attempt(record: &mut EffectRecord, claim_id: &str, fencing_token: u32) {
-    if let Some(attempt) = record.attempts.last_mut() {
-        attempt.worker_id = Some(claim_id.to_owned());
-        attempt.fencing_token = Some(fencing_token as u64);
+fn stamp_attempt(r: &mut EffectRecord, claim: &str, generation: u32) {
+    if let Some(a) = r.attempts.last_mut() {
+        a.worker_id = Some(claim.into());
+        a.fencing_token = Some(generation as u64);
     }
 }
-
-fn apply_outcome(record: &mut EffectRecord, outcome: &DispatchOutcome, known_tool: bool) {
-    match outcome {
-        DispatchOutcome::Model(Ok(output)) => record.apply_model_success(output.text.clone()),
-        DispatchOutcome::Model(Err(error)) => record.apply_model_failure(error.to_string()),
-        DispatchOutcome::Tool(outcome) => record.apply_tool_outcome(outcome, known_tool),
-        DispatchOutcome::Cancelled => {
-            record.set_status(EffectStatus::CancelledBeforeDispatch);
-        }
-        DispatchOutcome::AlreadyResolved | DispatchOutcome::Interrupted => {}
+fn outcome_from_record(r: &EffectRecord) -> autra_execution::EffectOutcome {
+    if r.status == EffectStatus::CancelledBeforeDispatch {
+        return autra_execution::EffectOutcome::Cancelled;
     }
+    if let Some(o) = crate::engine::tool_outcome_from_record(r) {
+        return autra_execution::EffectOutcome::Tool(o);
+    }
+    autra_execution::EffectOutcome::ModelFailed(r.error.clone().unwrap_or_else(|| {
+        "full model result is unavailable; explicit reconciliation is required".into()
+    }))
+}
+fn publish_result(
+    journal: &dyn EffectJournal,
+    entry: &OutboxEntry,
+    r: &EffectRecord,
+    claim: &str,
+    outcome: autra_execution::EffectOutcome,
+    budget: Option<&BudgetHandle>,
+) -> Result<(), JournalError> {
+    let attempt_id = if r.status == EffectStatus::CancelledBeforeDispatch {
+        claim.to_owned()
+    } else {
+        r.attempts
+            .last()
+            .and_then(|a| a.id.as_ref())
+            .map(|id| id.as_str().to_owned())
+            .unwrap_or_else(|| claim.to_owned())
+    };
+    journal.record_result_claimed(
+        &entry.run_id,
+        r,
+        claim,
+        &autra_execution::EffectResult {
+            identity: autra_execution::ResultIdentity {
+                effect_id: r.id.clone(),
+                attempt_id,
+            },
+            outcome,
+            budget: budget.map(BudgetHandle::snapshot),
+        },
+    )
+}
+async fn dispatch_scheduled<F>(
+    journal: &dyn EffectJournal,
+    run: Option<&RunId>,
+    options: DispatchOptions<'_>,
+    dispatcher: &dyn Dispatcher,
+    mut on_result: F,
+) -> Result<Vec<DispatchResult>, JournalError>
+where
+    F: FnMut(&DispatchResult),
+{
+    let scheduler = options
+        .scheduler
+        .as_ref()
+        .ok_or_else(|| JournalError::new("message-driven dispatch requires a scheduler"))?;
+    let entries = journal.peek_due_effects(run, options.limit)?;
+    let claim = next_claim_id("effect-worker");
+    let mut futures = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        futures.push(reserve_and_dispatch(
+            journal, entry, &options, dispatcher, scheduler, &claim,
+        ));
+    }
+    let mut pending =
+        futures_util::stream::iter(futures).buffer_unordered(options.max_parallel.max(1));
+    let mut results = Vec::new();
+    while let Some(r) = pending.next().await {
+        if let Some(r) = r? {
+            on_result(&r);
+            results.push(r);
+        }
+    }
+    Ok(results)
+}
+async fn reserve_and_dispatch(
+    journal: &dyn EffectJournal,
+    candidate: &OutboxEntry,
+    options: &DispatchOptions<'_>,
+    dispatcher: &dyn Dispatcher,
+    scheduler: &GlobalScheduler,
+    claim: &str,
+) -> Result<Option<DispatchResult>, JournalError> {
+    let r = journal
+        .load_effect(&candidate.run_id, &candidate.effect_id)?
+        .ok_or_else(|| JournalError::new("scheduled effect is missing"))?;
+    // These paths perform no resource I/O: an unavailable Environment must not
+    // block cancellation or recording an interrupted attempt as unknown.
+    if options.cancel.is_some_and(CancelFlag::is_cancelled) || r.status != EffectStatus::Authorized
+    {
+        let Some(entry) = journal.claim_effect(&candidate.effect_id, claim, options.lease)? else {
+            return Ok(None);
+        };
+        return dispatch_entry(
+            journal,
+            &entry,
+            dispatcher,
+            options,
+            claim,
+            options.lease,
+            None,
+        )
+        .await
+        .map(Some);
+    }
+    let intent: EffectIntent = serde_json::from_str(&candidate.intent_json)
+        .map_err(|e| JournalError::new(e.to_string()))?;
+    let (resource, environment) = match &intent {
+        EffectIntent::CallModel(_) => (ResourceKind::Model, None),
+        EffectIntent::CallTool(spec) => (
+            match dispatcher.tool_resource(&spec.call.name) {
+                ToolResource::Process => ResourceKind::Process,
+                ToolResource::Tool => ResourceKind::Tool,
+            },
+            dispatcher.tool_environment(&spec.call.name),
+        ),
+    };
+    if environment.is_some() && r.requirements.environment.is_none() {
+        return Err(JournalError::new(
+            "recorded effect has no environment identity; refusing to infer a workspace during recovery",
+        ));
+    }
+    let reservation = match scheduler
+        .acquire_effect(
+            resource,
+            &candidate.run_id,
+            options.cancel,
+            &r.requirements,
+            environment,
+        )
+        .await
+    {
+        Ok(p) => Some(p),
+        Err(ScheduleError::Resource(AcquireError::Cancelled)) => None,
+        Err(e) => return Err(JournalError::new(e.to_string())),
+    };
+    let Some(entry) = journal.claim_effect(&candidate.effect_id, claim, options.lease)? else {
+        return Ok(None);
+    };
+    dispatch_entry(
+        journal,
+        &entry,
+        dispatcher,
+        options,
+        claim,
+        options.lease,
+        reservation,
+    )
+    .await
+    .map(Some)
 }

@@ -8,7 +8,8 @@ use crate::{LocalWorkspace, Tool, ToolError};
 use async_trait::async_trait;
 use autra_core::{EffectClass, ToolSpec};
 use autra_execution::{
-    CommandOutput as ProcessOutput, EnvironmentCommand, ExecutionEnvironment, ToolResource,
+    CommandOutput as ProcessOutput, EnvironmentCommand, ExecutionEnvironment, ToolContext,
+    ToolInput, ToolOutput, ToolResource,
 };
 use serde::Deserialize;
 
@@ -49,6 +50,31 @@ impl GitStatusTool {
 
 #[async_trait]
 impl Tool for GitStatusTool {
+    fn environment(&self) -> Option<Arc<dyn ExecutionEnvironment>> {
+        Some(self.environment.clone())
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: Some(autra_core::EnvironmentAffinity::Required(
+                self.environment.id().to_owned(),
+            )),
+            file_api: false,
+            command_execution: true,
+        }
+    }
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let tool = Self::in_environment(
+            context
+                .environment
+                .unwrap_or_else(|| self.environment.clone()),
+        );
+        tool.call(&input.arguments).await.map(ToolOutput::text)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "git_status".to_owned(),
@@ -136,6 +162,31 @@ struct GitDiffArgs {
 
 #[async_trait]
 impl Tool for GitDiffTool {
+    fn environment(&self) -> Option<Arc<dyn ExecutionEnvironment>> {
+        Some(self.environment.clone())
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: Some(autra_core::EnvironmentAffinity::Required(
+                self.environment.id().to_owned(),
+            )),
+            file_api: true,
+            command_execution: true,
+        }
+    }
+    async fn execute(
+        &self,
+        input: ToolInput,
+        context: ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let tool = Self::in_environment(
+            context
+                .environment
+                .unwrap_or_else(|| self.environment.clone()),
+        );
+        tool.call(&input.arguments).await.map(ToolOutput::text)
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "git_diff".to_owned(),

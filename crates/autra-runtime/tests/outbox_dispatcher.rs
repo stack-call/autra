@@ -198,6 +198,7 @@ async fn a_long_effect_renews_its_claim_instead_of_being_stolen() {
         child_execution: None,
         delta: None,
         scheduler: None,
+        result_inbox: false,
     };
 
     let dispatch =
@@ -312,6 +313,7 @@ async fn cancellation_before_dispatch_removes_the_outbox_row() {
             child_execution: None,
             delta: None,
             scheduler: None,
+            result_inbox: false,
         },
         &dispatcher,
         |_| {},

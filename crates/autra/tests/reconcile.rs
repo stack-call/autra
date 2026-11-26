@@ -189,7 +189,8 @@ async fn an_idempotent_write_requires_a_valid_approval() {
     let workspace = LocalWorkspace::open(dir.path()).unwrap();
     let run_id = RunId::new("run-write");
     let call = call("write_file", r#"{"path":"note.txt","content":"hello"}"#);
-    let effect = tool_effect(&run_id, &call, EffectKind::ToolCall);
+    let mut effect = tool_effect(&run_id, &call, EffectKind::ToolCall);
+    effect.requirements = WriteFileTool::new(workspace.clone()).execution_requirements();
     journal.record(&run_id, &effect).unwrap();
     let agent = Agent::builder("reconcile")
         .model(EchoModel)

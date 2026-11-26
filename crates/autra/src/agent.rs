@@ -16,8 +16,8 @@ use thiserror::Error;
 
 use crate::subagent::{SubagentRegistry, SubagentTool};
 use autra_runtime::{
-    ChildHandle, ChildSpec, DispatchResult, Dispatcher, LocalDispatcher, LocalEngine,
-    RecoverySupervisor, RunHub, SchedulerLimits,
+    ChildHandle, ChildSpec, DispatchResult, Dispatcher, GlobalScheduler, LocalDispatcher,
+    LocalEngine, RecoverySupervisor, RunHub, SchedulerLimits,
 };
 
 pub use autra_execution::{RecoveryReport, RunError, RunEvent, RunOptions, RunOutcome, RunStatus};
@@ -249,6 +249,7 @@ pub struct AgentBuilder {
     max_tool_calls: u32,
     max_parallel_tool_calls: u32,
     scheduler_limits: SchedulerLimits,
+    scheduler: Option<Arc<GlobalScheduler>>,
     pooled_execution: bool,
     approver: Option<Arc<dyn Approver>>,
     skills: SkillRegistry,
@@ -279,6 +280,7 @@ impl AgentBuilder {
             max_tool_calls: 8,
             max_parallel_tool_calls: 1,
             scheduler_limits: SchedulerLimits::default(),
+            scheduler: None,
             pooled_execution: false,
             approver: None,
             skills: SkillRegistry::new(),
@@ -316,6 +318,12 @@ impl AgentBuilder {
     /// Run driven by this Agent.
     pub fn scheduler_limits(mut self, limits: SchedulerLimits) -> Self {
         self.scheduler_limits = limits;
+        self
+    }
+
+    /// Share placement, resource pools and environment quotas across Agents.
+    pub fn scheduler(mut self, scheduler: Arc<GlobalScheduler>) -> Self {
+        self.scheduler = Some(scheduler);
         self
     }
 
@@ -501,6 +509,9 @@ Maintain a short plan with `update_plan` and keep it current."
             .with_scheduler_limits(self.scheduler_limits)
             .with_pooled_execution(self.pooled_execution)
             .with_agent_profile(agent_profile);
+        if let Some(scheduler) = self.scheduler {
+            engine = engine.with_scheduler(scheduler);
+        }
         if let Some(journal) = self.journal {
             engine = engine.with_journal(journal);
         }

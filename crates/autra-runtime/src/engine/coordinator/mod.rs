@@ -64,10 +64,19 @@ impl LocalEngine {
         on_event(&RunEvent::RunStarted {
             run_id: run_id.clone(),
         });
-        self.drive(stepper, state, queue, Vec::new(), options, on_event)
-            .await
+        self.drive(
+            stepper,
+            state,
+            queue,
+            Vec::new(),
+            options,
+            on_event,
+            _lease.commit_owner(),
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn drive<F>(
         &self,
         stepper: Arc<dyn AgentStepper>,
@@ -76,6 +85,7 @@ impl LocalEngine {
         mut effects: Vec<EffectRecord>,
         options: RunOptions,
         on_event: F,
+        owner_id: Option<String>,
     ) -> Result<RunOutcome, RunError>
     where
         F: FnMut(&RunEvent),
@@ -87,7 +97,7 @@ impl LocalEngine {
             .max(1);
         let approver = options.approver.clone().or_else(|| self.approver.clone());
         let run_id = state.run_id.clone();
-        let committer = TransitionCommitter::new(self);
+        let committer = TransitionCommitter::new(self, owner_id.clone());
         let hub = self.hub.clone();
         let mut forward = on_event;
         let mut on_event = |event: &RunEvent| {
@@ -97,26 +107,53 @@ impl LocalEngine {
             forward(event);
         };
         let pooled = self.pooled_execution && self.journal.is_some();
-        let (pool_events, pool_inbox) = tokio::sync::mpsc::unbounded_channel();
+        let (pool_events, pool_inbox) = tokio::sync::mpsc::channel(128);
         let pool_wake = Arc::new(tokio::sync::Notify::new());
         let pool_budget = Arc::new(std::sync::Mutex::new(state.budget.clone()));
-        let _pool = PoolGuard(if pooled {
+        if pooled && !self.journal.as_ref().unwrap().supports_result_inbox() {
+            return Err(RunError::Protocol(
+                "pooled execution requires an atomic result inbox".into(),
+            ));
+        }
+        let _pool = if pooled {
             Some(pool::spawn(
-                self,
-                run_id.clone(),
-                options.cancel.clone(),
-                pool_budget.clone(),
-                pool_events,
-                pool_wake.clone(),
+                self.effect_executor(),
+                pool::WorkerContext {
+                    run_id: run_id.clone(),
+                    cancel: options.cancel.clone(),
+                    budget: pool_budget.clone(),
+                    events: pool_events,
+                    wake: pool_wake.clone(),
+                    timeout: effect_timeout,
+                    max_parallel: parallel_limit as usize,
+                    child_execution: autra_execution::ChildExecutionContext {
+                        journal: self.journal.clone(),
+                        approver: approver.clone(),
+                        depth: 0,
+                    },
+                },
             ))
         } else {
             None
-        });
-        let pool_inbox = if pooled { Some(pool_inbox) } else { None };
+        };
+        let last_seq = if let Some(j) = &self.journal {
+            j.load_events(&run_id)
+                .map_err(|e| RunError::Journal(e.to_string()))?
+                .iter()
+                .map(|e| e.seq)
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        let mut sources = std::collections::BTreeMap::new();
         let mut inbox = RunInbox::new(
             ResultCollector::new(queue),
-            pool_inbox,
+            if pooled { Some(pool_inbox) } else { None },
+            if pooled { self.journal.clone() } else { None },
+            run_id.clone(),
             options.cancel.clone(),
+            last_seq,
         );
         let mut hub_guard = HubGuard::new(
             self.hub.clone(),
@@ -133,44 +170,90 @@ impl LocalEngine {
                     inbox.cancel();
                     continue;
                 }
-                Next::PoolResult(effect_id, kind) => {
-                    inbox.enqueue(kind);
-                    if let Some(journal) = &self.journal {
-                        super::sync_effect(journal.journal(), &run_id, &effect_id, &mut effects)?;
-                    }
+                Next::Stream(event) => {
+                    on_event(&event);
                     continue;
                 }
-                Next::PoolCancelled(effect_id) => {
-                    if let Some(journal) = &self.journal {
-                        super::sync_effect(journal.journal(), &run_id, &effect_id, &mut effects)?;
-                    }
-                    inbox.cancel();
-                    continue;
+                Next::ExecutorFailed(message) => {
+                    return Err(RunError::Journal(format!("executor failed: {message}")));
                 }
-                Next::ModelFailed(message) => {
-                    let expected_version = state.state_version;
-                    state.phase = AgentPhase::Failed;
-                    state.last_error = Some(message.clone());
-                    state.state_version = expected_version + 1;
-                    on_event(&RunEvent::RunFailed {
-                        message: message.clone(),
-                    });
-                    state = committer
-                        .commit_terminal(&run_id, expected_version, state)
-                        .await?;
+                Next::Result(result) => {
+                    let source = result.identity;
+                    if let Some(journal) = &self.journal {
+                        super::sync_effect(
+                            journal.journal(),
+                            &run_id,
+                            &source.effect_id,
+                            &mut effects,
+                        )?;
+                    }
                     if let Some(observer) = &self.observer {
-                        observer.on_run_finished(&run_id, &state.phase);
+                        if let Some(record) = effects.iter().find(|r| r.id == source.effect_id) {
+                            observer.on_effect_resolved(&run_id, record);
+                        }
                     }
-                    hub_guard.update(RunSnapshot::from_state(&state, inbox.seq(), effects.len()));
-                    hub_guard.finish();
-                    return Err(RunError::Model(autra_execution::ModelError::new(message)));
-                }
-                Next::ExecutorEnded => {
-                    return Err(RunError::Protocol(
-                        "executor loop ended without a result".to_owned(),
-                    ));
+                    if let Some(reserved) = result.budget {
+                        if reserved.max_turns != state.budget.max_turns
+                            || reserved.max_tool_calls != state.budget.max_tool_calls
+                        {
+                            return Err(RunError::Protocol(
+                                "result budget limits do not match the Run".into(),
+                            ));
+                        }
+                        state.budget.turns_used = state.budget.turns_used.max(reserved.turns_used);
+                        state.budget.tool_calls_used =
+                            state.budget.tool_calls_used.max(reserved.tool_calls_used);
+                    }
+                    match result.outcome {
+                        autra_execution::EffectOutcome::Model(output) => {
+                            if let Some(u) = output.usage {
+                                on_event(&RunEvent::ModelUsage {
+                                    prompt_tokens: u.prompt_tokens,
+                                    completion_tokens: u.completion_tokens,
+                                    total_tokens: u.total_tokens,
+                                });
+                            }
+                            inbox.model_result(output);
+                        }
+                        autra_execution::EffectOutcome::Tool(outcome) => {
+                            on_event(&RunEvent::ToolCallStarted {
+                                call_id: outcome.call_id.clone(),
+                                name: outcome.name.clone(),
+                            });
+                            emit_tool_result(&mut on_event, &outcome);
+                            inbox.tool_result(outcome);
+                        }
+                        autra_execution::EffectOutcome::Cancelled => {
+                            inbox.enqueue(EventKind::CancelRequested)
+                        }
+                        autra_execution::EffectOutcome::ModelFailed(message) => {
+                            let version = state.state_version;
+                            state.phase = AgentPhase::Failed;
+                            state.last_error = Some(message.clone());
+                            state.state_version = version + 1;
+                            state = committer
+                                .commit_terminal(&run_id, version, state, Some(source))
+                                .await?;
+                            on_event(&RunEvent::RunFailed {
+                                message: message.clone(),
+                            });
+                            if let Some(o) = &self.observer {
+                                o.on_run_finished(&run_id, &state.phase);
+                            }
+                            hub_guard.update(RunSnapshot::from_state(
+                                &state,
+                                inbox.seq(),
+                                effects.len(),
+                            ));
+                            hub_guard.finish();
+                            return Err(RunError::Model(autra_execution::ModelError::new(message)));
+                        }
+                    }
+                    sources.insert(inbox.seq(), source);
+                    continue;
                 }
             };
+            let source = sources.remove(&event.seq);
             let expected_version = state.state_version;
             let transition = match stepper.transition(&state, &event) {
                 Ok(transition) => transition,
@@ -183,7 +266,7 @@ impl LocalEngine {
                         message: message.clone(),
                     });
                     state = committer
-                        .commit_terminal(&run_id, expected_version, state)
+                        .commit_terminal(&run_id, expected_version, state, source.clone())
                         .await?;
                     if let Some(observer) = &self.observer {
                         observer.on_run_finished(&run_id, &state.phase);
@@ -214,7 +297,7 @@ impl LocalEngine {
                 state.state_version = expected_version + 1;
                 on_event(&RunEvent::RunFailed { message });
                 state = committer
-                    .commit_terminal(&run_id, expected_version, state)
+                    .commit_terminal(&run_id, expected_version, state, source.clone())
                     .await?;
                 if let Some(observer) = &self.observer {
                     observer.on_run_finished(&run_id, &state.phase);
@@ -231,12 +314,12 @@ impl LocalEngine {
             } = committer.prepare(&run_id, &mut effects, intents);
             state = committer
                 .commit(
-                    &run_id,
                     expected_version,
                     &event,
                     next,
                     effects[first_new..].to_vec(),
                     engine_delta,
+                    source,
                 )
                 .await?;
             // The commit returns the state it persisted; the in-memory state is
@@ -290,7 +373,13 @@ impl LocalEngine {
             }
 
             if options.cancel.is_cancelled() {
-                cancel_staged_effects(&mut effects[first_new..], self.journal.as_deref(), &run_id)?;
+                if !pooled {
+                    cancel_staged_effects(
+                        &mut effects[first_new..],
+                        self.journal.as_deref(),
+                        &run_id,
+                    )?;
+                }
                 inbox.cancel();
                 continue;
             }
@@ -301,6 +390,7 @@ impl LocalEngine {
                 // executor loop picks it up.
                 if let Some(journal) = &self.journal {
                     self.authorization_gate()
+                        .with_owner(owner_id.clone())
                         .resolve_pending_approvals(
                             journal.as_ref(),
                             stepper.as_ref(),
@@ -310,6 +400,14 @@ impl LocalEngine {
                             &mut on_event,
                         )
                         .await?;
+                }
+                for r in &effects[first_new..] {
+                    if r.status == autra_core::EffectStatus::Rejected {
+                        if let Some(outcome) = super::tool_outcome_from_record(r) {
+                            emit_tool_result(&mut on_event, &outcome);
+                            inbox.tool_result(outcome);
+                        }
+                    }
                 }
                 if let Ok(mut budget) = pool_budget.lock() {
                     *budget = state.budget.clone();
@@ -330,6 +428,7 @@ impl LocalEngine {
                 };
                 let batch = self
                     .effect_executor()
+                    .with_owner(owner_id.clone())
                     .execute_tool_batch(
                         tool_calls,
                         parallel_limit,
@@ -377,7 +476,7 @@ impl LocalEngine {
                         state.state_version = current_version + 1;
                         on_event(&RunEvent::RunFailed { message });
                         state = committer
-                            .commit_terminal(&run_id, current_version, state)
+                            .commit_terminal(&run_id, current_version, state, None)
                             .await?;
                         if let Some(observer) = &self.observer {
                             observer.on_run_finished(&run_id, &state.phase);
@@ -387,17 +486,6 @@ impl LocalEngine {
                     }
                 }
             }
-        }
-    }
-}
-
-/// Aborts the executor loop when the coordinator returns.
-struct PoolGuard(Option<tokio::task::JoinHandle<()>>);
-
-impl Drop for PoolGuard {
-    fn drop(&mut self) {
-        if let Some(task) = self.0.take() {
-            task.abort();
         }
     }
 }

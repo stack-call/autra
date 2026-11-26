@@ -110,6 +110,18 @@ impl BudgetHandle {
         self.inner.lock().expect("budget lock poisoned").clone()
     }
 
+    /// Merge committed consumption while preserving concurrent reservations.
+    pub fn advance_to(&self, snapshot: &BudgetSnapshot) -> bool {
+        let mut budget = self.inner.lock().expect("budget lock poisoned");
+        if budget.max_turns != snapshot.max_turns
+            || budget.max_tool_calls != snapshot.max_tool_calls
+        {
+            return false;
+        }
+        budget.turns_used = budget.turns_used.max(snapshot.turns_used);
+        budget.tool_calls_used = budget.tool_calls_used.max(snapshot.tool_calls_used);
+        true
+    }
     pub fn remaining_tool_calls(&self) -> u32 {
         self.inner
             .lock()

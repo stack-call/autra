@@ -19,7 +19,7 @@ use crate::dispatcher::{
     DEFAULT_CLAIM_LEASE, DispatchOptions, DispatchOutcome, DispatchResult, OutboxDispatcher,
     await_with_cancel,
 };
-use crate::scheduler::{AcquireError, ResourceKind};
+use crate::scheduler::{AcquireError, ResourceKind, ScheduleError};
 
 use super::coordinator::authorization::AuthorizationGate;
 use super::coordinator::emit_tool_result;
@@ -150,30 +150,51 @@ impl EffectExecutor {
             policy: dependencies.policy.clone(),
             actor: dependencies.actor.clone(),
             approval_ttl: dependencies.approval_ttl,
+            owner_id: None,
         };
         Self {
             dependencies,
             authorization,
         }
     }
+    pub(super) fn with_owner(mut self, owner: Option<String>) -> Self {
+        self.authorization = self.authorization.with_owner(owner);
+        self
+    }
     /// Can be hosted by a task independent of LocalEngine or its coordinator.
     pub async fn execute_pending(
         &self,
-        run_id: &RunId,
-        mut options: DispatchOptions<'_>,
+        run: &RunId,
+        options: DispatchOptions<'_>,
     ) -> Result<Vec<DispatchResult>, autra_execution::JournalError> {
         let journal = self.dependencies.journal.as_ref().ok_or_else(|| {
             autra_execution::JournalError::new("independent execution requires a journal")
         })?;
-        options.scheduler = Some(self.dependencies.scheduler.clone());
-        OutboxDispatcher::run_once_for_run_with(
+        if options.result_inbox && !journal.supports_result_inbox() {
+            return Err(autra_execution::JournalError::new(
+                "journal does not support an atomic result inbox",
+            ));
+        }
+        let cancel = options.cancel.cloned().unwrap_or_default();
+        if journal.cancel_request(run)?.is_some() {
+            cancel.cancel();
+        }
+        let options = DispatchOptions {
+            cancel: Some(&cancel),
+            scheduler: Some(self.dependencies.scheduler.clone()),
+            ..options
+        };
+        let dispatch = OutboxDispatcher::run_once_for_run_with(
             journal.journal(),
-            run_id,
+            run,
             options,
             self.dependencies.dispatcher.as_ref(),
             |_| {},
-        )
-        .await
+        );
+        tokio::pin!(dispatch);
+        loop {
+            tokio::select! {result=&mut dispatch=>return result,_=tokio::time::sleep(Duration::from_millis(100))=>{if journal.cancel_request(run)?.is_some(){cancel.cancel();}}}
+        }
     }
 
     pub(super) async fn execute_model<F>(
@@ -227,6 +248,7 @@ impl EffectExecutor {
                         child_execution: None,
                         delta: Some(delta),
                         scheduler: Some(self.dependencies.scheduler.clone()),
+                        result_inbox: false,
                     };
                     let dispatch = OutboxDispatcher::run_once_for_run_with(
                         journal.as_ref(),
@@ -390,9 +412,8 @@ impl EffectExecutor {
                 record.set_status(EffectStatus::Rejected);
                 record.error = Some(outcome.content.clone());
                 if let Some(journal) = &self.dependencies.journal {
-                    journal
-                        .record(&run_id, record)
-                        .map_err(|error| RunError::Journal(error.to_string()))?;
+                    self.authorization
+                        .persist_rejected(journal.as_ref(), &run_id, record)?;
                 }
                 ctx.emit_tool_result(&outcome);
                 ctx.emit_rejected(effect_id);
@@ -425,9 +446,8 @@ impl EffectExecutor {
                     record.set_status(EffectStatus::Rejected);
                     record.error = Some(outcome.content.clone());
                     if let Some(journal) = &self.dependencies.journal {
-                        journal
-                            .record(&run_id, record)
-                            .map_err(|error| RunError::Journal(error.to_string()))?;
+                        self.authorization
+                            .persist_rejected(journal.as_ref(), &run_id, record)?;
                     }
                     ctx.emit_tool_result(&outcome);
                     ctx.emit_rejected(effect_id);
@@ -483,25 +503,31 @@ impl EffectExecutor {
                     autra_execution::ToolResource::Process => ResourceKind::Process,
                     autra_execution::ToolResource::Tool => ResourceKind::Tool,
                 };
+                let requirements = ctx.effect_mut(&effect_id).requirements.clone();
                 let permit = match self
                     .dependencies
                     .scheduler
-                    .acquire(resource, ctx.run_id, Some(cancel))
+                    .acquire_effect(
+                        resource,
+                        ctx.run_id,
+                        Some(cancel),
+                        &requirements,
+                        self.dependencies.dispatcher.tool_environment(&call.name),
+                    )
                     .await
                 {
-                    Ok(permit) => permit,
-                    Err(AcquireError::Cancelled) => {
+                    Ok(p) => p,
+                    Err(ScheduleError::Resource(AcquireError::Cancelled)) => {
                         cancelled = true;
                         break;
                     }
-                    Err(AcquireError::QueueFull) => {
-                        return Err(RunError::Protocol("scheduler queue is full".to_owned()));
-                    }
+                    Err(e) => return Err(RunError::Protocol(e.to_string())),
                 };
                 ctx.effect_mut(&effect_id)
                     .set_status(EffectStatus::Dispatched);
                 ctx.start_tool(&call);
                 let context = autra_execution::ToolContext {
+                    environment: permit.environment.clone(),
                     run_id: ctx.run_id.clone(),
                     call_id: call.call_id.clone(),
                     parent_run_id: Some(ctx.run_id.clone()),
@@ -521,9 +547,8 @@ impl EffectExecutor {
                 outcomes[index] = Some(outcome);
             }
         } else {
-            let scheduler = self.dependencies.scheduler.clone();
             for chunk in approved_calls.chunks(limit) {
-                let mut prepared = Vec::new();
+                let mut tasks = tokio::task::JoinSet::new();
                 for (index, effect_id, call) in chunk {
                     if cancel.is_cancelled() {
                         cancelled = true;
@@ -533,53 +558,62 @@ impl EffectExecutor {
                         autra_execution::ToolResource::Process => ResourceKind::Process,
                         autra_execution::ToolResource::Tool => ResourceKind::Tool,
                     };
-                    let permit = match scheduler.acquire(resource, ctx.run_id, Some(cancel)).await {
-                        Ok(permit) => permit,
-                        Err(AcquireError::Cancelled) => {
+                    let req = ctx.effect_mut(effect_id).requirements.clone();
+                    let permit = match self
+                        .dependencies
+                        .scheduler
+                        .acquire_effect(
+                            resource,
+                            ctx.run_id,
+                            Some(cancel),
+                            &req,
+                            self.dependencies.dispatcher.tool_environment(&call.name),
+                        )
+                        .await
+                    {
+                        Ok(p) => p,
+                        Err(ScheduleError::Resource(AcquireError::Cancelled)) => {
                             cancelled = true;
                             break;
                         }
-                        Err(AcquireError::QueueFull) => {
-                            return Err(RunError::Protocol("scheduler queue is full".to_owned()));
-                        }
+                        Err(e) => return Err(RunError::Protocol(e.to_string())),
                     };
-                    let known_tool = self.dependencies.tools.get(&call.name).is_some();
+                    if cancel.is_cancelled() {
+                        cancelled = true;
+                        break;
+                    }
+                    let known = self.dependencies.tools.get(&call.name).is_some();
                     ctx.effect_mut(effect_id)
                         .set_status(EffectStatus::Dispatched);
                     ctx.start_tool(call);
                     let index = *index;
                     let effect_id = effect_id.clone();
-                    let dispatcher = self.dependencies.dispatcher.clone();
                     let call = call.clone();
-                    let run_id = ctx.run_id.clone();
+                    let dispatcher = self.dependencies.dispatcher.clone();
                     let context = autra_execution::ToolContext {
-                        run_id: run_id.clone(),
+                        environment: permit.environment.clone(),
+                        run_id: ctx.run_id.clone(),
                         call_id: call.call_id.clone(),
-                        parent_run_id: Some(run_id.clone()),
+                        parent_run_id: Some(ctx.run_id.clone()),
                         cancel: Some(cancel.clone()),
                         budget: Some(ctx.budget.clone()),
                         child_execution: Some(child_execution.clone()),
                     };
-                    prepared.push((
-                        index, effect_id, known_tool, call, context, permit, dispatcher,
-                    ));
-                }
-                let mut tasks = tokio::task::JoinSet::new();
-                for (index, effect_id, known_tool, call, context, permit, dispatcher) in prepared {
+                    // Start before waiting for another permit: the batch may
+                    // be larger than the entire resource pool.
                     tasks.spawn(async move {
                         let outcome = dispatcher
                             .call_tool_with_context(&context, &call, effect_timeout)
                             .await;
                         drop(permit);
-                        (index, effect_id, known_tool, outcome)
+                        (index, effect_id, known, outcome)
                     });
                 }
-                while let Some(result) = tasks.join_next().await {
-                    let (index, effect_id, known_tool, outcome) = result.map_err(|error| {
-                        RunError::Protocol(format!("tool task failed: {error}"))
-                    })?;
-                    ctx.record_tool_outcome(&effect_id, known_tool, &outcome);
-                    ctx.emit_resolved(&effect_id);
+                while let Some(r) = tasks.join_next().await {
+                    let (index, id, known, outcome) =
+                        r.map_err(|e| RunError::Protocol(format!("tool task failed: {e}")))?;
+                    ctx.record_tool_outcome(&id, known, &outcome);
+                    ctx.emit_resolved(&id);
                     ctx.emit_tool_result(&outcome);
                     outcomes[index] = Some(outcome);
                 }
@@ -617,12 +651,8 @@ impl EffectExecutor {
         let mut index_by_effect = std::collections::HashMap::new();
         for (index, effect_id, _) in &approved {
             let record = ctx.effect_mut(effect_id).clone();
-            journal
-                .record(&run_id, &record)
-                .map_err(|error| RunError::Journal(error.to_string()))?;
-            journal
-                .enqueue_effect(&run_id, &record)
-                .map_err(|error| RunError::Journal(error.to_string()))?;
+            self.authorization
+                .persist_authorized(journal, &run_id, &record)?;
             ctx.emit_authorized(effect_id);
             index_by_effect.insert(effect_id.clone(), *index);
         }
@@ -668,6 +698,7 @@ impl EffectExecutor {
                 }),
                 delta: None,
                 scheduler: Some(self.dependencies.scheduler.clone()),
+                result_inbox: false,
             };
             OutboxDispatcher::run_once_for_run_with(
                 journal,

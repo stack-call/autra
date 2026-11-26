@@ -51,6 +51,7 @@ impl LocalEngine {
                 child_execution: None,
                 delta: None,
                 scheduler: Some(self.scheduler.clone()),
+                result_inbox: self.pooled_execution && journal.supports_result_inbox(),
             };
             let mut batch = OutboxDispatcher::run_once_for_run_with(
                 journal.journal(),

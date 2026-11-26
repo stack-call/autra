@@ -9,6 +9,7 @@ pub mod environment;
 pub mod error;
 pub mod hooks;
 pub mod host;
+pub mod inbox;
 pub mod journal;
 pub mod model;
 pub mod policy;
@@ -46,3 +47,5 @@ pub use tool::{
 };
 
 pub use environment::*;
+
+pub use inbox::{CommitAuthority, EffectOutcome, EffectResult, ResultIdentity};

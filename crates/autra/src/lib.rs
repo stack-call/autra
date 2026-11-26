@@ -35,3 +35,6 @@ pub use autra_execution::environment::*;
 pub use autra_harness::{LocalEnvironment, LocalEnvironmentProvider};
 
 pub use autra_runtime::{EffectExecutor, ExecutionDependencies, SandboxEnvironmentProvider};
+
+pub use autra_execution::{CommitAuthority, EffectOutcome, EffectResult, ResultIdentity};
+pub use autra_runtime::{GlobalScheduler, ResourceKind};

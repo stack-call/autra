@@ -114,12 +114,8 @@ impl LocalEngine {
                     EffectKind::ToolCall => "reconciliation: retrying a safe tool effect",
                 });
                 record.set_status(EffectStatus::Authorized);
-                journal
-                    .record(run_id, record)
-                    .map_err(|error| RunError::Journal(error.to_string()))?;
-                journal
-                    .enqueue_effect(run_id, record)
-                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                self.authorization_gate()
+                    .persist_authorized(journal.as_ref(), run_id, record)?;
                 retried.push(record.id.clone());
             } else {
                 unresolved.push(UnresolvedEffect {
@@ -140,6 +136,7 @@ impl LocalEngine {
                 child_execution: None,
                 delta: None,
                 scheduler: Some(self.scheduler.clone()),
+                result_inbox: self.pooled_execution && journal.supports_result_inbox(),
             };
             OutboxDispatcher::run_once_for_run_with(
                 journal.journal(),
@@ -324,6 +321,7 @@ impl LocalEngine {
                 child_execution: None,
                 delta: None,
                 scheduler: Some(self.scheduler.clone()),
+                result_inbox: self.pooled_execution && journal.supports_result_inbox(),
             };
             OutboxDispatcher::run_once_for_run_with(
                 journal.journal(),

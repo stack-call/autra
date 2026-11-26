@@ -14,7 +14,7 @@ pub mod stepper;
 
 pub use effect::{
     AttemptStatus, EffectAttempt, EffectClass, EffectIntent, EffectKind, EffectRecord,
-    EffectStatus, ModelCallSpec, ToolCallSpec,
+    EffectStatus, EnvironmentAffinity, ExecutionRequirements, ModelCallSpec, ToolCallSpec,
 };
 pub use event::{AcceptedEvent, EventKind};
 pub use ids::{AttemptId, EffectId, RunId, SessionId, TurnId};

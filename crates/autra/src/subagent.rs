@@ -111,6 +111,7 @@ impl Tool for SubagentTool {
     async fn call(&self, arguments: &str) -> Result<String, ToolError> {
         let run_id = RunId::fresh();
         let context = ToolContext {
+            environment: None,
             run_id: run_id.clone(),
             call_id: "direct-subagent".to_owned(),
             parent_run_id: Some(run_id),

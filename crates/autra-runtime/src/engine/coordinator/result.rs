@@ -56,6 +56,9 @@ impl ResultCollector {
         }
     }
 
+    pub(super) fn advance_seq(&mut self, seq: u64) {
+        self.seq = self.seq.max(seq);
+    }
     pub(super) fn seq(&self) -> u64 {
         self.seq
     }

@@ -208,7 +208,7 @@ fn opening_configures_wal_and_sets_the_schema_version() {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
 }
 
 #[test]
@@ -407,4 +407,49 @@ fn an_old_schema_is_rejected_without_migration() {
     };
 
     assert!(error.to_string().contains("not supported"));
+}
+
+#[test]
+fn schema_two_migrates_without_losing_existing_progress() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("migration.db");
+    let run = RunId::new("migration-run");
+    {
+        let j = SqliteEffectJournal::open(&path).unwrap();
+        j.save_run(&AgentState::new(run.clone(), BudgetSnapshot::new(8, 8)))
+            .unwrap();
+    }
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("DROP TABLE result_inbox; PRAGMA user_version=2;")
+            .unwrap();
+    }
+    let j = SqliteEffectJournal::open(&path).unwrap();
+    assert!(j.load_run(&run).unwrap().is_some());
+    assert!(j.pending_results(&run, 10).unwrap().is_empty());
+    assert_eq!(j.health(0).unwrap().schema_version, 3);
+}
+#[test]
+fn gc_waits_for_an_independent_executor_to_retire_the_outbox() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("gc-worker.db");
+    let j = SqliteEffectJournal::open(&path).unwrap();
+    let run = RunId::new("cancelled-work");
+    let mut state = AgentState::new(run.clone(), BudgetSnapshot::new(8, 8));
+    state.phase = AgentPhase::Cancelled;
+    j.save_run(&state).unwrap();
+    let e = authorized_effect();
+    j.record(&run, &e).unwrap();
+    j.enqueue_effect(&run, &e).unwrap();
+    let c = rusqlite::Connection::open(&path).unwrap();
+    c.execute(
+        "UPDATE runs SET updated_at='2000-01-01 00:00:00' WHERE run_id=?1",
+        [run.as_str()],
+    )
+    .unwrap();
+    assert_eq!(j.gc(std::time::Duration::ZERO, false).unwrap().runs, 0);
+    assert!(j.load_effect(&run, &e.id).unwrap().is_some());
+    j.complete_outbox(&e.id, autra_execution::UNCLAIMED_CLAIM)
+        .unwrap();
+    assert_eq!(j.gc(std::time::Duration::ZERO, false).unwrap().runs, 1);
 }

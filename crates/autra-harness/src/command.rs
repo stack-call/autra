@@ -98,6 +98,19 @@ struct RunCommandArgs {
 
 #[async_trait]
 impl Tool for RunCommandTool {
+    fn environment(&self) -> Option<Arc<dyn ExecutionEnvironment>> {
+        Some(self.environment.clone())
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: Some(autra_core::EnvironmentAffinity::Required(
+                self.environment.id().to_owned(),
+            )),
+            file_api: false,
+            command_execution: true,
+        }
+    }
+
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: RUN_COMMAND_TOOL.to_owned(),
@@ -133,7 +146,14 @@ impl Tool for RunCommandTool {
         input: ToolInput,
         context: ToolContext,
     ) -> Result<ToolOutput, ToolError> {
-        self.run(&input.arguments, context.cancel)
+        let mut tool = Self::in_environment(
+            context
+                .environment
+                .unwrap_or_else(|| self.environment.clone()),
+        );
+        tool.default_timeout = self.default_timeout;
+        tool.max_output_bytes = self.max_output_bytes;
+        tool.run(&input.arguments, context.cancel)
             .await
             .map(ToolOutput::text)
     }

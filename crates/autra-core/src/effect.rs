@@ -48,6 +48,20 @@ pub enum EffectClass {
     Unknown,
 }
 
+/// Persisted resource placement, interpreted by the execution runtime.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnvironmentAffinity {
+    Any,
+    Preferred(String),
+    Required(String),
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionRequirements {
+    pub environment: Option<EnvironmentAffinity>,
+    pub file_api: bool,
+    pub command_execution: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectKind {
     ModelCall,
@@ -108,6 +122,11 @@ pub struct EffectRecord {
     /// Reconciliation notes, kept separate from attempt errors.
     #[serde(default)]
     pub reconciliations: Vec<String>,
+    #[serde(default)]
+    pub requirements: ExecutionRequirements,
+    /// This Effect delivers its result through the Journal Inbox.
+    #[serde(default)]
+    pub result_inbox: bool,
 }
 
 impl EffectRecord {
@@ -130,9 +149,20 @@ impl EffectRecord {
             result: None,
             error: None,
             reconciliations: Vec::new(),
+            requirements: ExecutionRequirements::default(),
+            result_inbox: false,
         }
     }
 
+    /// Keep claim generations monotonic when reconciliation recreates Outbox.
+    pub fn claim_generation(&self) -> u32 {
+        self.attempts
+            .iter()
+            .filter_map(|a| a.fencing_token)
+            .max()
+            .unwrap_or(0)
+            .min(u32::MAX as u64) as u32
+    }
     pub fn with_intent_json(mut self, intent_json: impl Into<String>) -> Self {
         self.intent_json = intent_json.into();
         self

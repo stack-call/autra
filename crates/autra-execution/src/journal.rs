@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use crate::{CommitAuthority, EffectResult};
 use autra_core::{AcceptedEvent, AgentState, EffectId, EffectRecord, EngineStateDelta, RunId};
 use thiserror::Error;
 
@@ -53,6 +54,48 @@ pub struct OutboxEntry {
 }
 
 pub trait EffectJournal: Send + Sync {
+    fn supports_result_inbox(&self) -> bool {
+        false
+    }
+    /// Atomic authorization, record and Outbox publication.
+    fn authorize_effect(&self, _run: &RunId, _effect: &EffectRecord) -> Result<(), JournalError> {
+        Err(JournalError::new("atomic authorization unsupported"))
+    }
+    /// Inspect candidates without owning them. Reserve capacity before claim.
+    fn peek_due_effects(
+        &self,
+        _run: Option<&RunId>,
+        _limit: usize,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        Err(JournalError::new("pre-claim scheduling unsupported"))
+    }
+    fn claim_effect(
+        &self,
+        _effect: &EffectId,
+        _claim: &str,
+        _lease: Duration,
+    ) -> Result<Option<OutboxEntry>, JournalError> {
+        Err(JournalError::new("targeted claim unsupported"))
+    }
+    /// Validate a live claim, write Effect/Attempt and Inbox, retire Outbox in
+    /// one transaction. Exact duplicate publication is harmless.
+    fn record_result_claimed(
+        &self,
+        _run: &RunId,
+        _effect: &EffectRecord,
+        _claim: &str,
+        _result: &EffectResult,
+    ) -> Result<(), JournalError> {
+        Err(JournalError::new("atomic result inbox unsupported"))
+    }
+    fn pending_results(
+        &self,
+        _run: &RunId,
+        _limit: usize,
+    ) -> Result<Vec<EffectResult>, JournalError> {
+        Err(JournalError::new("result inbox unsupported"))
+    }
+
     /// Unfenced write for pre-claim state such as a committed transition.
     /// Dispatchers must use `record_claimed`.
     fn record(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError>;
@@ -268,6 +311,40 @@ pub const UNCLAIMED_CLAIM: &str = "";
 /// This is a separate contract on purpose: a plain `EffectJournal` may be
 /// in-memory or best-effort, and must not silently claim durable semantics.
 pub trait DurableTransitionStore: EffectJournal {
+    /// Fence approval callbacks as well as state transitions.
+    fn resolve_effect_owned(
+        &self,
+        _run: &RunId,
+        _effect: &EffectRecord,
+        _owner: &str,
+    ) -> Result<(), JournalError> {
+        Err(JournalError::new("fenced authorization unsupported"))
+    }
+    /// Validate Run ownership, consume a result and commit state/event/effects/
+    /// Outbox atomically. A consumed result identity must be rejected.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_owned_transition(
+        &self,
+        _run: &RunId,
+        _expected: u64,
+        _event: &AcceptedEvent,
+        _state: &AgentState,
+        _effects: &[EffectRecord],
+        _delta: Option<&EngineStateDelta>,
+        _authority: &CommitAuthority,
+    ) -> Result<(), JournalError> {
+        Err(JournalError::new("fenced result consumption unsupported"))
+    }
+    fn commit_owned_terminal(
+        &self,
+        _run: &RunId,
+        _expected: u64,
+        _state: &AgentState,
+        _authority: &CommitAuthority,
+    ) -> Result<(), JournalError> {
+        Err(JournalError::new("fenced terminal commit unsupported"))
+    }
+
     /// The underlying journal, used for dispatch, recovery and inspection.
     fn journal(&self) -> &dyn EffectJournal;
 

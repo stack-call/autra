@@ -523,6 +523,7 @@ fn effects_and_reconcile_handle_an_unknown_read_only_tool() {
         ToolCallSpec,
     };
     use autra_durable_sqlite::SqliteEffectJournal;
+    use autra_harness::{LocalWorkspace, ReadFileTool, Tool};
 
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join("note.txt"), "hello").unwrap();
@@ -546,6 +547,8 @@ fn effects_and_reconcile_handle_an_unknown_read_only_tool() {
             "digest".to_owned(),
         )
         .with_intent_json(serde_json::to_string(&intent).unwrap());
+        effect.requirements = ReadFileTool::new(LocalWorkspace::open(workspace.path()).unwrap())
+            .execution_requirements();
         effect.set_status(EffectStatus::OutcomeUnknown);
         journal.record(&run_id, &effect).unwrap();
     }
@@ -768,6 +771,6 @@ fn metrics_returns_json_health() {
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let value: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert_eq!(value["runs"], 0);
-    assert_eq!(value["schema_version"], 2);
+    assert_eq!(value["schema_version"], 3);
     assert!(value["readers"].as_u64().unwrap_or(0) >= 1);
 }

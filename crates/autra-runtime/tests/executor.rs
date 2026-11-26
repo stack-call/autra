@@ -66,6 +66,7 @@ async fn executor_owns_dependencies_and_outlives_its_engine() {
                 child_execution: None,
                 delta: None,
                 scheduler: None,
+                result_inbox: false,
             },
         )
         .await

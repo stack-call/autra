@@ -19,11 +19,12 @@ pub(super) struct PreparedEffects {
 
 pub(super) struct TransitionCommitter<'a> {
     engine: &'a LocalEngine,
+    owner_id: Option<String>,
 }
 
 impl<'a> TransitionCommitter<'a> {
-    pub(super) fn new(engine: &'a LocalEngine) -> Self {
-        Self { engine }
+    pub(super) fn new(engine: &'a LocalEngine, owner_id: Option<String>) -> Self {
+        Self { engine, owner_id }
     }
 
     pub(super) fn validate(
@@ -75,6 +76,12 @@ impl<'a> TransitionCommitter<'a> {
                 ),
             }
             .with_intent_json(intent_json);
+            if let EffectIntent::CallTool(spec) = &intent {
+                if let Some(tool) = self.engine.tools.get(&spec.call.name) {
+                    record.requirements = tool.execution_requirements();
+                }
+            }
+            record.result_inbox = self.engine.pooled_execution && self.engine.journal.is_some();
             record.set_status(if requires_approval {
                 EffectStatus::AwaitingApproval
             } else {
@@ -96,12 +103,12 @@ impl<'a> TransitionCommitter<'a> {
     /// caller applies the returned state only after this succeeds.
     pub(super) async fn commit(
         &self,
-        run_id: &RunId,
         expected_version: u64,
         event: &AcceptedEvent,
         next: AgentState,
         new_effects: Vec<EffectRecord>,
         delta: Option<EngineStateDelta>,
+        source: Option<autra_execution::ResultIdentity>,
     ) -> Result<AgentState, RunError> {
         let Some(journal) = self.engine.journal.clone() else {
             return Ok(next);
@@ -114,17 +121,32 @@ impl<'a> TransitionCommitter<'a> {
                 )));
             }
         }
-        let run_id = run_id.clone();
+        let run_id = next.run_id.clone();
+        let owner_id = self.owner_id.clone();
         let event = event.clone();
         run_journal_with(move || {
-            let result = journal.commit_transition_with_engine_delta(
-                &run_id,
-                expected_version,
-                &event,
-                &next,
-                &new_effects,
-                delta.as_ref(),
-            );
+            let result = match owner_id {
+                Some(owner_id) => journal.commit_owned_transition(
+                    &run_id,
+                    expected_version,
+                    &event,
+                    &next,
+                    &new_effects,
+                    delta.as_ref(),
+                    &autra_execution::CommitAuthority {
+                        owner_id,
+                        result: source,
+                    },
+                ),
+                None => journal.commit_transition_with_engine_delta(
+                    &run_id,
+                    expected_version,
+                    &event,
+                    &next,
+                    &new_effects,
+                    delta.as_ref(),
+                ),
+            };
             (next, result)
         })
         .await
@@ -136,13 +158,26 @@ impl<'a> TransitionCommitter<'a> {
         run_id: &RunId,
         expected_version: u64,
         state: AgentState,
+        source: Option<autra_execution::ResultIdentity>,
     ) -> Result<AgentState, RunError> {
         let Some(journal) = self.engine.journal.clone() else {
             return Ok(state);
         };
         let run_id = run_id.clone();
+        let owner_id = self.owner_id.clone();
         run_journal_with(move || {
-            let result = journal.commit_terminal(&run_id, expected_version, &state);
+            let result = match owner_id {
+                Some(owner_id) => journal.commit_owned_terminal(
+                    &run_id,
+                    expected_version,
+                    &state,
+                    &autra_execution::CommitAuthority {
+                        owner_id,
+                        result: source,
+                    },
+                ),
+                None => journal.commit_terminal(&run_id, expected_version, &state),
+            };
             (state, result)
         })
         .await

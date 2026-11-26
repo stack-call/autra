@@ -72,6 +72,8 @@ pub struct ChildExecutionContext {
 
 #[derive(Clone)]
 pub struct ToolContext {
+    /// Resource location selected by the execution scheduler.
+    pub environment: Option<Arc<dyn crate::ExecutionEnvironment>>,
     /// The Run that invoked the tool.
     pub run_id: RunId,
     pub call_id: String,
@@ -102,6 +104,17 @@ pub trait Tool: Send + Sync {
         ToolResource::Tool
     }
 
+    fn environment(&self) -> Option<Arc<dyn crate::ExecutionEnvironment>> {
+        None
+    }
+    fn execution_requirements(&self) -> autra_core::ExecutionRequirements {
+        autra_core::ExecutionRequirements {
+            environment: self
+                .environment()
+                .map(|e| autra_core::EnvironmentAffinity::Required(e.id().to_owned())),
+            ..Default::default()
+        }
+    }
     fn descriptor(&self) -> ToolDescriptor {
         self.spec().into()
     }

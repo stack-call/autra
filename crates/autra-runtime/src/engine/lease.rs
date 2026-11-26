@@ -19,6 +19,12 @@ pub(super) struct RunLeaseGuard {
 }
 
 impl RunLeaseGuard {
+    pub(super) fn commit_owner(&self) -> Option<String> {
+        self.journal
+            .as_ref()
+            .filter(|j| j.supports_result_inbox())
+            .map(|_| self.owner_id.clone())
+    }
     pub(super) fn acquire(
         journal: Option<Arc<dyn DurableTransitionStore>>,
         run_id: &RunId,
@@ -85,7 +91,7 @@ impl Drop for RunLeaseGuard {
     }
 }
 
-pub(super) fn next_owner_id(prefix: &str) -> String {
+pub(crate) fn next_owner_id(prefix: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);

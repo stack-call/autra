@@ -14,6 +14,7 @@ pub struct GcReport {
     pub events: usize,
     pub effects: usize,
     pub outbox: usize,
+    pub results: usize,
     pub approvals: usize,
     pub leases: usize,
     pub cancels: usize,
@@ -65,7 +66,16 @@ impl SqliteEffectJournal {
                     )
                     .optional()
                     .map_err(|error| JournalError::new(format!("cannot check lease: {error}")))?;
-                if live.is_none() {
+                // An independent executor may still be recording results after cancellation.
+                let unfinished: Option<i64> = transaction
+                    .query_row(
+                        "SELECT 1 FROM effect_outbox WHERE run_id=?1 LIMIT 1",
+                        params![run_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| JournalError::new(e.to_string()))?;
+                if live.is_none() && unfinished.is_none() {
                     candidates.push(run_id);
                 }
             }
@@ -79,6 +89,7 @@ impl SqliteEffectJournal {
             report.runs += 1;
             report.events += count(&transaction, "run_events", run_id)?;
             report.effects += count(&transaction, "effects", run_id)?;
+            report.results += count(&transaction, "result_inbox", run_id)?;
             report.outbox += count(&transaction, "effect_outbox", run_id)?;
             report.leases += count(&transaction, "run_leases", run_id)?;
             report.cancels += count(&transaction, "cancel_requests", run_id)?;
@@ -102,6 +113,9 @@ impl SqliteEffectJournal {
             if dry_run {
                 continue;
             }
+            transaction
+                .execute("DELETE FROM result_inbox WHERE run_id=?1", params![run_id])
+                .map_err(|e| JournalError::new(e.to_string()))?;
             transaction
                 .execute(
                     "DELETE FROM effect_outbox WHERE run_id = ?1",

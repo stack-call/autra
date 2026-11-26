@@ -1,3 +1,4 @@
+#![cfg(feature = "process")]
 use autra_core::{CancelFlag, EffectClass, RunId};
 use autra_execution::ToolResource;
 use autra_harness::{LocalWorkspace, RunCommandTool, Tool, ToolContext, ToolInput};
@@ -67,6 +68,7 @@ async fn a_timeout_is_an_unknown_outcome() {
 
 fn context(cancel: CancelFlag) -> ToolContext {
     ToolContext {
+        environment: None,
         run_id: RunId::new("run-cancel"),
         call_id: "call-cancel".to_owned(),
         parent_run_id: None,

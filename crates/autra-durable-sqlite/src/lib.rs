@@ -17,6 +17,7 @@ use autra_execution::{
 };
 mod gc;
 mod health;
+mod inbox;
 pub mod session;
 
 pub use gc::GcReport;
@@ -28,7 +29,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 /// Version written to `PRAGMA user_version`. Future schema changes must bump
 /// it and add an explicit migration step.
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 3;
 
 /// Shared connection settings for the journal and session stores.
 pub(crate) fn configure_connection(connection: &Connection) -> Result<(), String> {
@@ -46,12 +47,13 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), String
             "database schema version {version} is newer than supported {SCHEMA_VERSION}"
         ));
     }
-    if version != 0 && version < SCHEMA_VERSION {
+    if version != 0 && version < 2 {
         return Err(format!(
             "journal schema version {version} is not supported; recreate the journal"
         ));
     }
-    if version == 0 {
+    // v2 -> v3 adds result_inbox in the journal initializer.
+    if version < SCHEMA_VERSION {
         connection
             .pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(|error| error.to_string())?;
@@ -313,6 +315,13 @@ impl SqliteEffectJournal {
                     recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY (run_id, seq)
                 );
+                CREATE TABLE IF NOT EXISTS result_inbox (
+                    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL, effect_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
+                    payload_json TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(run_id, effect_id, attempt_id)
+                );
+                CREATE INDEX IF NOT EXISTS result_inbox_pending ON result_inbox(run_id, consumed, ordinal);
                 CREATE TABLE IF NOT EXISTS approvals (
                     effect_id TEXT PRIMARY KEY,
                     payload_json TEXT NOT NULL,
@@ -431,7 +440,7 @@ impl SqliteEffectJournal {
         let mut statement = transaction
             .prepare(
                 "SELECT effect_id, run_id, intent_json, attempts FROM effect_outbox
-                 WHERE (claim_id IS NULL OR claim_deadline < datetime('now'))
+                 WHERE (claim_id IS NULL OR claim_deadline <= datetime('now'))
                    AND (?1 IS NULL OR run_id = ?1)
                  ORDER BY created_at LIMIT ?2",
             )
@@ -474,6 +483,46 @@ impl SqliteEffectJournal {
 }
 
 impl EffectJournal for SqliteEffectJournal {
+    fn supports_result_inbox(&self) -> bool {
+        true
+    }
+    fn authorize_effect(&self, run: &RunId, effect: &EffectRecord) -> Result<(), JournalError> {
+        if effect.status != EffectStatus::Authorized {
+            return Err(JournalError::new("effect is not authorized"));
+        }
+        self.resolve_effect_inner(run, effect, None)
+    }
+    fn record_result_claimed(
+        &self,
+        run: &RunId,
+        effect: &EffectRecord,
+        claim: &str,
+        result: &autra_execution::EffectResult,
+    ) -> Result<(), JournalError> {
+        self.finish_result(run, effect, claim, result)
+    }
+    fn pending_results(
+        &self,
+        run: &RunId,
+        limit: usize,
+    ) -> Result<Vec<autra_execution::EffectResult>, JournalError> {
+        self.read_results(run, limit)
+    }
+    fn peek_due_effects(
+        &self,
+        run: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<OutboxEntry>, JournalError> {
+        self.peek_entries(run, limit)
+    }
+    fn claim_effect(
+        &self,
+        id: &EffectId,
+        claim: &str,
+        lease: Duration,
+    ) -> Result<Option<OutboxEntry>, JournalError> {
+        self.claim_entry(id, claim, lease)
+    }
     fn record(&self, run_id: &RunId, effect: &EffectRecord) -> Result<(), JournalError> {
         let payload = serde_json::to_string(effect)
             .map_err(|error| JournalError::new(format!("cannot serialize effect: {error}")))?;
@@ -506,8 +555,8 @@ impl EffectJournal for SqliteEffectJournal {
             .map_err(|error| JournalError::new(format!("cannot begin claim write: {error}")))?;
         let owned: Option<i64> = transaction
             .query_row(
-                "SELECT 1 FROM effect_outbox WHERE effect_id = ?1 AND claim_id = ?2",
-                params![effect.id.as_str(), claim_id],
+                "SELECT 1 FROM effect_outbox WHERE effect_id = ?1 AND claim_id = ?2 AND run_id = ?3 AND claim_deadline > datetime('now')",
+                params![effect.id.as_str(), claim_id, run_id.as_str()],
                 |row| row.get(0),
             )
             .optional()
@@ -545,7 +594,7 @@ impl EffectJournal for SqliteEffectJournal {
                 "UPDATE effect_outbox
                  SET claim_deadline = datetime('now', ?3)
                  WHERE effect_id = ?1 AND claim_id = ?2
-                   AND claim_deadline >= datetime('now')",
+                   AND claim_deadline > datetime('now')",
                 params![effect_id.as_str(), claim_id, modifier],
             )
             .map_err(|error| JournalError::new(format!("cannot renew claim: {error}")))?;
@@ -752,9 +801,14 @@ impl EffectJournal for SqliteEffectJournal {
         let connection = self.writer()?;
         connection
             .execute(
-                "INSERT OR IGNORE INTO effect_outbox (effect_id, run_id, intent_json)
-                 VALUES (?1, ?2, ?3)",
-                params![effect.id.as_str(), run_id.as_str(), effect.intent_json],
+                "INSERT OR IGNORE INTO effect_outbox (effect_id, run_id, intent_json, attempts)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    effect.id.as_str(),
+                    run_id.as_str(),
+                    effect.intent_json,
+                    effect.claim_generation()
+                ],
             )
             .map_err(|error| JournalError::new(format!("cannot enqueue effect: {error}")))?;
         Ok(())
@@ -855,7 +909,7 @@ impl EffectJournal for SqliteEffectJournal {
         let changed = connection
             .execute(
                 "UPDATE run_leases SET deadline_ms = ?3
-                 WHERE run_id = ?1 AND owner_id = ?2 AND deadline_ms >= ?4",
+                 WHERE run_id = ?1 AND owner_id = ?2 AND deadline_ms > ?4",
                 params![run_id.as_str(), owner_id, deadline as i64, now as i64],
             )
             .map_err(|error| JournalError::new(format!("cannot renew run: {error}")))?;
@@ -925,7 +979,7 @@ impl EffectJournal for SqliteEffectJournal {
         let changed = connection
             .execute(
                 "UPDATE service_leases SET deadline_ms = ?3
-                 WHERE service = ?1 AND owner_id = ?2 AND deadline_ms >= ?4",
+                 WHERE service = ?1 AND owner_id = ?2 AND deadline_ms > ?4",
                 params![service, owner_id, deadline as i64, now as i64],
             )
             .map_err(|error| JournalError::new(format!("cannot renew service: {error}")))?;
@@ -1054,13 +1108,69 @@ impl DurableTransitionStore for SqliteEffectJournal {
 
     fn commit_transition_with_engine_delta(
         &self,
+        run: &RunId,
+        expected: u64,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        effects: &[EffectRecord],
+        delta: Option<&EngineStateDelta>,
+    ) -> Result<(), JournalError> {
+        self.commit_transition_inner(run, expected, event, state, effects, delta, None)
+    }
+    fn commit_owned_transition(
+        &self,
+        run: &RunId,
+        expected: u64,
+        event: &AcceptedEvent,
+        state: &AgentState,
+        effects: &[EffectRecord],
+        delta: Option<&EngineStateDelta>,
+        authority: &autra_execution::CommitAuthority,
+    ) -> Result<(), JournalError> {
+        self.commit_transition_inner(run, expected, event, state, effects, delta, Some(authority))
+    }
+    fn commit_terminal(
+        &self,
+        run: &RunId,
+        expected: u64,
+        state: &AgentState,
+    ) -> Result<(), JournalError> {
+        self.commit_terminal_inner(run, expected, state, None)
+    }
+    fn commit_owned_terminal(
+        &self,
+        run: &RunId,
+        expected: u64,
+        state: &AgentState,
+        authority: &autra_execution::CommitAuthority,
+    ) -> Result<(), JournalError> {
+        self.commit_terminal_inner(run, expected, state, Some(authority))
+    }
+    fn resolve_effect_owned(
+        &self,
+        run: &RunId,
+        effect: &EffectRecord,
+        owner: &str,
+    ) -> Result<(), JournalError> {
+        self.resolve_effect_inner(run, effect, Some(owner))
+    }
+}
+
+impl SqliteEffectJournal {
+    #[allow(clippy::too_many_arguments)]
+    fn commit_transition_inner(
+        &self,
         run_id: &RunId,
         expected_version: u64,
         event: &AcceptedEvent,
         state: &AgentState,
         new_effects: &[EffectRecord],
         delta: Option<&EngineStateDelta>,
+        authority: Option<&autra_execution::CommitAuthority>,
     ) -> Result<(), JournalError> {
+        if &state.run_id != run_id {
+            return Err(JournalError::new("run identity mismatch"));
+        }
         let event_payload = serde_json::to_string(event)
             .map_err(|error| JournalError::new(format!("cannot serialize event: {error}")))?;
         let state_payload = state_header_json(state)?;
@@ -1147,8 +1257,8 @@ impl DurableTransitionStore for SqliteEffectJournal {
             if effect.status == EffectStatus::Authorized && !effect.intent_json.is_empty() {
                 transaction
                     .prepare_cached(
-                        "INSERT OR IGNORE INTO effect_outbox (effect_id, run_id, intent_json)
-                         VALUES (?1, ?2, ?3)",
+                        "INSERT OR IGNORE INTO effect_outbox (effect_id, run_id, intent_json, attempts)
+                         VALUES (?1, ?2, ?3, ?4)",
                     )
                     .map_err(|error| {
                         JournalError::new(format!("cannot prepare outbox write: {error}"))
@@ -1156,7 +1266,8 @@ impl DurableTransitionStore for SqliteEffectJournal {
                     .execute(params![
                         effect.id.as_str(),
                         run_id.as_str(),
-                        effect.intent_json
+                        effect.intent_json,
+                        effect.claim_generation()
                     ])
                     .map_err(|error| {
                         JournalError::new(format!("cannot enqueue effect: {error}"))
@@ -1174,18 +1285,27 @@ impl DurableTransitionStore for SqliteEffectJournal {
                 &patch,
             )?;
         }
+        if let Some(authority) = authority {
+            inbox::check_owner(&transaction, run_id, &authority.owner_id)?;
+            if let Some(source) = &authority.result {
+                inbox::consume(&transaction, run_id, source)?;
+            }
+        }
         transaction
             .commit()
             .map_err(|error| JournalError::new(format!("cannot commit journal: {error}")))?;
         Ok(())
     }
-
-    fn commit_terminal(
+    fn commit_terminal_inner(
         &self,
         run_id: &RunId,
         expected_version: u64,
         state: &AgentState,
+        authority: Option<&autra_execution::CommitAuthority>,
     ) -> Result<(), JournalError> {
+        if &state.run_id != run_id {
+            return Err(JournalError::new("run identity mismatch"));
+        }
         if state.state_version != expected_version + 1 {
             return Err(JournalError::new(format!(
                 "terminal state version {} does not follow {expected_version}",
@@ -1255,6 +1375,12 @@ impl DurableTransitionStore for SqliteEffectJournal {
                 expected_version,
                 "[]",
             )?;
+        }
+        if let Some(authority) = authority {
+            inbox::check_owner(&transaction, run_id, &authority.owner_id)?;
+            if let Some(source) = &authority.result {
+                inbox::consume(&transaction, run_id, source)?;
+            }
         }
         transaction
             .commit()
