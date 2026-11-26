@@ -1,5 +1,8 @@
 # Runtime scalability baseline
 
+See the [indexed Windows measurements](runtime-indexed-scalability.md) for the
+later Run index and Context lifecycle results.
+
 This measures the implementation from PR #1, before any shared-worker or
 notification-frequency change. Production runtime code is unchanged.
 

@@ -2,7 +2,8 @@
 
 Baseline: `2e0fbb86d596c205e1dc06e24ea486ac3d2eb437` (the measured runtime baseline).
 The indexed implementation from `refactor/runtime-wakeup-context` is now on `mvp-v1`.
-See the [scalability results](performance/runtime-scalability.md) for measurement status.
+The [indexed Windows results](performance/runtime-indexed-scalability.md)
+include the repeated pooled matrix, inline control and paced SQLite release.
 
 This stage implements local publication notifications, low-frequency recovery
 checks, and an in-process RunContextRegistry. It retains one executor per Run;
@@ -29,19 +30,17 @@ child propagation and dropped-waiter cleanup. Core gains no Tokio or I/O depende
 Journal claims, lease expiry, fencing, atomic result publication/consumption and
 OutcomeUnknown semantics are retained.
 
-All 387 workspace regression tests, 57 Harness tests without default features,
-formatting and Clippy checks pass. Tests cover notification loss, publication
-races, partial-batch result delivery, cancellation propagation/cleanup, context
-generation replacement, shared budget reservations and clock restart across
-Tokio runtimes. Repeat scalability measurements are pending.
+The wakeup branch regression suite covered notification loss, publication
+races, partial-batch result delivery, cancellation propagation/cleanup,
+context generation replacement, shared budget reservations and recovery
+clock restart across Tokio runtimes.
 
 The active Run's drive scope owns its ContextRegistration. The per-Run
 worker holds only a shared execution-context handle. A worker exit leaves
 the registration resolvable while the Run owns it. If the Coordinator
 detaches, an in-flight worker can still publish committed work and keep
 budget reservations available to a replacement. The registry recovery tick
-prunes expired weak entries. Cross-process
-workers still require trusted profile restoration, atomic durable budget
+prunes expired weak entries. Cross-process workers still require trusted profile restoration, atomic durable budget
 reservation and per-Run admission; a global Outbox batch must not reuse one
 Run's DispatchOptions for other Runs.
 
@@ -64,5 +63,6 @@ budget handle, including prior reservations. A replacement cannot change
 budget limits. Independent Registries/Engines/processes do not gain a shared
 durable budget reservation protocol from this change.
 
-The indexed implementation passes 387 workspace tests, formatting and Clippy.
-Its full repeated performance matrix has not yet completed.
+The repeated matrix completed on Windows after retrying three disk-full
+attempts. All 10,000-Run pooled SQLite repeats completed. One 5,000-Run mixed
+repeat reported a SQLite lock error.

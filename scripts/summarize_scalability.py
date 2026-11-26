@@ -24,10 +24,23 @@ def case_key(row, batch_default, interval_default):
     )
 
 
+def has_disk_full(row):
+    return (
+        "database or disk is full" in row.get("stderr", "")
+        or any(
+            kind == "sqlite_disk_full" or "database or disk is full" in example
+            for kind, (_, example) in row.get("run_errors", {}).items()
+        )
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("files", nargs="+", type=Path)
+    parser.add_argument("--exclude-disk-full", action="store_true",
+                        help="Report disk-full attempts separately from runtime measurements")
     args = parser.parse_args()
+    excluded = []
     groups = defaultdict(list)
     seen = set()
     for path in args.files:
@@ -42,10 +55,18 @@ def main():
             if not group[-2]:
                 group = (*group[:-1], 0)
             identity = (*group, row["repeat"])
+            if args.exclude_disk_full and has_disk_full(row):
+                excluded.append(identity)
+                continue
             if identity in seen:
                 raise ValueError(f"duplicate case: {identity}")
             seen.add(identity)
             groups[group].append(row)
+    if excluded:
+        print(f"Disk-full attempts shown separately: {len(excluded)}. The raw data retains these failures.\n")
+        for pooled, backend, runs, scenario, batch, interval, repeat in excluded:
+            print(f"- {'pooled' if pooled else 'inline'} {backend}, {runs:,} Runs, {scenario}, release {release_mode(batch, interval)}, repeat {repeat}")
+        print()
     print("### Waiting scenarios\n")
     print("Medians of available steady samples, including samples whose subsequent drain failed. CPU cores are process CPU seconds / elapsed seconds.\n")
     print("| Mode | Journal | Runs | Scenario | Release | Steady samples | CPU cores | RSS MiB | Journal API calls/s | Fully completed |")
