@@ -256,17 +256,22 @@ impl Drop for GateGuard<'_> {
 struct WriteGuard<'a> {
     connection: MutexGuard<'a, Connection>,
     _gate: GateGuard<'a>,
-    entered: Option<std::time::Instant>,
+    // Field drop order releases the lock and gate before invoking subscribers.
+    _timing: Option<WriterTiming>,
 }
 
-impl Drop for WriteGuard<'_> {
+struct WriterTiming {
+    entered: std::time::Instant,
+    wait: Duration,
+}
+
+impl Drop for WriterTiming {
     fn drop(&mut self) {
-        if let Some(entered) = self.entered {
-            tracing::debug!(
-                target: "autra::runtime_latency",
-                sqlite_writer_hold_us = entered.elapsed().as_micros() as u64,
-            );
-        }
+        tracing::debug!(
+            target: "autra::runtime_latency",
+            sqlite_writer_wait_us = self.wait.as_micros() as u64,
+            sqlite_writer_hold_us = self.entered.elapsed().as_micros() as u64,
+        );
     }
 }
 
@@ -433,18 +438,17 @@ impl SqliteEffectJournal {
             .connection
             .lock()
             .map_err(|_| JournalError::new("journal lock poisoned"))?;
-        let entered = queued.map(|queued| {
+        let timing = queued.map(|queued| {
             let entered = std::time::Instant::now();
-            tracing::debug!(
-                target: "autra::runtime_latency",
-                sqlite_writer_wait_us = (entered - queued).as_micros() as u64,
-            );
-            entered
+            WriterTiming {
+                entered,
+                wait: entered - queued,
+            }
         });
         Ok(WriteGuard {
             connection,
             _gate: gate,
-            entered,
+            _timing: timing,
         })
     }
 }
