@@ -422,7 +422,6 @@ impl LocalEngine {
                         "Run context budget limits changed".into(),
                     ));
                 }
-                pool_wake.notify_one();
                 continue;
             }
 

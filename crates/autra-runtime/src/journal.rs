@@ -8,7 +8,7 @@ use autra_execution::{
     ApprovalRecord, ApprovalStore, ApprovalStoreError, CommitAuthority, DurableTransitionStore,
     EffectResult, LeaseRecord, ResultIdentity, now_unix_ms,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[derive(Clone, Debug)]
@@ -22,6 +22,7 @@ struct MemoryState {
     runs: BTreeMap<RunId, AgentState>,
     events: BTreeMap<RunId, Vec<AcceptedEvent>>,
     outbox: BTreeMap<EffectId, OutboxEntry>,
+    outbox_by_run: BTreeMap<RunId, BTreeSet<EffectId>>,
     claims: BTreeMap<EffectId, MemoryClaim>,
     run_leases: BTreeMap<RunId, LeaseRecord>,
     service_leases: BTreeMap<String, LeaseRecord>,
@@ -47,7 +48,8 @@ impl MemoryState {
     }
     fn enqueue(&mut self, run: &RunId, effect: &EffectRecord) {
         if effect.status == EffectStatus::Authorized && !effect.intent_json.is_empty() {
-            self.outbox
+            let entry = self
+                .outbox
                 .entry(effect.id.clone())
                 .or_insert_with(|| OutboxEntry {
                     effect_id: effect.id.clone(),
@@ -55,7 +57,37 @@ impl MemoryState {
                     intent_json: effect.intent_json.clone(),
                     attempts: effect.claim_generation(),
                 });
+            self.outbox_by_run
+                .entry(entry.run_id.clone())
+                .or_default()
+                .insert(effect.id.clone());
         }
+    }
+    fn retire_outbox(&mut self, id: &EffectId) {
+        if let Some(entry) = self.outbox.remove(id) {
+            if let Some(ids) = self.outbox_by_run.get_mut(&entry.run_id) {
+                ids.remove(id);
+                if ids.is_empty() {
+                    self.outbox_by_run.remove(&entry.run_id);
+                }
+            }
+        }
+    }
+    fn outbox_entries<'a>(
+        &'a self,
+        run: Option<&'a RunId>,
+    ) -> impl Iterator<Item = &'a OutboxEntry> {
+        let global = run
+            .is_none()
+            .then(|| self.outbox.values())
+            .into_iter()
+            .flatten();
+        let local = run
+            .and_then(|run| self.outbox_by_run.get(run))
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.outbox.get(id));
+        global.chain(local)
     }
     fn check_claim(&self, run: &RunId, id: &EffectId, claim: &str) -> Result<(), JournalError> {
         if self
@@ -154,7 +186,7 @@ impl MemoryState {
         if effect.status == EffectStatus::Authorized {
             self.enqueue(run, effect);
         } else {
-            self.outbox.remove(&effect.id);
+            self.retire_outbox(&effect.id);
         }
         Ok(())
     }
@@ -216,9 +248,7 @@ impl MemoryJournal {
             .claims
             .retain(|_, c| c.deadline_unix_ms > now_unix_ms());
         let ids: Vec<_> = state
-            .outbox
-            .values()
-            .filter(|e| run.is_none_or(|r| &e.run_id == r))
+            .outbox_entries(run)
             .filter(|e| !state.claims.contains_key(&e.effect_id))
             .take(limit)
             .map(|e| e.effect_id.clone())
@@ -370,7 +400,7 @@ impl EffectJournal for MemoryJournal {
             .entry(run.clone())
             .or_default()
             .push((result.clone(), false));
-        s.outbox.remove(&effect.id);
+        s.retire_outbox(&effect.id);
         s.claims.remove(&effect.id);
         Ok(())
     }
@@ -398,9 +428,7 @@ impl EffectJournal for MemoryJournal {
         limit: usize,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
         let s = self.state.lock().expect("journal lock poisoned");
-        Ok(s.outbox
-            .values()
-            .filter(|e| run.is_none_or(|r| &e.run_id == r))
+        Ok(s.outbox_entries(run)
             .filter(|e| {
                 !s.claims
                     .get(&e.effect_id)
@@ -494,7 +522,7 @@ impl EffectJournal for MemoryJournal {
             .map_or(claim.is_empty(), |c| c.claim_id == claim)
         {
             s.claims.remove(id);
-            s.outbox.remove(id);
+            s.retire_outbox(id);
         }
         Ok(())
     }
@@ -743,5 +771,81 @@ impl DurableTransitionStore for MemoryJournal {
             s.consume(run, r);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod outbox_index_tests {
+    use super::*;
+    use autra_core::{EffectIntent, EffectKind, ModelCallSpec};
+    fn effect(id: &str) -> EffectRecord {
+        let mut effect = EffectRecord::new(
+            EffectId::new(id),
+            EffectKind::ModelCall,
+            None,
+            None,
+            "digest".into(),
+        )
+        .with_intent_json(
+            serde_json::to_string(&EffectIntent::CallModel(ModelCallSpec {
+                system: None,
+                messages: vec![],
+                tools: vec![],
+            }))
+            .unwrap(),
+        );
+        effect.status = EffectStatus::Authorized;
+        effect
+    }
+    #[test]
+    fn scoped_index_preserves_order_and_is_retired_atomically() {
+        let journal = MemoryJournal::new();
+        let a = RunId::fresh();
+        let b = RunId::fresh();
+        let first = effect("a");
+        let middle = effect("b");
+        let mut last = effect("c");
+        journal.authorize_effect(&a, &first).unwrap();
+        journal.authorize_effect(&b, &middle).unwrap();
+        journal.authorize_effect(&a, &last).unwrap();
+        let ids = |run: Option<&RunId>| {
+            journal
+                .peek_due_effects(run, 10)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.effect_id.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(Some(&a)), ["a", "c"]);
+        assert_eq!(ids(None), ["a", "b", "c"]);
+        journal
+            .claim_effect(&first.id, "worker", Duration::from_secs(60))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ids(Some(&a)), ["c"]);
+        journal.release_outbox(&first.id, "worker").unwrap();
+        assert_eq!(ids(Some(&a)), ["a", "c"]);
+        journal
+            .claim_effect(&first.id, "worker-2", Duration::from_secs(60))
+            .unwrap()
+            .unwrap();
+        journal.complete_outbox(&first.id, "worker-2").unwrap();
+        assert_eq!(ids(Some(&a)), ["c"]);
+        journal
+            .claim_run(&a, "coordinator", Duration::from_secs(60))
+            .unwrap();
+        last.status = EffectStatus::Rejected;
+        journal
+            .resolve_effect_owned(&a, &last, "coordinator")
+            .unwrap();
+        assert!(ids(Some(&a)).is_empty());
+        assert_eq!(ids(None), ["b"]);
+        assert!(!journal.state.lock().unwrap().outbox_by_run.contains_key(&a));
+        last.status = EffectStatus::Authorized;
+        journal
+            .resolve_effect_owned(&a, &last, "coordinator")
+            .unwrap();
+        assert_eq!(ids(Some(&a)), ["c"]);
+        assert_eq!(journal.state.lock().unwrap().outbox_by_run[&a].len(), 1);
     }
 }

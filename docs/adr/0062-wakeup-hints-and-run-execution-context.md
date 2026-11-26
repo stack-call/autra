@@ -49,3 +49,9 @@ work without unregistering a replacement generation.
   deadlines and ownership checks are not weakened to pass load tests.
 
 See [implementation and validation](../runtime-wakeup-context.md).
+
+Run-scoped Outbox reads use a Run index rather than scanning unrelated Runs.
+The Memory index shares the transaction lock; SQLite adds a non-format-changing
+lookup index on open. Within a Registry, replacement generations retain budget
+reservations and cannot change budget limits. Independent Registries require
+an additional durable reservation protocol before concurrent execution.

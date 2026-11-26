@@ -1,7 +1,7 @@
 # Event-driven waits and registered Run execution context
 
 Baseline: `2e0fbb86d596c205e1dc06e24ea486ac3d2eb437` (the measured runtime baseline).
-Implementation and regression checks complete; performance rerun pending on `refactor/runtime-wakeup-context`.
+Implementation and regression checks complete; indexed performance rerun pending on `refactor/runtime-wakeup-context`.
 
 This stage implements local publication notifications, low-frequency recovery
 checks, and an in-process RunContextRegistry. It retains one executor per Run;
@@ -28,7 +28,7 @@ child propagation and dropped-waiter cleanup. Core gains no Tokio or I/O depende
 Journal claims, lease expiry, fencing, atomic result publication/consumption and
 OutcomeUnknown semantics are retained.
 
-All 385 workspace regression tests, 57 Harness tests without default features,
+All 387 workspace regression tests, 57 Harness tests without default features,
 formatting and Clippy checks pass. Tests cover notification loss, publication
 races, partial-batch result delivery, cancellation propagation/cleanup, context
 generation replacement, shared budget reservations and clock restart across
@@ -39,3 +39,25 @@ registration cleanup. It is not a persistent capability catalog. Cross-process
 workers still require trusted profile restoration, atomic durable budget
 reservation and per-Run admission; a global Outbox batch must not reuse one
 Run's DispatchOptions for other Runs.
+
+## Indexed Outbox lookup and generation handover
+
+The wakeup-only trial is retained in
+`docs/performance/2026-11-26-wakeup.jsonl`. It reduced idle Journal traffic, but
+showed a dense-work throughput regression and five failed stress cases. It is
+an intermediate measurement, not the final implementation's performance claim.
+
+Run-scoped Memory Outbox reads now use a secondary Run index, maintained with
+Outbox publication/retirement under the same lock. SQLite uses a Run lookup
+index and separate scoped/global queries. Existing schema-v3 databases acquire
+the additive index on open; the data format and lease protocol are unchanged.
+Tests verify index ordering, claim/release/retirement/reauthorization and SQLite
+query-plan index selection after reopening a database without that index.
+
+Within one Registry, a detached generation and its replacement share the same
+budget handle, including prior reservations. A replacement cannot change
+budget limits. Independent Registries/Engines/processes do not gain a shared
+durable budget reservation protocol from this change.
+
+The indexed implementation passes 387 workspace tests, formatting and Clippy.
+Its full repeated performance matrix has not yet completed.

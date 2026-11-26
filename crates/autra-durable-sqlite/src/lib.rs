@@ -336,6 +336,7 @@ impl SqliteEffectJournal {
                     claim_deadline TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE INDEX IF NOT EXISTS effect_outbox_run_order ON effect_outbox(run_id, created_at, effect_id);
                 CREATE TABLE IF NOT EXISTS run_leases (
                     run_id TEXT PRIMARY KEY,
                     owner_id TEXT NOT NULL,

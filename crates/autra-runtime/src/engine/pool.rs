@@ -14,15 +14,15 @@ pub(super) fn spawn(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let context = registration.context.clone();
+        // Resolve by identity, while retaining this registration's profile
+        // if a replacement Coordinator has registered a new generation.
+        let resolved = registry.resolve(&context.run_id);
+        let context = resolved
+            .filter(|c| Arc::ptr_eq(c, &context))
+            .unwrap_or_else(|| context.clone());
         let mut recovery = registry.recovery_ticks();
         let mut cancellation_seen = false;
         loop {
-            // Resolve by identity, while retaining this registration's profile
-            // if a replacement Coordinator has registered a new generation.
-            let resolved = registry.resolve(&context.run_id);
-            let context = resolved
-                .filter(|c| Arc::ptr_eq(c, &context))
-                .unwrap_or_else(|| context.clone());
             let work = context.work_ready.notified();
             tokio::pin!(work);
             work.as_mut().enable();

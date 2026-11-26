@@ -46,22 +46,27 @@ impl Default for RunContextRegistry {
 impl RunContextRegistry {
     pub fn register(
         &self,
-        context: RunExecutionContext,
+        mut context: RunExecutionContext,
     ) -> Result<ContextRegistration, autra_execution::RunError> {
-        let context = Arc::new(context);
-        {
+        let context = {
             let mut contexts = self.inner.contexts.lock().expect("context lock poisoned");
-            if contexts
-                .get(&context.run_id)
-                .and_then(Weak::upgrade)
-                .is_some_and(|old| !old.events.is_closed())
-            {
-                return Err(autra_execution::RunError::Protocol(
-                    "Run already has a live execution context".into(),
-                ));
+            if let Some(old) = contexts.get(&context.run_id).and_then(Weak::upgrade) {
+                if !old.events.is_closed() {
+                    return Err(autra_execution::RunError::Protocol(
+                        "Run already has a live execution context".into(),
+                    ));
+                }
+                if !old.budget.advance_to(&context.budget.snapshot()) {
+                    return Err(autra_execution::RunError::Protocol(
+                        "Run budget limits changed across context generations".into(),
+                    ));
+                }
+                context.budget = old.budget.clone();
             }
+            let context = Arc::new(context);
             contexts.insert(context.run_id.clone(), Arc::downgrade(&context));
-        }
+            context
+        };
         let mut sweeper = self.inner.sweeper.lock().expect("sweep lock poisoned");
         if sweeper.as_ref().is_none_or(|task| task.is_finished()) {
             let weak = Arc::downgrade(&self.inner);
@@ -196,9 +201,15 @@ mod tests {
         let old = registry.register(old).unwrap();
         let (duplicate, _receiver) = context(run.clone(), 8);
         assert!(registry.register(duplicate).is_err());
+        assert!(old.context.budget.reserve_child(1, 1).is_some());
         drop(old_events);
-        let (replacement, _new_events) = context(run.clone(), 8);
+        let (wrong, _wrong_events) = context(run.clone(), 8);
+        assert!(registry.register(wrong).is_err());
+        let (replacement, _new_events) = context(run.clone(), 2);
         let replacement = registry.register(replacement).unwrap();
+        assert_eq!(replacement.context.budget.remaining_tool_calls(), 1);
+        assert!(replacement.context.budget.reserve_child(1, 1).is_some());
+        assert_eq!(old.context.budget.remaining_tool_calls(), 0);
         drop(old);
         assert!(Arc::ptr_eq(
             &registry.resolve(&run).unwrap(),
