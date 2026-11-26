@@ -217,7 +217,11 @@ fn sanitize_environment(command: &mut tokio::process::Command) {
 
 fn is_sensitive_key(key: &std::ffi::OsStr) -> bool {
     let key = key.to_string_lossy().to_ascii_uppercase();
-    key.contains("KEY")
+    // Git's injected config can contain credentials and must be filtered as a
+    // unit. Keeping its count without the filtered keys breaks every command.
+    matches!(key.as_str(), "GIT_CONFIG_COUNT" | "GIT_CONFIG_PARAMETERS")
+        || key.starts_with("GIT_CONFIG_VALUE_")
+        || key.contains("KEY")
         || key.contains("TOKEN")
         || key.contains("SECRET")
         || key.contains("PASSWORD")
@@ -274,6 +278,10 @@ mod tests {
         assert!(is_sensitive_key(OsStr::new("GITHUB_TOKEN")));
         assert!(is_sensitive_key(OsStr::new("AWS_SECRET_ACCESS_KEY")));
         assert!(is_sensitive_key(OsStr::new("SERVICE_PASSWORD")));
+        assert!(is_sensitive_key(OsStr::new("GIT_CONFIG_COUNT")));
+        assert!(is_sensitive_key(OsStr::new("GIT_CONFIG_KEY_0")));
+        assert!(is_sensitive_key(OsStr::new("GIT_CONFIG_VALUE_0")));
+        assert!(is_sensitive_key(OsStr::new("GIT_CONFIG_PARAMETERS")));
         assert!(!is_sensitive_key(OsStr::new("PATH")));
         assert!(!is_sensitive_key(OsStr::new("GIT_AUTHOR_NAME")));
         assert!(!is_sensitive_key(OsStr::new("RUSTUP_HOME")));

@@ -268,11 +268,15 @@ impl Config {
         c
     }
 }
-async fn run(config: Config, process: Process, latencies: Arc<Latencies>) {
-    let directory = tempfile::tempdir().unwrap();
+async fn run(
+    config: Config,
+    process: Process,
+    latencies: Arc<Latencies>,
+    directory: &std::path::Path,
+) {
     let inner: Arc<dyn DurableTransitionStore> = match config.backend.as_str() {
         "memory" => Arc::new(MemoryJournal::new()),
-        _ => Arc::new(SqliteEffectJournal::open(directory.path().join("bench.db")).unwrap()),
+        _ => Arc::new(SqliteEffectJournal::open(directory.join("bench.db")).unwrap()),
     };
     let counts = Arc::new(Counts::default());
     let progress = Arc::new(Progress::default());
@@ -396,6 +400,8 @@ async fn run(config: Config, process: Process, latencies: Arc<Latencies>) {
                 || error.contains("database table is locked")
             {
                 "sqlite_locked"
+            } else if error.contains("database or disk is full") {
+                "sqlite_disk_full"
             } else if error.contains("lease was lost") {
                 "lease_lost"
             } else if error.contains("queue is full") {
@@ -443,11 +449,19 @@ fn main() {
     let process = Process::new();
     let latencies = Arc::new(Latencies::default());
     metered::install(latencies.clone());
+    let directory = tempfile::Builder::new()
+        .prefix("autra-scalability-")
+        .tempdir()
+        .unwrap();
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .max_blocking_threads(32)
         .enable_all()
         .build()
         .unwrap()
-        .block_on(run(config, process, latencies));
+        .block_on(run(config, process, latencies, directory.path()));
+    // Tokio must release detached workers and their SQLite connections first.
+    directory
+        .close()
+        .expect("remove benchmark database directory");
 }

@@ -258,13 +258,13 @@ impl LocalEngine {
             .ok_or_else(|| RunError::Protocol("recovery requires a journal".to_owned()))?;
         let mut report = RecoveryReport::default();
         let mut remaining = limit;
+        let mut candidates = Vec::with_capacity(limit.min(PAGE_SIZE));
 
         while remaining > 0 {
             let page = journal
                 .list_run_ids_page(cursor.as_ref(), PAGE_SIZE)
                 .map_err(|error| RunError::Journal(error.to_string()))?;
             let end_of_index = page.len() < PAGE_SIZE;
-            let mut candidates = Vec::new();
             for run_id in page {
                 report.scanned += 1;
                 *cursor = Some(run_id.clone());
@@ -294,29 +294,33 @@ impl LocalEngine {
                 }
             }
 
-            let mut resumes = stream::iter(candidates)
-                .map(|run_id| {
-                    let stepper = stepper.clone();
-                    async move {
-                        let result = self
-                            .resume_with_options(stepper, &run_id, RunOptions::default(), |_| {})
-                            .await;
-                        (run_id, result)
-                    }
-                })
-                .buffer_unordered(MAX_CONCURRENT);
-            while let Some((run_id, result)) = resumes.next().await {
-                match result {
-                    Ok(_) => report.resumed += 1,
-                    Err(error) => {
-                        report.failed += 1;
-                        tracing::warn!(%run_id, %error, "background recovery failed");
-                    }
-                }
-            }
             if end_of_index && remaining > 0 {
                 *cursor = None;
                 break;
+            }
+            if remaining > 0 {
+                // Let the supervisor renew its service lease between pages.
+                tokio::task::yield_now().await;
+            }
+        }
+        let mut resumes = stream::iter(candidates)
+            .map(|run_id| {
+                let stepper = stepper.clone();
+                async move {
+                    let result = self
+                        .resume_with_options(stepper, &run_id, RunOptions::default(), |_| {})
+                        .await;
+                    (run_id, result)
+                }
+            })
+            .buffer_unordered(MAX_CONCURRENT);
+        while let Some((run_id, result)) = resumes.next().await {
+            match result {
+                Ok(_) => report.resumed += 1,
+                Err(error) => {
+                    report.failed += 1;
+                    tracing::warn!(%run_id, %error, "background recovery failed");
+                }
             }
         }
         Ok(report)

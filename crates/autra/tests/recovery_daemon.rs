@@ -308,3 +308,77 @@ async fn sqlite_recovery_reaches_runs_after_multiple_pages_of_terminal_runs() {
         AgentPhase::Completed
     );
 }
+
+#[tokio::test]
+async fn recovery_starts_later_pages_while_a_run_is_waiting_for_the_model() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use autra_harness::{ModelError, ModelProvider};
+    use tokio::sync::Notify;
+
+    struct GatedModel {
+        later_started: Arc<Notify>,
+        unblock_first: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl ModelProvider for GatedModel {
+        async fn complete(&self, request: &ModelCallSpec) -> Result<ModelOutput, ModelError> {
+            if request
+                .messages
+                .iter()
+                .any(|item| matches!(item, HistoryItem::User(text) if text == "first"))
+            {
+                self.unblock_first.notified().await;
+            } else {
+                self.later_started.notify_one();
+            }
+            Ok(answer("recovered"))
+        }
+    }
+
+    let journal = MemoryJournal::new();
+    let first = RunId::new("a-first");
+    let later = RunId::new("z-later");
+    for (id, input) in [(&first, "first"), (&later, "later")] {
+        let mut state = base_state(id, AgentPhase::AwaitingModel);
+        state.engine_state =
+            react_engine_state(vec![HistoryItem::User(input.to_owned())], Vec::new());
+        journal.save_run(&state).unwrap();
+    }
+    for index in 0..128 {
+        let run = RunId::new(format!("terminal-{index:03}"));
+        journal
+            .save_run(&base_state(&run, AgentPhase::Completed))
+            .unwrap();
+    }
+    let later_started = Arc::new(Notify::new());
+    let unblock_first = Arc::new(Notify::new());
+    let agent = Agent::builder("daemon")
+        .model(GatedModel {
+            later_started: later_started.clone(),
+            unblock_first: unblock_first.clone(),
+        })
+        .journal(journal.clone())
+        .build()
+        .unwrap();
+
+    let pass = agent.recover_once(2);
+    let release = async {
+        later_started.notified().await;
+        unblock_first.notify_one();
+    };
+    let (report, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(pass, release)
+    })
+    .await
+    .unwrap();
+    assert_eq!(report.unwrap().resumed, 2);
+    for id in [&first, &later] {
+        assert_eq!(
+            journal.load_run(id).unwrap().unwrap().phase,
+            AgentPhase::Completed
+        );
+    }
+}
