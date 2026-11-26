@@ -268,6 +268,10 @@ async fn run(config: Config, process: Process) {
         .await
         .expect("Runs did not all reach the measurement gate within 180s");
         setup_seconds = start.elapsed().as_secs_f64();
+        eprintln!(
+            "{}",
+            json!({"stage":"ready", "setup_seconds":setup_seconds})
+        );
         assert_eq!(progress.tools.load(Ordering::Relaxed), config.active);
         let before = counts.snapshot();
         let cpu = process.cpu_seconds();
@@ -282,6 +286,10 @@ async fn run(config: Config, process: Process) {
             "journal_calls": calls, "journal_calls_per_second": calls.total as f64/seconds,
             "tools_executing": progress.tools.load(Ordering::Relaxed),
             "runs_waiting_approval": config.runs-config.active});
+        eprintln!(
+            "{}",
+            json!({"stage":"steady", "setup_seconds":setup_seconds, "steady":steady})
+        );
         finish_started = Instant::now();
         release.send(true).unwrap();
     } else {
