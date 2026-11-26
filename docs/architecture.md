@@ -19,6 +19,11 @@ extension security, trust boundaries and remaining gaps are in
 [`extension-system-review.md`](extension-system-review.md). Both are proposals
 unless a section explicitly says otherwise.
 
+The implemented Environment, owned Executor and durable Result Inbox boundaries
+are documented in [`runtime-refactor.md`](runtime-refactor.md) and
+[ADR-0061](adr/0061-environments-and-durable-result-inbox.md). Default execution
+remains inline; pooled execution uses the Journal for authoritative results.
+
 ## Three collaborating systems
 
 | System | Question | Owns | Does not own |
@@ -71,7 +76,7 @@ autra-openai · autra-durable-sqlite · autra-restate · autra-openshell
 
 `autra-execution` owns the contracts shared by behaviour and hosts: `Tool`,
 `ModelProvider`, `EffectJournal`, `Approver`, `ObserverHook`, `RunEvent`,
-`ExecutionHost` and `SandboxBackend`. It depends on `autra-core` only.
+`ExecutionHost`, `ExecutionEnvironment`, `EnvironmentProvider` and `SandboxBackend`. It depends on `autra-core` only.
 `autra-harness` and `autra-runtime` are siblings: behaviour and the local
 engine do not depend on each other. `autra` assembles a `ReActStepper` (or a
 custom one) with `LocalEngine`; the CLI and evaluation crate use the facade.

@@ -107,6 +107,12 @@ timeout, so the journal and session store can share one file without immediate
 `SQLITE_BUSY` failures. `PRAGMA user_version` records the schema version and a
 database written by a newer version is refused instead of being misread.
 
+Schema version 3 adds the durable Result Inbox; version 2 is upgraded
+transactionally. In pooled execution, result publication retires Outbox in the
+same transaction, and acceptance consumes Inbox with the next owned Run
+transition. See [runtime refactor](runtime-refactor.md) for lease fencing,
+environment binding, migration and compatibility details.
+
 Recovery also checks engine-owned state: a checkpoint whose `engine_id` is not
 the active stepper, whose `schema_revision` is newer, or whose payload cannot
 be decoded fails the resume. It is never replaced with an empty history.

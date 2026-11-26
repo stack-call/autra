@@ -1,6 +1,8 @@
 # 消息驱动：状态推进与 Effect 执行的解耦
 
-> **状态**：设计提案，第一步已实现为可选模式（`pooled_execution`）。
+> **状态**：历史设计提案。Environment、独立 Executor、持久化 Result Inbox 和执行权约束已实现于重构分支；
+> 参见 [实际实现与迁移说明](runtime-refactor.md)。下文的“当前”描述保留原提案基线。
+> `pooled_execution` 仍为可选模式，跨机器 Worker 服务及无常驻协程调度尚未实现。
 > 默认仍是“持久化边界 + 协程内调用”。
 > **基线**：`mvp-v1`，包含 Coordinator 拆分、GlobalScheduler、RecoverySupervisor、
 > EngineState snapshot + patch。
