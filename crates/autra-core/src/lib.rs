@@ -19,7 +19,7 @@ pub use effect::{
 pub use event::{AcceptedEvent, EventKind};
 pub use ids::{AttemptId, EffectId, RunId, SessionId, TurnId};
 pub use message::{HistoryItem, ModelOutput, TokenUsage, ToolCallRequest, ToolOutcome, ToolSpec};
-pub use scope::{BudgetHandle, BudgetSnapshot, CancelFlag, ExecutionScope};
+pub use scope::{BudgetHandle, BudgetSnapshot, CancelFlag, Cancellation, ExecutionScope};
 pub use state::{AgentPhase, AgentState, EngineState, EngineStateDelta};
 pub use stepper::{
     AgentStepper, Disposition, STEPPER_PROTOCOL_VERSION, StepError, Transition, TransitionProposal,

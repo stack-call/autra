@@ -4,8 +4,7 @@ use super::result::ResultCollector;
 use autra_core::{AcceptedEvent, CancelFlag, EventKind, ModelOutput, RunId, ToolOutcome};
 use autra_execution::{DurableTransitionStore, EffectResult, RunError, RunEvent};
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::mpsc::Receiver;
+use tokio::sync::{Notify, mpsc::Receiver, watch};
 pub(super) enum Next {
     Event(AcceptedEvent),
     Cancelled,
@@ -21,6 +20,8 @@ pub(super) struct RunInbox {
     cancel: CancelFlag,
     cancel_reported: bool,
     executor_ended: bool,
+    scan_results: bool,
+    wakeup: Option<(Arc<Notify>, watch::Receiver<u64>)>,
 }
 impl RunInbox {
     pub(super) fn new(
@@ -30,6 +31,7 @@ impl RunInbox {
         run_id: RunId,
         cancel: CancelFlag,
         last_seq: u64,
+        wakeup: Option<(Arc<Notify>, watch::Receiver<u64>)>,
     ) -> Self {
         collector.advance_seq(last_seq);
         Self {
@@ -40,6 +42,8 @@ impl RunInbox {
             cancel,
             cancel_reported: false,
             executor_ended: false,
+            scan_results: true,
+            wakeup,
         }
     }
     pub(super) fn seq(&self) -> u64 {
@@ -63,16 +67,19 @@ impl RunInbox {
             return Ok(Next::Event(e));
         }
         loop {
-            if let Some(j) = &self.journal {
-                if let Some(r) = j
-                    .pending_results(&self.run_id, 1)
-                    .map_err(|e| RunError::Journal(e.to_string()))?
-                    .into_iter()
-                    .next()
-                {
-                    return Ok(Next::Result(r));
+            if self.scan_results {
+                if let Some(j) = &self.journal {
+                    if let Some(r) = j
+                        .pending_results(&self.run_id, 1)
+                        .map_err(|e| RunError::Journal(e.to_string()))?
+                        .into_iter()
+                        .next()
+                    {
+                        return Ok(Next::Result(r));
+                    }
                 }
             }
+            self.scan_results = false;
             if self.executor_ended {
                 return Err(RunError::Protocol(
                     "executor ended before publishing a result".into(),
@@ -82,19 +89,18 @@ impl RunInbox {
                 self.cancel_reported = true;
                 return Ok(Next::Cancelled);
             }
-            match self.pool.as_mut() {
-                Some(pool) => tokio::select! {
-                    message=pool.recv()=>match message {
-                        Some(PoolEvent::Wake)=>{},Some(PoolEvent::Stream(e))=>return Ok(Next::Stream(e)),Some(PoolEvent::Failed(m))=>return Ok(Next::ExecutorFailed(m)),None=>{self.pool=None;self.executor_ended=true;}
+            match (self.pool.as_mut(), self.wakeup.as_mut()) {
+                (Some(pool), Some((ready, recovery))) => tokio::select! {
+                    message = pool.recv() => match message {
+                        Some(PoolEvent::Stream(event)) => return Ok(Next::Stream(event)),
+                        Some(PoolEvent::Failed(message)) => return Ok(Next::ExecutorFailed(message)),
+                        None => { self.pool = None; self.executor_ended = true; self.scan_results = true; }
                     },
-                    _=tokio::time::sleep(Duration::from_millis(20))=>{}
+                    _ = ready.notified() => { self.scan_results = true; },
+                    _ = recovery.changed() => { self.scan_results = true; },
+                    _ = self.cancel.cancelled(), if !self.cancel_reported => {},
                 },
-                None => {
-                    if !self.cancel.is_cancelled() {
-                        return Err(RunError::Protocol("no accepted event to process".into()));
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
+                _ => return Err(RunError::Protocol("no accepted event to process".into())),
             }
         }
     }

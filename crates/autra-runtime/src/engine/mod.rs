@@ -3,6 +3,7 @@
 //! It depends on core and execution contracts only; harness assembly belongs
 //! to the product facade.
 
+mod context;
 mod coordinator;
 mod executor;
 pub use executor::{EffectExecutor, ExecutionDependencies};
@@ -45,6 +46,7 @@ pub struct LocalEngine {
     effect_timeout: Option<Duration>,
     scheduler: Arc<GlobalScheduler>,
     pooled_execution: bool,
+    run_contexts: context::RunContextRegistry,
     agent_profile: Option<String>,
     approver: Option<Arc<dyn Approver>>,
     policy: PolicyChain,
@@ -66,6 +68,7 @@ impl LocalEngine {
             effect_timeout: None,
             scheduler: Arc::new(GlobalScheduler::default()),
             pooled_execution: false,
+            run_contexts: context::RunContextRegistry::default(),
             agent_profile: None,
             approver: None,
             policy: PolicyChain::new(),

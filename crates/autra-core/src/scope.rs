@@ -1,5 +1,9 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
 
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +43,7 @@ impl BudgetSnapshot {
 /// true, so a child can be cancelled without stopping the parent.
 #[derive(Clone, Debug, Default)]
 pub struct CancelFlag {
-    state: Arc<AtomicBool>,
+    state: Arc<CancellationState>,
     parent: Option<Arc<CancelFlag>>,
 }
 
@@ -51,21 +55,108 @@ impl CancelFlag {
     /// Create a child scope flag that inherits parent cancellation.
     pub fn child_of(parent: &CancelFlag) -> Self {
         Self {
-            state: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(CancellationState::default()),
             parent: Some(Arc::new(parent.clone())),
         }
     }
 
     pub fn cancel(&self) {
-        self.state.store(true, Ordering::SeqCst);
+        if !self.state.cancelled.swap(true, Ordering::SeqCst) {
+            let waiters =
+                std::mem::take(&mut *self.state.waiters.lock().expect("cancel lock poisoned"));
+            for waker in waiters.into_values() {
+                waker.wake();
+            }
+        }
+    }
+
+    /// Wait without polling. Uses only standard-library futures and wakers;
+    /// parent cancellation wakes child waiters, never the reverse.
+    pub fn cancelled(&self) -> Cancellation {
+        Cancellation {
+            flag: self.clone(),
+            registrations: Vec::new(),
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.state.load(Ordering::SeqCst)
+        self.state.cancelled.load(Ordering::SeqCst)
             || self
                 .parent
                 .as_ref()
                 .is_some_and(|parent| parent.is_cancelled())
+    }
+}
+
+#[derive(Debug, Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    next_waiter: AtomicU64,
+    waiters: Mutex<BTreeMap<u64, Waker>>,
+}
+
+/// Runtime-independent cancellation future. Dropping it removes registrations.
+#[derive(Debug)]
+pub struct Cancellation {
+    flag: CancelFlag,
+    registrations: Vec<(Arc<CancellationState>, u64)>,
+}
+impl Cancellation {
+    fn unregister(&mut self) {
+        for (state, id) in self.registrations.drain(..) {
+            let removed = state
+                .waiters
+                .lock()
+                .expect("cancel lock poisoned")
+                .remove(&id);
+            drop(removed);
+        }
+    }
+}
+impl Future for Cancellation {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        if this.flag.is_cancelled() {
+            this.unregister();
+            return Poll::Ready(());
+        }
+        if this.registrations.is_empty() {
+            let mut flag = Some(&this.flag);
+            while let Some(f) = flag {
+                let id = f.state.next_waiter.fetch_add(1, Ordering::Relaxed);
+                let removed = f
+                    .state
+                    .waiters
+                    .lock()
+                    .expect("cancel lock poisoned")
+                    .insert(id, cx.waker().clone());
+                drop(removed);
+                this.registrations.push((f.state.clone(), id));
+                flag = f.parent.as_deref();
+            }
+        } else {
+            for (state, id) in &this.registrations {
+                let removed = state
+                    .waiters
+                    .lock()
+                    .expect("cancel lock poisoned")
+                    .insert(*id, cx.waker().clone());
+                drop(removed);
+            }
+        }
+        // Close the cancel-versus-registration race.
+        if this.flag.is_cancelled() {
+            this.unregister();
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    }
+}
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        self.unregister();
     }
 }
 

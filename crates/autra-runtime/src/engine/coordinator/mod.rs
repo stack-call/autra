@@ -109,21 +109,24 @@ impl LocalEngine {
         let pooled = self.pooled_execution && self.journal.is_some();
         let (pool_events, pool_inbox) = tokio::sync::mpsc::channel(128);
         let pool_wake = Arc::new(tokio::sync::Notify::new());
-        let pool_budget = Arc::new(std::sync::Mutex::new(state.budget.clone()));
+        let pool_budget = BudgetHandle::new(state.budget.clone());
+        let result_ready = Arc::new(tokio::sync::Notify::new());
         if pooled && !self.journal.as_ref().unwrap().supports_result_inbox() {
             return Err(RunError::Protocol(
                 "pooled execution requires an atomic result inbox".into(),
             ));
         }
         let _pool = if pooled {
-            Some(pool::spawn(
-                self.effect_executor(),
-                pool::WorkerContext {
+            let registration = self
+                .run_contexts
+                .register(super::context::RunExecutionContext {
                     run_id: run_id.clone(),
+                    executor: self.effect_executor(),
                     cancel: options.cancel.clone(),
                     budget: pool_budget.clone(),
                     events: pool_events,
-                    wake: pool_wake.clone(),
+                    work_ready: pool_wake.clone(),
+                    result_ready: result_ready.clone(),
                     timeout: effect_timeout,
                     max_parallel: parallel_limit as usize,
                     child_execution: autra_execution::ChildExecutionContext {
@@ -131,8 +134,8 @@ impl LocalEngine {
                         approver: approver.clone(),
                         depth: 0,
                     },
-                },
-            ))
+                })?;
+            Some(pool::spawn(registration, self.run_contexts.clone()))
         } else {
             None
         };
@@ -154,6 +157,11 @@ impl LocalEngine {
             run_id.clone(),
             options.cancel.clone(),
             last_seq,
+            if pooled {
+                Some((result_ready, self.run_contexts.recovery_ticks()))
+            } else {
+                None
+            },
         );
         let mut hub_guard = HubGuard::new(
             self.hub.clone(),
@@ -409,8 +417,10 @@ impl LocalEngine {
                         }
                     }
                 }
-                if let Ok(mut budget) = pool_budget.lock() {
-                    *budget = state.budget.clone();
+                if !pool_budget.advance_to(&state.budget) {
+                    return Err(RunError::Protocol(
+                        "Run context budget limits changed".into(),
+                    ));
                 }
                 pool_wake.notify_one();
                 continue;
