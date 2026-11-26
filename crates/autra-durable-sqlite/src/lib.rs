@@ -256,6 +256,18 @@ impl Drop for GateGuard<'_> {
 struct WriteGuard<'a> {
     connection: MutexGuard<'a, Connection>,
     _gate: GateGuard<'a>,
+    entered: Option<std::time::Instant>,
+}
+
+impl Drop for WriteGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(entered) = self.entered {
+            tracing::debug!(
+                target: "autra::runtime_latency",
+                sqlite_writer_hold_us = entered.elapsed().as_micros() as u64,
+            );
+        }
+    }
 }
 
 impl Deref for WriteGuard<'_> {
@@ -413,14 +425,26 @@ impl SqliteEffectJournal {
     }
 
     pub(crate) fn writer(&self) -> Result<WriteGuard<'_>, JournalError> {
+        let queued =
+            tracing::event_enabled!(target: "autra::runtime_latency", tracing::Level::DEBUG)
+                .then(std::time::Instant::now);
         let gate = self.write_gate.enter()?;
         let connection = self
             .connection
             .lock()
             .map_err(|_| JournalError::new("journal lock poisoned"))?;
+        let entered = queued.map(|queued| {
+            let entered = std::time::Instant::now();
+            tracing::debug!(
+                target: "autra::runtime_latency",
+                sqlite_writer_wait_us = (entered - queued).as_micros() as u64,
+            );
+            entered
+        });
         Ok(WriteGuard {
             connection,
             _gate: gate,
+            entered,
         })
     }
 }
@@ -675,6 +699,30 @@ impl EffectJournal for SqliteEffectJournal {
             })?));
         }
         Ok(run_ids)
+    }
+
+    fn list_run_ids_page(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, JournalError> {
+        let connection = self.reader()?;
+        let sql = if after.is_some() {
+            "SELECT run_id FROM runs WHERE run_id > ?2 ORDER BY run_id LIMIT ?1"
+        } else {
+            "SELECT run_id FROM runs ORDER BY run_id LIMIT ?1"
+        };
+        let read_id = |row: &rusqlite::Row<'_>| row.get::<_, String>(0).map(RunId::new);
+        let page = || -> rusqlite::Result<Vec<RunId>> {
+            let mut statement = connection.prepare_cached(sql)?;
+            let limit = limit.min(i64::MAX as usize) as i64;
+            let rows = match after {
+                Some(after) => statement.query_map(params![limit, after.as_str()], read_id)?,
+                None => statement.query_map(params![limit], read_id)?,
+            };
+            rows.collect()
+        };
+        page().map_err(|error| JournalError::new(format!("cannot page runs: {error}")))
     }
 
     fn load(&self, run_id: &RunId) -> Result<Vec<EffectRecord>, JournalError> {

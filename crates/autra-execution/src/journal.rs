@@ -231,6 +231,19 @@ pub trait EffectJournal: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Return Run IDs in ascending order, starting strictly after the cursor.
+    fn list_run_ids_page(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, JournalError> {
+        let mut ids = self.list_run_ids()?;
+        ids.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+        ids.retain(|id| after.is_none_or(|after| id.as_str() > after.as_str()));
+        ids.truncate(limit);
+        Ok(ids)
+    }
+
     fn commit_event(
         &self,
         run_id: &RunId,

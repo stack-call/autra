@@ -109,21 +109,20 @@ impl LocalEngine {
         let pooled = self.pooled_execution && self.journal.is_some();
         let (pool_events, pool_inbox) = tokio::sync::mpsc::channel(128);
         let pool_wake = Arc::new(tokio::sync::Notify::new());
-        let pool_budget = BudgetHandle::new(state.budget.clone());
         let result_ready = Arc::new(tokio::sync::Notify::new());
         if pooled && !self.journal.as_ref().unwrap().supports_result_inbox() {
             return Err(RunError::Protocol(
                 "pooled execution requires an atomic result inbox".into(),
             ));
         }
-        let _pool = if pooled {
+        let registration = if pooled {
             let registration = self
                 .run_contexts
                 .register(super::context::RunExecutionContext {
                     run_id: run_id.clone(),
                     executor: self.effect_executor(),
                     cancel: options.cancel.clone(),
-                    budget: pool_budget.clone(),
+                    budget: BudgetHandle::new(state.budget.clone()),
                     events: pool_events,
                     work_ready: pool_wake.clone(),
                     result_ready: result_ready.clone(),
@@ -135,7 +134,11 @@ impl LocalEngine {
                         depth: 0,
                     },
                 })?;
-            Some(pool::spawn(registration, self.run_contexts.clone()))
+            pool::spawn(
+                registration.context.clone(),
+                self.run_contexts.recovery_ticks(),
+            );
+            Some(registration)
         } else {
             None
         };
@@ -417,7 +420,11 @@ impl LocalEngine {
                         }
                     }
                 }
-                if !pool_budget.advance_to(&state.budget) {
+                let context = &registration
+                    .as_ref()
+                    .expect("pooled Run registration")
+                    .context;
+                if !context.budget.advance_to(&state.budget) {
                     return Err(RunError::Protocol(
                         "Run context budget limits changed".into(),
                     ));

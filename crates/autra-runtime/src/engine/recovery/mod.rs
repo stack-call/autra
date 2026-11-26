@@ -6,6 +6,8 @@ pub use supervisor::{RecoveryLease, RecoverySupervisor};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use futures_util::{StreamExt, stream};
+
 use autra_core::{AcceptedEvent, AgentPhase, AgentStepper, EventKind, RunId};
 use autra_execution::{
     RecoveryReport, RunError, RunEvent, RunOptions, RunOutcome, RunSnapshot, now_unix_ms,
@@ -46,7 +48,6 @@ impl LocalEngine {
             .as_ref()
             .ok_or_else(|| RunError::Protocol("resume requires a journal".to_owned()))?;
         let _lease = RunLeaseGuard::acquire(self.journal.clone(), run_id, options.cancel.clone())?;
-        let options = options;
         if journal
             .cancel_request(run_id)
             .map_err(|error| RunError::Journal(error.to_string()))?
@@ -233,55 +234,89 @@ impl LocalEngine {
         .await
     }
 
-    /// Resume every run parked at a recoverable checkpoint, up to `limit`.
-    ///
-    /// Runs that are already terminal or failed are skipped. A failure in one
-    /// run does not stop the pass; it is counted in the report and logged.
+    /// Resume up to `limit` eligible runs, with bounded concurrency.
     pub async fn recover_once(
         &self,
         stepper: Arc<dyn AgentStepper>,
         limit: usize,
     ) -> Result<RecoveryReport, RunError> {
+        self.recover_page(stepper, limit, &mut None).await
+    }
+
+    pub(super) async fn recover_page(
+        &self,
+        stepper: Arc<dyn AgentStepper>,
+        limit: usize,
+        cursor: &mut Option<RunId>,
+    ) -> Result<RecoveryReport, RunError> {
+        const PAGE_SIZE: usize = 128;
+        const MAX_CONCURRENT: usize = 4;
+
         let journal = self
             .journal
             .as_ref()
             .ok_or_else(|| RunError::Protocol("recovery requires a journal".to_owned()))?;
-        let run_ids = journal
-            .list_run_ids()
-            .map_err(|error| RunError::Journal(error.to_string()))?;
         let mut report = RecoveryReport::default();
-        for run_id in run_ids.into_iter().take(limit) {
-            report.scanned += 1;
-            let Some(state) = journal
-                .load_run(&run_id)
-                .map_err(|error| RunError::Journal(error.to_string()))?
-            else {
-                continue;
-            };
-            if !matches!(
-                state.phase,
-                AgentPhase::AwaitingTool | AgentPhase::AwaitingModel
-            ) {
-                continue;
-            }
-            if let Some(lease) = journal
-                .run_lease(&run_id)
-                .map_err(|error| RunError::Journal(error.to_string()))?
-            {
-                if lease.is_live(now_unix_ms()) {
+        let mut remaining = limit;
+
+        while remaining > 0 {
+            let page = journal
+                .list_run_ids_page(cursor.as_ref(), PAGE_SIZE)
+                .map_err(|error| RunError::Journal(error.to_string()))?;
+            let end_of_index = page.len() < PAGE_SIZE;
+            let mut candidates = Vec::new();
+            for run_id in page {
+                report.scanned += 1;
+                *cursor = Some(run_id.clone());
+                let Some(state) = journal
+                    .load_run(&run_id)
+                    .map_err(|error| RunError::Journal(error.to_string()))?
+                else {
+                    continue;
+                };
+                if !matches!(
+                    state.phase,
+                    AgentPhase::AwaitingTool | AgentPhase::AwaitingModel
+                ) {
+                    continue;
+                }
+                let lease = journal
+                    .run_lease(&run_id)
+                    .map_err(|error| RunError::Journal(error.to_string()))?;
+                if lease.is_some_and(|lease| lease.is_live(now_unix_ms())) {
                     report.skipped += 1;
                     continue;
                 }
-            }
-            match self
-                .resume_with_options(stepper.clone(), &run_id, RunOptions::default(), |_| {})
-                .await
-            {
-                Ok(_) => report.resumed += 1,
-                Err(error) => {
-                    report.failed += 1;
-                    tracing::warn!(%run_id, %error, "background recovery failed");
+                candidates.push(run_id);
+                remaining -= 1;
+                if remaining == 0 {
+                    break;
                 }
+            }
+
+            let mut resumes = stream::iter(candidates)
+                .map(|run_id| {
+                    let stepper = stepper.clone();
+                    async move {
+                        let result = self
+                            .resume_with_options(stepper, &run_id, RunOptions::default(), |_| {})
+                            .await;
+                        (run_id, result)
+                    }
+                })
+                .buffer_unordered(MAX_CONCURRENT);
+            while let Some((run_id, result)) = resumes.next().await {
+                match result {
+                    Ok(_) => report.resumed += 1,
+                    Err(error) => {
+                        report.failed += 1;
+                        tracing::warn!(%run_id, %error, "background recovery failed");
+                    }
+                }
+            }
+            if end_of_index && remaining > 0 {
+                *cursor = None;
+                break;
             }
         }
         Ok(report)

@@ -324,6 +324,23 @@ impl EffectJournal for MemoryJournal {
             .cloned()
             .unwrap_or_default())
     }
+    fn list_run_ids_page(
+        &self,
+        after: Option<&RunId>,
+        limit: usize,
+    ) -> Result<Vec<RunId>, JournalError> {
+        use std::ops::Bound::{Excluded, Unbounded};
+
+        let state = self.state.lock().expect("journal lock poisoned");
+        let lower = after.map_or(Unbounded, Excluded);
+        Ok(state
+            .runs
+            .range((lower, Unbounded))
+            .take(limit)
+            .map(|(run_id, _)| run_id.clone())
+            .collect())
+    }
+
     fn commit_event(
         &self,
         run: &RunId,

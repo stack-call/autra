@@ -273,3 +273,38 @@ async fn recovery_honours_a_persisted_cancel_request() {
     let stored = journal.load_run(&run_id).unwrap().unwrap();
     assert_eq!(stored.phase, AgentPhase::Cancelled);
 }
+
+#[tokio::test]
+async fn sqlite_recovery_reaches_runs_after_multiple_pages_of_terminal_runs() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("recovery.db");
+    let journal = autra_durable_sqlite::SqliteEffectJournal::open(&path).unwrap();
+    for index in 0..129 {
+        let run_id = RunId::new(format!("completed-{index:03}"));
+        journal
+            .save_run(&base_state(&run_id, AgentPhase::Completed))
+            .unwrap();
+    }
+    let run_id = RunId::new("recover-after-terminal-page");
+    journal
+        .save_run(&base_state(&run_id, AgentPhase::AwaitingModel))
+        .unwrap();
+    let effect = model_effect();
+    journal.record(&run_id, &effect).unwrap();
+    journal.enqueue_effect(&run_id, &effect).unwrap();
+    let agent = Agent::builder("daemon")
+        .model(FakeModel::new(vec![answer("recovered after pagination")]))
+        .journal(autra_durable_sqlite::SqliteEffectJournal::open(&path).unwrap())
+        .build()
+        .unwrap();
+
+    let report = agent.recover_once(1).await.unwrap();
+
+    assert_eq!(report.scanned, 130);
+    assert_eq!(report.resumed, 1);
+    assert_eq!(report.failed, 0);
+    assert_eq!(
+        journal.load_run(&run_id).unwrap().unwrap().phase,
+        AgentPhase::Completed
+    );
+}

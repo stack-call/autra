@@ -123,3 +123,90 @@ impl DurableTransitionStore for MeteredJournal {
         fn commit_transition_with_engine_delta(run_id: &RunId, expected_version: u64, event: &AcceptedEvent, state: &AgentState, new_effects: &[EffectRecord], delta: Option<&EngineStateDelta>) -> Result<(), JournalError>;
     }
 }
+
+#[derive(Default)]
+pub struct Latencies {
+    transition_queue_wait_us: Latency,
+    sqlite_writer_wait_us: Latency,
+    sqlite_writer_hold_us: Latency,
+    renewal_start_lag_us: Latency,
+    renewal_end_lag_us: Latency,
+}
+
+impl Latencies {
+    pub fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "transition_queue_wait_us": self.transition_queue_wait_us.snapshot(),
+            "sqlite_writer_wait_us": self.sqlite_writer_wait_us.snapshot(),
+            "sqlite_writer_hold_us": self.sqlite_writer_hold_us.snapshot(),
+            "renewal_start_lag_us": self.renewal_start_lag_us.snapshot(),
+            "renewal_end_lag_us": self.renewal_end_lag_us.snapshot(),
+        })
+    }
+}
+
+#[derive(Default)]
+struct Latency {
+    buckets: [AtomicU64; 32],
+    total: AtomicU64,
+    max: AtomicU64,
+}
+
+impl Latency {
+    fn record(&self, micros: u64) {
+        let index = (micros.checked_ilog2().unwrap_or(0) as usize).min(self.buckets.len() - 1);
+        self.buckets[index].fetch_add(1, Ordering::Relaxed);
+        self.total.fetch_add(micros, Ordering::Relaxed);
+        self.max.fetch_max(micros, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> serde_json::Value {
+        let counts = self.buckets.each_ref().map(|b| b.load(Ordering::Relaxed));
+        let count: u64 = counts.iter().sum();
+        let total = self.total.load(Ordering::Relaxed);
+        let max = self.max.load(Ordering::Relaxed);
+        let p95_upper = counts
+            .iter()
+            .scan(0, |seen, n| {
+                *seen += n;
+                Some(*seen)
+            })
+            .position(|seen| count > 0 && seen >= (count * 95).div_ceil(100))
+            .map(|index| ((2u64 << index) - 1).min(max));
+        serde_json::json!({"count": count, "mean": (count > 0).then(|| total as f64 / count as f64),
+            "p95_upper": p95_upper, "max": (count > 0).then_some(max)})
+    }
+}
+
+struct ReadLatencies<'a>(&'a Latencies);
+impl tracing::field::Visit for ReadLatencies<'_> {
+    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+
+    fn record_u64(&mut self, field: &tracing::field::Field, micros: u64) {
+        match field.name() {
+            "transition_queue_wait_us" => &self.0.transition_queue_wait_us,
+            "sqlite_writer_wait_us" => &self.0.sqlite_writer_wait_us,
+            "sqlite_writer_hold_us" => &self.0.sqlite_writer_hold_us,
+            "renewal_start_lag_us" => &self.0.renewal_start_lag_us,
+            "renewal_end_lag_us" => &self.0.renewal_end_lag_us,
+            _ => return,
+        }
+        .record(micros);
+    }
+}
+
+struct LatencyLayer(Arc<Latencies>);
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LatencyLayer {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        event.record(&mut ReadLatencies(&self.0));
+    }
+}
+
+pub fn install(latencies: Arc<Latencies>) {
+    use tracing_subscriber::{Layer, prelude::*};
+    let layer =
+        LatencyLayer(latencies).with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+            metadata.target() == "autra::runtime_latency"
+        }));
+    tracing_subscriber::registry().with(layer).init();
+}

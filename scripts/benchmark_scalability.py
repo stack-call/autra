@@ -23,10 +23,14 @@ def main():
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--sample-secs", type=float, default=3)
     parser.add_argument("--active", type=int, default=100)
+    parser.add_argument("--release-batch", type=int, default=0, help="Number of waiting Runs released per batch; 0 releases all")
+    parser.add_argument("--release-interval-ms", type=int, default=10)
     parser.add_argument("--inline", action="store_true", help="Run the inline control instead of pooled execution")
     args = parser.parse_args()
     if args.repeats < 1 or args.repeat_start < 1 or any(n < 1 for n in args.runs):
         parser.error("runs and repeats must be positive")
+    if args.release_batch < 0 or args.release_interval_ms < 0:
+        parser.error("release batch and interval must be non-negative")
     # Cargo emits the exact executable; do not select an arbitrary stale binary.
     build = subprocess.run(["cargo", "bench", "-p", "autra", "--bench", "scalability", "--no-run", "--message-format=json"], cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE)
     artifacts = [json.loads(line) for line in build.stdout.splitlines() if line.startswith("{")]
@@ -34,7 +38,8 @@ def main():
     executable = executables[-1]
     args.output.parent.mkdir(parents=True, exist_ok=True)
     metadata = {
-        "kind": "metadata", "runtime_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "kind": "metadata", "release_batch": args.release_batch,
+        "release_interval_ms": args.release_interval_ms, "runtime_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "worktree_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)),
         "rustc": subprocess.check_output(["rustc", "--version"], text=True).strip(),
         "platform": platform.platform(), "visible_cpus": os.cpu_count(),
@@ -49,7 +54,7 @@ def main():
             for backend in args.backends:
                 for runs in args.runs:
                     for scenario in args.scenarios:
-                        command = [executable, "--runs", str(runs), "--backend", backend, "--scenario", scenario, "--active", str(args.active), "--sample-secs", str(args.sample_secs), "--pooled", str(not args.inline).lower()]
+                        command = [executable, "--runs", str(runs), "--backend", backend, "--scenario", scenario, "--active", str(args.active), "--sample-secs", str(args.sample_secs), "--pooled", str(not args.inline).lower(), "--release-batch", str(args.release_batch), "--release-interval-ms", str(args.release_interval_ms)]
                         print(f"repeat={repeat} backend={backend} runs={runs} scenario={scenario} pooled={not args.inline}", flush=True)
                         started = time.monotonic()
                         try:
@@ -69,9 +74,14 @@ def main():
                             continue
                         row = json.loads(result.stdout)
                         row["repeat"] = repeat
+                        if not row["successful"]:
+                            row["kind"] = "failure"
+                            failures += 1
                         output.write(json.dumps(row) + "\n")
                         output.flush()
                         print(json.dumps(row), flush=True)
+                        if not row["successful"] and not args.continue_on_error:
+                            raise SystemExit("benchmark case failed; raw result retained")
 
     if failures:
         raise SystemExit(f"{failures} benchmark cases failed; raw failures retained")

@@ -77,16 +77,18 @@ impl RunContextRegistry {
                         return;
                     };
                     inner
+                        .contexts
+                        .lock()
+                        .expect("context lock poisoned")
+                        .retain(|_, context| context.strong_count() != 0);
+                    inner
                         .sweep
                         .send_modify(|epoch| *epoch = epoch.wrapping_add(1));
                 }
             }));
         }
         drop(sweeper);
-        Ok(ContextRegistration {
-            context,
-            registry: self.clone(),
-        })
+        Ok(ContextRegistration { context })
     }
     pub fn resolve(&self, run: &RunId) -> Option<Arc<RunExecutionContext>> {
         self.inner
@@ -100,27 +102,10 @@ impl RunContextRegistry {
         self.inner.sweep.subscribe()
     }
 }
-// A worker holds the registration until committed Outbox work has drained.
-// An old worker must never remove the replacement Coordinator's context.
+// The Run owns the registration. A worker borrows a shared context handle,
+// which keeps committed work and its budget alive if the Run detaches.
 pub(super) struct ContextRegistration {
     pub context: Arc<RunExecutionContext>,
-    registry: RunContextRegistry,
-}
-impl Drop for ContextRegistration {
-    fn drop(&mut self) {
-        let mut contexts = self
-            .registry
-            .inner
-            .contexts
-            .lock()
-            .expect("context lock poisoned");
-        if contexts
-            .get(&self.context.run_id)
-            .is_some_and(|c| Weak::ptr_eq(c, &Arc::downgrade(&self.context)))
-        {
-            contexts.remove(&self.context.run_id);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -267,7 +252,8 @@ mod tests {
         .effect_executor();
         let ready = context.result_ready.clone();
         let registration = registry.register(context).unwrap();
-        let worker = super::super::pool::spawn(registration, registry.clone());
+        let worker =
+            super::super::pool::spawn(registration.context.clone(), registry.recovery_ticks());
         tokio::time::sleep(Duration::from_millis(1)).await;
         let mut effect = EffectRecord::new(
             EffectId::fresh(),
@@ -292,6 +278,11 @@ mod tests {
         assert_eq!(journal.pending_results(&run, 10).unwrap().len(), 1);
         drop(receiver);
         worker.await.unwrap();
+        assert!(Arc::ptr_eq(
+            &registry.resolve(&run).unwrap(),
+            &registration.context,
+        ));
+        drop(registration);
         assert!(registry.resolve(&run).is_none());
     }
     #[test]
@@ -383,17 +374,21 @@ mod tests {
         }
         let ready = context.result_ready.clone();
         let registration = registry.register(context).unwrap();
-        let worker = super::super::pool::spawn(registration, registry);
+        let worker =
+            super::super::pool::spawn(registration.context.clone(), registry.recovery_ticks());
         tokio::time::timeout(Duration::from_millis(100), ready.notified())
             .await
             .unwrap();
         assert_eq!(journal.pending_results(&run, 10).unwrap().len(), 1);
+        drop(registration);
+        drop(receiver);
+        assert!(registry.resolve(&run).is_some());
         gate.notify_one();
         tokio::time::timeout(Duration::from_millis(100), ready.notified())
             .await
             .unwrap();
         assert_eq!(journal.pending_results(&run, 10).unwrap().len(), 2);
-        drop(receiver);
         worker.await.unwrap();
+        assert!(registry.resolve(&run).is_none());
     }
 }

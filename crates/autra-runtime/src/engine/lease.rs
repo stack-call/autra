@@ -59,10 +59,17 @@ impl RunLeaseGuard {
                 if matches!(renewal_journal.cancel_request(&renewal_run), Ok(Some(_))) {
                     cancel.cancel();
                 }
-                if last_renew.elapsed() < period {
+                let elapsed = last_renew.elapsed();
+                if elapsed < period {
                     continue;
                 }
-                match renewal_journal.renew_run(&renewal_run, &renewal_owner, RUN_LEASE) {
+                let renewed = renewal_journal.renew_run(&renewal_run, &renewal_owner, RUN_LEASE);
+                tracing::debug!(
+                    target: "autra::runtime_latency",
+                    renewal_start_lag_us = (elapsed - period).as_micros() as u64,
+                    renewal_end_lag_us = last_renew.elapsed().saturating_sub(period).as_micros() as u64,
+                );
+                match renewed {
                     Ok(true) => last_renew = tokio::time::Instant::now(),
                     _ => {
                         cancel.cancel();

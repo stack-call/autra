@@ -14,7 +14,19 @@ where
     F: FnOnce() -> (T, Result<(), JournalError>) + Send + 'static,
     T: Send + 'static,
 {
-    match tokio::task::spawn_blocking(task).await {
+    let queued = tracing::event_enabled!(target: "autra::runtime_latency", tracing::Level::DEBUG)
+        .then(std::time::Instant::now);
+    match tokio::task::spawn_blocking(move || {
+        if let Some(queued) = queued {
+            tracing::debug!(
+                target: "autra::runtime_latency",
+                transition_queue_wait_us = queued.elapsed().as_micros() as u64,
+            );
+        }
+        task()
+    })
+    .await
+    {
         Ok((value, result)) => {
             result.map_err(|error| RunError::Journal(error.to_string()))?;
             Ok(value)

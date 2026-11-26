@@ -1,6 +1,6 @@
 //! Worker lifecycle, separate from registered Run execution context.
 //! Notifications are hints; durable Inbox/Outbox and recovery ticks are authoritative.
-use super::context::{ContextRegistration, RunContextRegistry};
+use super::context::RunExecutionContext;
 use crate::dispatcher::{DEFAULT_CLAIM_LEASE, DispatchOptions};
 use autra_execution::RunEvent;
 use std::sync::Arc;
@@ -9,18 +9,10 @@ pub(super) enum PoolEvent {
     Failed(String),
 }
 pub(super) fn spawn(
-    registration: ContextRegistration,
-    registry: RunContextRegistry,
+    context: Arc<RunExecutionContext>,
+    mut recovery: tokio::sync::watch::Receiver<u64>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let context = registration.context.clone();
-        // Resolve by identity, while retaining this registration's profile
-        // if a replacement Coordinator has registered a new generation.
-        let resolved = registry.resolve(&context.run_id);
-        let context = resolved
-            .filter(|c| Arc::ptr_eq(c, &context))
-            .unwrap_or_else(|| context.clone());
-        let mut recovery = registry.recovery_ticks();
         let mut cancellation_seen = false;
         loop {
             let work = context.work_ready.notified();

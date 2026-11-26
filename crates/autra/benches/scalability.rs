@@ -9,7 +9,7 @@ use autra_durable_sqlite::SqliteEffectJournal;
 use autra_execution::{
     ApprovalDecision, ApprovalRequest, Approver, DurableTransitionStore, Tool, ToolError,
 };
-use metered::{Counts, MeteredJournal};
+use metered::{Counts, Latencies, MeteredJournal};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{
@@ -28,14 +28,15 @@ struct Progress {
 #[derive(Clone)]
 struct Gate {
     active: usize,
-    release: watch::Receiver<bool>,
+    release: Arc<[watch::Receiver<bool>]>,
+    batch_size: usize,
     progress: Arc<Progress>,
 }
 impl Gate {
-    async fn wait(&self) {
-        self.release
+    async fn wait(&self, index: usize) {
+        self.release[index / self.batch_size]
             .clone()
-            .wait_for(|open| *open)
+            .wait_for(|released| *released)
             .await
             .expect("release sender lost");
     }
@@ -98,7 +99,7 @@ impl Tool for BenchTool {
             if index < self.gate.active {
                 self.gate.progress.ready.fetch_add(1, Ordering::Release);
             }
-            self.gate.wait().await;
+            self.gate.wait(index).await;
         }
         Ok("ok".into())
     }
@@ -110,15 +111,17 @@ impl Approver for Approval {
         let index: usize = request.arguments.parse().expect("numeric approval input");
         if index >= self.0.active {
             self.0.progress.ready.fetch_add(1, Ordering::Release);
-            self.0.wait().await;
+            self.0.wait(index).await;
         }
         ApprovalDecision::Approved
     }
 }
-// Linux /proc is optional. CPU% means percent of one CPU, not machine capacity.
+// CPU time is summed across threads. Working set is the Windows RSS measure.
+#[cfg(not(windows))]
 struct Process {
     clock_ticks: Option<f64>,
 }
+#[cfg(not(windows))]
 impl Process {
     fn new() -> Self {
         let clock_ticks = std::process::Command::new("getconf")
@@ -148,6 +151,56 @@ impl Process {
             })
     }
 }
+#[cfg(windows)]
+struct Process;
+
+#[cfg(windows)]
+impl Process {
+    fn new() -> Self {
+        Self
+    }
+
+    fn cpu_seconds(&self) -> Option<f64> {
+        use windows_sys::Win32::{
+            Foundation::FILETIME,
+            System::Threading::{GetCurrentProcess, GetProcessTimes},
+        };
+        let [mut created, mut exited, mut kernel, mut user] = [FILETIME::default(); 4];
+        // The pseudo-handle requires no cleanup; all output pointers are valid.
+        let ok = unsafe {
+            GetProcessTimes(
+                GetCurrentProcess(),
+                &mut created,
+                &mut exited,
+                &mut kernel,
+                &mut user,
+            )
+        };
+        let ticks = |t: FILETIME| (u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime);
+        (ok != 0).then(|| (ticks(kernel) + ticks(user)) as f64 / 10_000_000.0)
+    }
+
+    fn status(&self, key: &str) -> Option<u64> {
+        use windows_sys::Win32::System::{
+            ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::GetCurrentProcess,
+        };
+        let mut counters = PROCESS_MEMORY_COUNTERS::default();
+        let size = std::mem::size_of_val(&counters) as u32;
+        // The counter buffer matches the size expected by the API.
+        let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) };
+        if ok == 0 {
+            return None;
+        }
+        let bytes = match key {
+            "VmRSS:" => counters.WorkingSetSize,
+            "VmHWM:" => counters.PeakWorkingSetSize,
+            _ => return None,
+        };
+        Some(bytes as u64 / 1024)
+    }
+}
+
 struct Config {
     runs: usize,
     active: usize,
@@ -155,6 +208,8 @@ struct Config {
     backend: String,
     scenario: String,
     pooled: bool,
+    release_batch: usize,
+    release_interval: Duration,
 }
 impl Config {
     fn parse() -> Self {
@@ -166,7 +221,7 @@ impl Config {
             }
             if key == "--help" {
                 println!(
-                    "--runs N --backend memory|sqlite --scenario idle|mixed|throughput --active N --sample-secs N --pooled true|false"
+                    "--runs N --backend memory|sqlite --scenario idle|mixed|throughput --active N --sample-secs N --pooled true|false --release-batch N --release-interval-ms N"
                 );
                 std::process::exit(0);
             }
@@ -177,7 +232,9 @@ impl Config {
                     "--scenario",
                     "--active",
                     "--sample-secs",
-                    "--pooled"
+                    "--pooled",
+                    "--release-batch",
+                    "--release-interval-ms"
                 ]
                 .contains(&key.as_str()),
                 "unknown option: {key}"
@@ -200,6 +257,10 @@ impl Config {
             backend: get("--backend", "memory"),
             seconds: get("--sample-secs", "3").parse().unwrap(),
             pooled: get("--pooled", "true").parse().unwrap(),
+            release_batch: get("--release-batch", "0").parse().unwrap(),
+            release_interval: Duration::from_millis(
+                get("--release-interval-ms", "10").parse().unwrap(),
+            ),
         };
         assert!(c.runs > 0 && c.seconds.is_finite() && c.seconds > 0.0);
         assert!(["memory", "sqlite"].contains(&c.backend.as_str()));
@@ -207,7 +268,7 @@ impl Config {
         c
     }
 }
-async fn run(config: Config, process: Process) {
+async fn run(config: Config, process: Process, latencies: Arc<Latencies>) {
     let directory = tempfile::tempdir().unwrap();
     let inner: Arc<dyn DurableTransitionStore> = match config.backend.as_str() {
         "memory" => Arc::new(MemoryJournal::new()),
@@ -215,11 +276,19 @@ async fn run(config: Config, process: Process) {
     };
     let counts = Arc::new(Counts::default());
     let progress = Arc::new(Progress::default());
-    let (release, receiver) = watch::channel(false);
     let waiting = config.scenario != "throughput";
+    let batch_size = if config.release_batch == 0 {
+        config.runs
+    } else {
+        config.release_batch
+    };
+    let (release, receivers): (Vec<_>, Vec<_>) = (0..config.runs.div_ceil(batch_size))
+        .map(|_| watch::channel(false))
+        .unzip();
     let gate = Gate {
         active: config.active,
-        release: receiver,
+        release: receivers.into(),
+        batch_size,
         progress: progress.clone(),
     };
     let agent = Arc::new(
@@ -250,66 +319,102 @@ async fn run(config: Config, process: Process) {
         tasks.spawn(async move { agent.run(&index.to_string()).await });
     }
     let mut steady = serde_json::Value::Null;
+    let mut early_exit = None;
+    let mut reached_gate = !waiting;
     let setup_seconds;
     let finish_started;
     if waiting {
-        tokio::time::timeout(Duration::from_secs(180), async {
+        reached_gate = tokio::time::timeout(Duration::from_secs(180), async {
             loop {
                 if progress.ready.load(Ordering::Acquire) == config.runs {
-                    break;
+                    return true;
                 }
-                // Surface a failed Run during startup instead of waiting for timeout.
                 if let Some(result) = tasks.try_join_next() {
-                    panic!("Run ended before measurement: {result:?}");
+                    early_exit = Some(result);
+                    return false;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("Runs did not all reach the measurement gate within 180s");
+        .unwrap_or(false);
         setup_seconds = start.elapsed().as_secs_f64();
-        eprintln!(
-            "{}",
-            json!({"stage":"ready", "setup_seconds":setup_seconds})
-        );
-        assert_eq!(progress.tools.load(Ordering::Relaxed), config.active);
-        let before = counts.snapshot();
-        let cpu = process.cpu_seconds();
-        let sample = Instant::now();
-        tokio::time::sleep(Duration::from_secs_f64(config.seconds)).await;
-        let seconds = sample.elapsed().as_secs_f64();
-        let calls = counts.snapshot().since(before);
-        let cpu_seconds = process.cpu_seconds().zip(cpu).map(|(a, b)| a - b);
-        steady = json!({"seconds": seconds, "cpu_seconds": cpu_seconds,
+        if reached_gate {
+            let before = counts.snapshot();
+            let cpu = process.cpu_seconds();
+            let sample = Instant::now();
+            tokio::time::sleep(Duration::from_secs_f64(config.seconds)).await;
+            let seconds = sample.elapsed().as_secs_f64();
+            let calls = counts.snapshot().since(before);
+            let cpu_seconds = process.cpu_seconds().zip(cpu).map(|(a, b)| a - b);
+            steady = json!({"seconds": seconds, "cpu_seconds": cpu_seconds,
             "cpu_percent_one_core": cpu_seconds.map(|s| s/seconds*100.0),
             "rss_kib": process.status("VmRSS:"), "threads": process.status("Threads:"),
             "journal_calls": calls, "journal_calls_per_second": calls.total as f64/seconds,
             "tools_executing": progress.tools.load(Ordering::Relaxed),
             "runs_waiting_approval": config.runs-config.active});
-        eprintln!(
-            "{}",
-            json!({"stage":"steady", "setup_seconds":setup_seconds, "steady":steady})
-        );
+            eprintln!(
+                "{}",
+                json!({"stage":"steady", "setup_seconds":setup_seconds, "steady":steady})
+            );
+        }
         finish_started = Instant::now();
-        release.send(true).unwrap();
+        let interval = config.release_interval;
+        tokio::spawn(async move {
+            for (index, gate) in release.into_iter().enumerate() {
+                if index > 0 {
+                    tokio::time::sleep(interval).await;
+                }
+                gate.send_replace(true);
+            }
+        });
     } else {
         setup_seconds = 0.0;
         finish_started = start;
     }
-    tokio::time::timeout(Duration::from_secs(180), async {
-        let mut completed = 0;
-        while let Some(outcome) = tasks.join_next().await {
-            let outcome = outcome.expect("Run task panicked").expect("Run failed");
-            assert_eq!(outcome.answer(), Some("done"));
-            completed += 1;
+    let mut completed = 0;
+    let mut errors = BTreeMap::new();
+    let drained = tokio::time::timeout(Duration::from_secs(180), async {
+        loop {
+            let result = match early_exit.take() {
+                Some(result) => Some(result),
+                None => tasks.join_next().await,
+            };
+            let Some(result) = result else {
+                break;
+            };
+            let error = match result {
+                Ok(Ok(outcome)) if outcome.answer() == Some("done") => {
+                    completed += 1;
+                    continue;
+                }
+                Ok(Ok(outcome)) => format!("unexpected outcome: {:?}", outcome.status()),
+                Ok(Err(error)) => error.to_string(),
+                Err(error) => error.to_string(),
+            };
+            let category = if error.contains("database is locked")
+                || error.contains("database table is locked")
+            {
+                "sqlite_locked"
+            } else if error.contains("lease was lost") {
+                "lease_lost"
+            } else if error.contains("queue is full") {
+                "queue_full"
+            } else {
+                "other"
+            };
+            let (count, _example) = errors.entry(category).or_insert((0, error));
+            *count += 1;
         }
-        assert_eq!(completed, config.runs);
     })
     .await
-    .expect("Runs did not complete within 180s");
+    .is_ok();
+    let succeeded = reached_gate && completed == config.runs;
+    if succeeded {
+        assert_eq!(progress.models.load(Ordering::Relaxed), config.runs * 2);
+        assert_eq!(progress.tools.load(Ordering::Relaxed), config.runs);
+    }
     let finish_seconds = finish_started.elapsed().as_secs_f64();
-    assert_eq!(progress.models.load(Ordering::Relaxed), config.runs * 2);
-    assert_eq!(progress.tools.load(Ordering::Relaxed), config.runs);
     println!(
         "{}",
         json!({
@@ -318,7 +423,15 @@ async fn run(config: Config, process: Process) {
             "max_blocking_threads": 32, "model_limit": 100, "tool_limit": 100,
             "rss_before_kib": rss_before, "peak_rss_kib": process.status("VmHWM:"),
             "setup_seconds": setup_seconds, "steady": steady,
-            "finish_seconds": finish_seconds, "completed_runs_per_second": config.runs as f64/finish_seconds,
+            "finish_seconds": finish_seconds,
+            "release_batch": config.release_batch,
+            "release_interval_ms": config.release_interval.as_millis(),
+            "completed_runs": completed, "successful": succeeded, "drained": drained,
+            "reached_gate": reached_gate,
+            "failed_runs": errors.values().map(|(count, _)| count).sum::<usize>(),
+            "run_errors": errors,
+            "completed_runs_per_second": succeeded.then(|| completed as f64/finish_seconds),
+            "latencies": latencies.snapshot(),
             "cpu_total_seconds": process.cpu_seconds().zip(cpu_start).map(|(a,b)| a-b),
             "elapsed_seconds": start.elapsed().as_secs_f64(), "journal_calls_total": counts.snapshot(),
             "model_effects": progress.models.load(Ordering::Relaxed), "tool_effects": progress.tools.load(Ordering::Relaxed),
@@ -328,11 +441,13 @@ async fn run(config: Config, process: Process) {
 fn main() {
     let config = Config::parse();
     let process = Process::new();
+    let latencies = Arc::new(Latencies::default());
+    metered::install(latencies.clone());
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .max_blocking_threads(32)
         .enable_all()
         .build()
         .unwrap()
-        .block_on(run(config, process));
+        .block_on(run(config, process, latencies));
 }

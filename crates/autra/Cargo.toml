@@ -18,6 +18,10 @@ autra-durable-sqlite = { path = "../autra-durable-sqlite" }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }
 tracing-test = { version = "0.2", features = ["no-env-filter"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
 
 [dependencies]
 autra-core = { path = "../autra-core" }

@@ -1,7 +1,8 @@
 # Event-driven waits and registered Run execution context
 
 Baseline: `2e0fbb86d596c205e1dc06e24ea486ac3d2eb437` (the measured runtime baseline).
-Implementation and regression checks complete; indexed performance rerun pending on `refactor/runtime-wakeup-context`.
+The indexed implementation from `refactor/runtime-wakeup-context` is now on `mvp-v1`.
+See the [scalability results](performance/runtime-scalability.md) for measurement status.
 
 This stage implements local publication notifications, low-frequency recovery
 checks, and an in-process RunContextRegistry. It retains one executor per Run;
@@ -34,8 +35,12 @@ races, partial-batch result delivery, cancellation propagation/cleanup, context
 generation replacement, shared budget reservations and clock restart across
 Tokio runtimes. Repeat scalability measurements are pending.
 
-The context registry is local and uses weak references with generation-aware
-registration cleanup. It is not a persistent capability catalog. Cross-process
+The active Run's drive scope owns its ContextRegistration. The per-Run
+worker holds only a shared execution-context handle. A worker exit leaves
+the registration resolvable while the Run owns it. If the Coordinator
+detaches, an in-flight worker can still publish committed work and keep
+budget reservations available to a replacement. The registry recovery tick
+prunes expired weak entries. Cross-process
 workers still require trusted profile restoration, atomic durable budget
 reservation and per-Run admission; a global Outbox batch must not reuse one
 Run's DispatchOptions for other Runs.

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use autra_core::{AgentStepper, CancelFlag};
+use autra_core::{AgentStepper, CancelFlag, RunId};
 use autra_execution::{DurableTransitionStore, RecoveryReport, RunError};
 
 use super::super::LocalEngine;
@@ -109,7 +109,26 @@ impl RecoverySupervisor {
     /// One leased pass. Useful for `daemon --once` and tests.
     pub async fn run_once_leased(&self) -> Result<RecoveryReport, RunError> {
         let _lease = self.claim()?;
-        self.run_once().await
+        self.run_leased_pass(&mut None).await
+    }
+
+    async fn run_leased_pass(
+        &self,
+        cursor: &mut Option<RunId>,
+    ) -> Result<RecoveryReport, RunError> {
+        let pass = self
+            .engine
+            .recover_page(self.stepper.clone(), self.limit, cursor);
+        tokio::pin!(pass);
+        let renewal = self.lease / 3;
+        let first_renewal = tokio::time::Instant::now() + renewal;
+        let mut renewals = tokio::time::interval_at(first_renewal, renewal);
+        loop {
+            tokio::select! {
+                result = &mut pass => return result,
+                _ = renewals.tick() => self.renew()?,
+            }
+        }
     }
 
     pub async fn run_once(&self) -> Result<RecoveryReport, RunError> {
@@ -126,8 +145,9 @@ impl RecoverySupervisor {
         F: FnMut(&RecoveryReport),
     {
         let _lease = self.claim()?;
+        let mut cursor = None;
         loop {
-            let report = self.run_once().await?;
+            let report = self.run_leased_pass(&mut cursor).await?;
             on_report(&report);
             if cancel.is_cancelled() {
                 return Ok(());
