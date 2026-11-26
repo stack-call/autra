@@ -4,6 +4,7 @@ use autra_core::{EffectId, EffectRecord, EffectStatus, RunId};
 use autra_execution::{EffectResult, JournalError, OutboxEntry, ResultIdentity};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
 use std::time::Duration;
+const RUN_OUTBOX_QUERY: &str = "SELECT effect_id,run_id,intent_json,attempts FROM effect_outbox WHERE run_id=?1 AND (claim_id IS NULL OR claim_deadline<=datetime('now')) ORDER BY created_at,effect_id LIMIT ?2";
 fn err(e: impl std::fmt::Display) -> JournalError {
     JournalError::new(format!("result inbox: {e}"))
 }
@@ -141,21 +142,28 @@ impl SqliteEffectJournal {
         limit: usize,
     ) -> Result<Vec<OutboxEntry>, JournalError> {
         let c = self.reader()?;
-        let mut q=c.prepare("SELECT effect_id,run_id,intent_json,attempts FROM effect_outbox WHERE (claim_id IS NULL OR claim_deadline<=datetime('now')) AND (?1 IS NULL OR run_id=?1) ORDER BY created_at,effect_id LIMIT ?2").map_err(err)?;
-        let rows = q
-            .query_map(
-                params![run.map(RunId::as_str), limit.min(i64::MAX as usize) as i64],
-                |r| {
-                    Ok(OutboxEntry {
-                        effect_id: EffectId::new(r.get::<_, String>(0)?),
-                        run_id: RunId::new(r.get::<_, String>(1)?),
-                        intent_json: r.get(2)?,
-                        attempts: r.get(3)?,
-                    })
-                },
-            )
-            .map_err(err)?;
-        rows.map(|r| r.map_err(err)).collect()
+        let sql = if run.is_some() {
+            RUN_OUTBOX_QUERY
+        } else {
+            "SELECT effect_id,run_id,intent_json,attempts FROM effect_outbox WHERE claim_id IS NULL OR claim_deadline<=datetime('now') ORDER BY created_at,effect_id LIMIT ?1"
+        };
+        let mut query = c.prepare(sql).map_err(err)?;
+        let limit = limit.min(i64::MAX as usize) as i64;
+        let mut rows = match run {
+            Some(run) => query.query(params![run.as_str(), limit]),
+            None => query.query(params![limit]),
+        }
+        .map_err(err)?;
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next().map_err(err)? {
+            entries.push(OutboxEntry {
+                effect_id: EffectId::new(row.get::<_, String>(0).map_err(err)?),
+                run_id: RunId::new(row.get::<_, String>(1).map_err(err)?),
+                intent_json: row.get(2).map_err(err)?,
+                attempts: row.get(3).map_err(err)?,
+            });
+        }
+        Ok(entries)
     }
     pub(crate) fn claim_entry(
         &self,
@@ -166,5 +174,41 @@ impl SqliteEffectJournal {
         let modifier = format!("+{} seconds", lease.as_secs().max(1));
         let c = self.writer()?;
         c.query_row("UPDATE effect_outbox SET claim_id=?1,claim_deadline=datetime('now',?3),attempts=attempts+1 WHERE effect_id=?2 AND (claim_id IS NULL OR claim_deadline<=datetime('now')) RETURNING effect_id,run_id,intent_json,attempts",params![claim,id.as_str(),modifier],|r|Ok(OutboxEntry {effect_id:EffectId::new(r.get::<_,String>(0)?),run_id:RunId::new(r.get::<_,String>(1)?),intent_json:r.get(2)?,attempts:r.get(3)?})).optional().map_err(err)
+    }
+}
+
+#[cfg(test)]
+mod query_plan_tests {
+    use super::*;
+    #[test]
+    fn existing_schema_three_receives_a_searchable_run_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("journal.db");
+        let journal = SqliteEffectJournal::open(&path).unwrap();
+        journal
+            .writer()
+            .unwrap()
+            .execute("DROP INDEX effect_outbox_run_order", [])
+            .unwrap();
+        drop(journal);
+        let journal = SqliteEffectJournal::open(&path).unwrap();
+        let connection = journal.reader().unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let mut query = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {RUN_OUTBOX_QUERY}"))
+            .unwrap();
+        let plan = query
+            .query_map(params!["run", 8], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        assert!(
+            plan.contains("SEARCH") && plan.contains("effect_outbox_run_order"),
+            "{plan}"
+        );
     }
 }

@@ -124,7 +124,13 @@ impl<'a> TransitionCommitter<'a> {
         let run_id = next.run_id.clone();
         let owner_id = self.owner_id.clone();
         let event = event.clone();
-        run_journal_with(move || {
+        let wake = new_effects
+            .iter()
+            .any(|effect| effect.status == EffectStatus::Authorized)
+            .then(|| self.engine.run_contexts.resolve(&run_id))
+            .flatten()
+            .map(|context| context.work_ready.clone());
+        let committed = run_journal_with(move || {
             let result = match owner_id {
                 Some(owner_id) => journal.commit_owned_transition(
                     &run_id,
@@ -149,7 +155,11 @@ impl<'a> TransitionCommitter<'a> {
             };
             (next, result)
         })
-        .await
+        .await?;
+        if let Some(wake) = wake {
+            wake.notify_one();
+        }
+        Ok(committed)
     }
 
     /// Commit a terminal state produced outside a stepper transition.

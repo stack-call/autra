@@ -397,15 +397,9 @@ where
         return Some(future.await);
     };
     tokio::pin!(future);
-    loop {
-        tokio::select! {
-            result = &mut future => return Some(result),
-            _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                if cancel.is_cancelled() {
-                    return None;
-                }
-            }
-        }
+    tokio::select! {
+        result = &mut future => Some(result),
+        _ = cancel.cancelled() => None,
     }
 }
 

@@ -21,6 +21,7 @@ pub(in crate::engine) struct AuthorizationGate {
     pub policy: autra_execution::PolicyChain,
     pub actor: Option<String>,
     pub owner_id: Option<String>,
+    pub contexts: Option<super::super::context::RunContextRegistry>,
     pub approval_ttl: Option<std::time::Duration>,
 }
 impl LocalEngine {
@@ -32,6 +33,7 @@ impl LocalEngine {
             actor: self.actor.clone(),
             approval_ttl: self.approval_ttl,
             owner_id: None,
+            contexts: Some(self.run_contexts.clone()),
         }
     }
 }
@@ -173,23 +175,31 @@ impl AuthorizationGate {
         record: &EffectRecord,
     ) -> Result<(), RunError> {
         if let Some(owner) = &self.owner_id {
-            return journal
+            journal
                 .resolve_effect_owned(run, record, owner)
-                .map_err(|e| RunError::Journal(e.to_string()));
-        }
-        if journal.supports_result_inbox() {
+                .map_err(|e| RunError::Journal(e.to_string()))?;
+        } else if journal.supports_result_inbox() {
             journal
                 .authorize_effect(run, record)
-                .map_err(|e| RunError::Journal(e.to_string()))
+                .map_err(|e| RunError::Journal(e.to_string()))?;
         } else {
             journal
                 .record(run, record)
                 .map_err(|e| RunError::Journal(e.to_string()))?;
             journal
                 .enqueue_effect(run, record)
-                .map_err(|e| RunError::Journal(e.to_string()))
+                .map_err(|e| RunError::Journal(e.to_string()))?;
         }
+        if let Some(context) = self
+            .contexts
+            .as_ref()
+            .and_then(|contexts| contexts.resolve(run))
+        {
+            context.work_ready.notify_one();
+        }
+        Ok(())
     }
+
     pub(in crate::engine) fn persist_rejected(
         &self,
         journal: &dyn DurableTransitionStore,

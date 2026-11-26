@@ -166,7 +166,11 @@ Recommended next work:
 Regenerate these tables from the checked-in raw data:
 
 ```sh
-python scripts/summarize_scalability.py docs/performance/*.jsonl
+python scripts/summarize_scalability.py \
+  docs/performance/2026-11-26-pooled.jsonl \
+  docs/performance/2026-11-26-pooled-tail.jsonl \
+  docs/performance/2026-11-26-pooled-repeats.jsonl \
+  docs/performance/2026-11-26-inline.jsonl
 ```
 
 The first failed idle case lacks its steady sample; subsequent failed cases

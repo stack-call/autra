@@ -151,6 +151,7 @@ impl EffectExecutor {
             actor: dependencies.actor.clone(),
             approval_ttl: dependencies.approval_ttl,
             owner_id: None,
+            contexts: None,
         };
         Self {
             dependencies,
@@ -166,6 +167,23 @@ impl EffectExecutor {
         &self,
         run: &RunId,
         options: DispatchOptions<'_>,
+    ) -> Result<Vec<DispatchResult>, autra_execution::JournalError> {
+        self.execute_pending_inner(run, options, None).await
+    }
+    pub(super) async fn execute_pending_notifying(
+        &self,
+        run: &RunId,
+        options: DispatchOptions<'_>,
+        result_ready: &tokio::sync::Notify,
+    ) -> Result<Vec<DispatchResult>, autra_execution::JournalError> {
+        self.execute_pending_inner(run, options, Some(result_ready))
+            .await
+    }
+    async fn execute_pending_inner(
+        &self,
+        run: &RunId,
+        options: DispatchOptions<'_>,
+        result_ready: Option<&tokio::sync::Notify>,
     ) -> Result<Vec<DispatchResult>, autra_execution::JournalError> {
         let journal = self.dependencies.journal.as_ref().ok_or_else(|| {
             autra_execution::JournalError::new("independent execution requires a journal")
@@ -189,7 +207,11 @@ impl EffectExecutor {
             run,
             options,
             self.dependencies.dispatcher.as_ref(),
-            |_| {},
+            |_| {
+                if let Some(ready) = result_ready {
+                    ready.notify_one();
+                }
+            },
         );
         tokio::pin!(dispatch);
         loop {
