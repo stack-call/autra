@@ -1,7 +1,7 @@
 # Event-driven waits and registered Run execution context
 
 Baseline: `2e0fbb86d596c205e1dc06e24ea486ac3d2eb437` (the measured runtime baseline).
-Implementation in progress on `refactor/runtime-wakeup-context`.
+Implementation and regression checks complete; performance rerun pending on `refactor/runtime-wakeup-context`.
 
 This stage implements local publication notifications, low-frequency recovery
 checks, and an in-process RunContextRegistry. It retains one executor per Run;
@@ -28,5 +28,14 @@ child propagation and dropped-waiter cleanup. Core gains no Tokio or I/O depende
 Journal claims, lease expiry, fencing, atomic result publication/consumption and
 OutcomeUnknown semantics are retained.
 
-Existing workspace regression tests pass. Additional wakeup/isolation tests and
-repeat measurements against the checked-in scalability baseline are pending.
+All 385 workspace regression tests, 57 Harness tests without default features,
+formatting and Clippy checks pass. Tests cover notification loss, publication
+races, partial-batch result delivery, cancellation propagation/cleanup, context
+generation replacement, shared budget reservations and clock restart across
+Tokio runtimes. Repeat scalability measurements are pending.
+
+The context registry is local and uses weak references with generation-aware
+registration cleanup. It is not a persistent capability catalog. Cross-process
+workers still require trusted profile restoration, atomic durable budget
+reservation and per-Run admission; a global Outbox batch must not reuse one
+Run's DispatchOptions for other Runs.

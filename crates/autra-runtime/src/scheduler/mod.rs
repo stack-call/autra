@@ -9,6 +9,7 @@ pub use placement::{EffectPermit, ScheduleError};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(test)]
 use std::time::Duration;
 
 use autra_core::{CancelFlag, RunId};
@@ -141,11 +142,9 @@ impl FairPool {
         let Some(cancel) = cancel else {
             return receiver.await.map_err(|_| AcquireError::Cancelled);
         };
-        loop {
-            tokio::select! {
-                result=&mut receiver=>return result.map_err(|_|AcquireError::Cancelled),
-                _=tokio::time::sleep(Duration::from_millis(20))=>{if cancel.is_cancelled(){return Err(AcquireError::Cancelled);}}
-            }
+        tokio::select! {
+            result = &mut receiver => result.map_err(|_| AcquireError::Cancelled),
+            _ = cancel.cancelled() => Err(AcquireError::Cancelled),
         }
     }
 

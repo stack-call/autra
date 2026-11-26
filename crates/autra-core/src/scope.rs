@@ -247,3 +247,94 @@ impl BudgetSnapshot {
         Some(BudgetSnapshot::new(max_turns, max_tool_calls))
     }
 }
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::task::Wake;
+    struct Probe(AtomicUsize);
+    impl Wake for Probe {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    fn probe() -> (Arc<Probe>, Waker) {
+        let p = Arc::new(Probe(AtomicUsize::new(0)));
+        (p.clone(), Waker::from(p))
+    }
+    #[test]
+    fn parent_cancellation_wakes_child_without_reverse_propagation() {
+        let parent = CancelFlag::new();
+        let child = CancelFlag::child_of(&parent);
+        let other = CancelFlag::new();
+        let (p, w) = probe();
+        let mut wait = Box::pin(child.cancelled());
+        assert!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(&w))
+                .is_pending()
+        );
+        parent.cancel();
+        assert_eq!(p.0.load(Ordering::SeqCst), 1);
+        assert!(wait.as_mut().poll(&mut Context::from_waker(&w)).is_ready());
+        assert!(!other.is_cancelled());
+        let parent = CancelFlag::new();
+        let child = CancelFlag::child_of(&parent);
+        child.cancel();
+        assert!(!parent.is_cancelled());
+    }
+    #[test]
+    fn replacing_and_dropping_waiters_leaves_no_stale_wakers() {
+        let flag = CancelFlag::new();
+        let (old, old_waker) = probe();
+        let (new, new_waker) = probe();
+        let mut wait = Box::pin(flag.cancelled());
+        assert!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(&old_waker))
+                .is_pending()
+        );
+        assert!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(&new_waker))
+                .is_pending()
+        );
+        flag.cancel();
+        assert_eq!(old.0.load(Ordering::SeqCst), 0);
+        assert_eq!(new.0.load(Ordering::SeqCst), 1);
+        drop(wait);
+        let flag = CancelFlag::new();
+        let mut wait = Box::pin(flag.cancelled());
+        assert!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(&new_waker))
+                .is_pending()
+        );
+        drop(wait);
+        assert!(flag.state.waiters.lock().unwrap().is_empty());
+        flag.cancel();
+        assert_eq!(new.0.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn cancellation_during_poll_or_before_poll_never_stays_pending() {
+        for _ in 0..64 {
+            let flag = CancelFlag::new();
+            let cancelling = flag.clone();
+            let thread = std::thread::spawn(move || cancelling.cancel());
+            let (_, waker) = probe();
+            let mut wait = Box::pin(flag.cancelled());
+            let _ = wait.as_mut().poll(&mut Context::from_waker(&waker));
+            thread.join().unwrap();
+            assert!(
+                wait.as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_ready()
+            );
+            assert!(flag.state.waiters.lock().unwrap().is_empty());
+        }
+    }
+}
