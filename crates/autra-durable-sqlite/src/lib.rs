@@ -26,7 +26,7 @@ pub use health::{JournalHealth, ServiceLeaseInfo};
 
 pub use session::SqliteSessionStore;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 
 /// Version written to `PRAGMA user_version`. Future schema changes must bump
 /// it and add an explicit migration step.
@@ -854,10 +854,17 @@ impl EffectJournal for SqliteEffectJournal {
         owner_id: &str,
         lease: Duration,
     ) -> Result<bool, JournalError> {
+        let mut connection = self.writer()?;
+        // Acquire SQLite's write lock before observing time. The connection
+        // mutex alone does not protect against writers in other processes.
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                JournalError::new(format!("cannot begin lease transaction: {error}"))
+            })?;
         let now = now_unix_ms();
         let deadline = now.saturating_add(lease.as_millis() as u64);
-        let connection = self.writer()?;
-        let changed = connection
+        let changed = transaction
             .execute(
                 "INSERT INTO run_leases (run_id, owner_id, deadline_ms)
                  VALUES (?1, ?2, ?3)
@@ -868,6 +875,9 @@ impl EffectJournal for SqliteEffectJournal {
                 params![run_id.as_str(), owner_id, deadline as i64, now as i64],
             )
             .map_err(|error| JournalError::new(format!("cannot claim run: {error}")))?;
+        transaction.commit().map_err(|error| {
+            JournalError::new(format!("cannot commit lease transaction: {error}"))
+        })?;
         Ok(changed > 0)
     }
 
@@ -877,16 +887,26 @@ impl EffectJournal for SqliteEffectJournal {
         owner_id: &str,
         lease: Duration,
     ) -> Result<bool, JournalError> {
+        let mut connection = self.writer()?;
+        // Acquire SQLite's write lock before observing time. The connection
+        // mutex alone does not protect against writers in other processes.
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                JournalError::new(format!("cannot begin lease transaction: {error}"))
+            })?;
         let now = now_unix_ms();
         let deadline = now.saturating_add(lease.as_millis() as u64);
-        let connection = self.writer()?;
-        let changed = connection
+        let changed = transaction
             .execute(
                 "UPDATE run_leases SET deadline_ms = ?3
                  WHERE run_id = ?1 AND owner_id = ?2 AND deadline_ms > ?4",
                 params![run_id.as_str(), owner_id, deadline as i64, now as i64],
             )
             .map_err(|error| JournalError::new(format!("cannot renew run: {error}")))?;
+        transaction.commit().map_err(|error| {
+            JournalError::new(format!("cannot commit lease transaction: {error}"))
+        })?;
         Ok(changed > 0)
     }
 
@@ -924,10 +944,17 @@ impl EffectJournal for SqliteEffectJournal {
         owner_id: &str,
         lease: Duration,
     ) -> Result<bool, JournalError> {
+        let mut connection = self.writer()?;
+        // Acquire SQLite's write lock before observing time. The connection
+        // mutex alone does not protect against writers in other processes.
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                JournalError::new(format!("cannot begin lease transaction: {error}"))
+            })?;
         let now = now_unix_ms();
         let deadline = now.saturating_add(lease.as_millis() as u64);
-        let connection = self.writer()?;
-        let changed = connection
+        let changed = transaction
             .execute(
                 "INSERT INTO service_leases (service, owner_id, deadline_ms)
                  VALUES (?1, ?2, ?3)
@@ -938,6 +965,9 @@ impl EffectJournal for SqliteEffectJournal {
                 params![service, owner_id, deadline as i64, now as i64],
             )
             .map_err(|error| JournalError::new(format!("cannot claim service: {error}")))?;
+        transaction.commit().map_err(|error| {
+            JournalError::new(format!("cannot commit lease transaction: {error}"))
+        })?;
         Ok(changed > 0)
     }
 
@@ -947,16 +977,26 @@ impl EffectJournal for SqliteEffectJournal {
         owner_id: &str,
         lease: Duration,
     ) -> Result<bool, JournalError> {
+        let mut connection = self.writer()?;
+        // Acquire SQLite's write lock before observing time. The connection
+        // mutex alone does not protect against writers in other processes.
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                JournalError::new(format!("cannot begin lease transaction: {error}"))
+            })?;
         let now = now_unix_ms();
         let deadline = now.saturating_add(lease.as_millis() as u64);
-        let connection = self.writer()?;
-        let changed = connection
+        let changed = transaction
             .execute(
                 "UPDATE service_leases SET deadline_ms = ?3
                  WHERE service = ?1 AND owner_id = ?2 AND deadline_ms > ?4",
                 params![service, owner_id, deadline as i64, now as i64],
             )
             .map_err(|error| JournalError::new(format!("cannot renew service: {error}")))?;
+        transaction.commit().map_err(|error| {
+            JournalError::new(format!("cannot commit lease transaction: {error}"))
+        })?;
         Ok(changed > 0)
     }
 
@@ -1379,5 +1419,94 @@ mod tests {
 
         assert!(second.is_err());
         assert_eq!(gate.active.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod lease_lock_tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+    use std::time::Duration;
+
+    fn assert_expired_renewals_fail_after_wait(external_lock: bool) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("leases.db");
+        let journal = Arc::new(SqliteEffectJournal::open(&path).unwrap());
+        let run = RunId::fresh();
+        let external = Connection::open(&path).unwrap();
+        // Obtain the writer lock before starting renewal. For the external
+        // case, exercise a second SQLite connection, not just the Rust mutex.
+        let local_guard = if external_lock {
+            external.execute_batch("BEGIN IMMEDIATE").unwrap();
+            None
+        } else {
+            Some(journal.writer().unwrap())
+        };
+        // Insert short-lived ownership using the connection that holds the lock.
+        let deadline = now_unix_ms() + 500;
+        let lock_connection: &Connection = if let Some(ref guard) = local_guard {
+            guard
+        } else {
+            &external
+        };
+        lock_connection
+            .execute(
+                "INSERT INTO run_leases(run_id,owner_id,deadline_ms) VALUES (?1,'old',?2)",
+                params![run.as_str(), deadline as i64],
+            )
+            .unwrap();
+        lock_connection.execute("INSERT INTO service_leases(service,owner_id,deadline_ms) VALUES ('supervisor','old',?1)", params![deadline as i64]).unwrap();
+        // External writes need to become visible before the second writer can
+        // acquire the lock; first commit setup and start a new lock transaction.
+        if external_lock {
+            external.execute_batch("COMMIT; BEGIN IMMEDIATE;").unwrap();
+        }
+        let (started_tx, started_rx) = mpsc::channel();
+        let j = journal.clone();
+        let id = run.clone();
+        let tx = started_tx.clone();
+        let run_thread = std::thread::spawn(move || {
+            tx.send(()).unwrap();
+            j.renew_run(&id, "old", Duration::from_secs(60)).unwrap()
+        });
+        let j = journal.clone();
+        let service_thread = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            j.renew_service("supervisor", "old", Duration::from_secs(60))
+                .unwrap()
+        });
+        started_rx.recv().unwrap();
+        started_rx.recv().unwrap();
+        while now_unix_ms() <= deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Ensure both renewal threads were blocked while the lease was live.
+        if external_lock {
+            external.execute_batch("COMMIT").unwrap();
+        }
+        drop(local_guard);
+        assert!(!run_thread.join().unwrap(), "expired Run lease was renewed");
+        assert!(
+            !service_thread.join().unwrap(),
+            "expired service lease was renewed"
+        );
+        assert!(
+            journal
+                .claim_run(&run, "new", Duration::from_secs(60))
+                .unwrap()
+        );
+        assert!(
+            journal
+                .claim_service("supervisor", "new", Duration::from_secs(60))
+                .unwrap()
+        );
+    }
+    #[test]
+    fn renewal_cannot_revive_lease_expired_while_waiting_for_local_writer() {
+        assert_expired_renewals_fail_after_wait(false);
+    }
+    #[test]
+    fn renewal_cannot_revive_lease_expired_while_waiting_for_another_connection() {
+        assert_expired_renewals_fail_after_wait(true);
     }
 }

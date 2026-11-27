@@ -111,7 +111,9 @@ Schema version 3 adds the durable Result Inbox; version 2 is upgraded
 transactionally. Both Journal and Session Store opening paths use the same
 database-wide migration: schema changes and `PRAGMA user_version` commit
 together. Concurrent openers serialize through an immediate transaction, and
-a failed migration rolls back without advancing the version. In pooled execution, result publication retires Outbox in the
+a failed migration rolls back without advancing the version. Run and recovery service lease claims and renewals
+acquire the SQLite write transaction before checking the current time. A lease
+that expires while a writer is waiting cannot be renewed using a stale timestamp. In pooled execution, result publication retires Outbox in the
 same transaction, and acceptance consumes Inbox with the next owned Run
 transition. See [runtime refactor](runtime-refactor.md) for lease fencing,
 environment binding, migration and compatibility details.
