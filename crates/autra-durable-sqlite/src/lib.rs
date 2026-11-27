@@ -18,6 +18,7 @@ use autra_execution::{
 mod gc;
 mod health;
 mod inbox;
+mod migration;
 pub mod session;
 
 pub use gc::GcReport;
@@ -36,28 +37,27 @@ pub(crate) fn configure_connection(connection: &Connection) -> Result<(), String
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(|error| error.to_string())?;
+    // Concurrent first openers can race when switching a new database to WAL.
+    // SQLite does not always invoke the busy handler for this PRAGMA, so retry
+    // only lock errors within the same bounded startup budget.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match connection.execute_batch("PRAGMA journal_mode=WAL;") {
+            Ok(()) => break,
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
     connection
-        .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
+        .execute_batch("PRAGMA synchronous=NORMAL;")
         .map_err(|error| error.to_string())?;
-    let version: i64 = connection
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(|error| error.to_string())?;
-    if version > SCHEMA_VERSION {
-        return Err(format!(
-            "database schema version {version} is newer than supported {SCHEMA_VERSION}"
-        ));
-    }
-    if version != 0 && version < 2 {
-        return Err(format!(
-            "journal schema version {version} is not supported; recreate the journal"
-        ));
-    }
-    // v2 -> v3 adds result_inbox in the journal initializer.
-    if version < SCHEMA_VERSION {
-        connection
-            .pragma_update(None, "user_version", SCHEMA_VERSION)
-            .map_err(|error| error.to_string())?;
-    }
     Ok(())
 }
 
@@ -306,91 +306,12 @@ impl SqliteEffectJournal {
         read_connections: usize,
     ) -> Result<Self, JournalError> {
         let path = path.as_ref();
-        let connection = Connection::open(path)
+        let mut connection = Connection::open(path)
             .map_err(|error| JournalError::new(format!("cannot open journal: {error}")))?;
         configure_connection(&connection)
             .map_err(|error| JournalError::new(format!("cannot configure journal: {error}")))?;
-        connection
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS effects (
-                    effect_id TEXT PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS effects_run ON effects(run_id);
-                CREATE TABLE IF NOT EXISTS runs (
-                    run_id TEXT PRIMARY KEY,
-                    state_json TEXT NOT NULL,
-                    state_version INTEGER NOT NULL DEFAULT 0,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS run_events (
-                    run_id TEXT NOT NULL,
-                    seq INTEGER NOT NULL,
-                    event_json TEXT NOT NULL,
-                    recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (run_id, seq)
-                );
-                CREATE TABLE IF NOT EXISTS result_inbox (
-                    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id TEXT NOT NULL, effect_id TEXT NOT NULL, attempt_id TEXT NOT NULL,
-                    payload_json TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0,
-                    UNIQUE(run_id, effect_id, attempt_id)
-                );
-                CREATE INDEX IF NOT EXISTS result_inbox_pending ON result_inbox(run_id, consumed, ordinal);
-                CREATE TABLE IF NOT EXISTS approvals (
-                    effect_id TEXT PRIMARY KEY,
-                    payload_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS effect_outbox (
-                    effect_id TEXT PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    intent_json TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    claim_id TEXT,
-                    claim_deadline TEXT,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS effect_outbox_run_order ON effect_outbox(run_id, created_at, effect_id);
-                CREATE TABLE IF NOT EXISTS run_leases (
-                    run_id TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    deadline_ms INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS service_leases (
-                    service TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    deadline_ms INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS cancel_requests (
-                    run_id TEXT PRIMARY KEY,
-                    reason TEXT NOT NULL,
-                    requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS run_engine_snapshots (
-                    run_id TEXT NOT NULL,
-                    version INTEGER NOT NULL,
-                    engine_id TEXT NOT NULL,
-                    schema_revision INTEGER NOT NULL,
-                    payload_json TEXT NOT NULL,
-                    PRIMARY KEY (run_id, version)
-                );
-                CREATE TABLE IF NOT EXISTS run_engine_patches (
-                    run_id TEXT NOT NULL,
-                    version INTEGER NOT NULL,
-                    base_version INTEGER NOT NULL,
-                    patch_json TEXT NOT NULL,
-                    PRIMARY KEY (run_id, version)
-                );",
-            )
+        migration::migrate(&mut connection)
             .map_err(|error| JournalError::new(format!("cannot migrate journal: {error}")))?;
-        // Existing v0 databases predate optimistic state versions.
-        let _ = connection.execute(
-            "ALTER TABLE runs ADD COLUMN state_version INTEGER NOT NULL DEFAULT 0",
-            [],
-        );
         let mut readers = Vec::new();
         for _ in 0..read_connections.max(1) {
             let reader = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)

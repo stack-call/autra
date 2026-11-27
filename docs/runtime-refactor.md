@@ -119,7 +119,9 @@ budget usage is merged without losing concurrent reservations.
 
 ## Compatibility and migration
 
-- SQLite schema version 3 adds `result_inbox` and its indexes in a transaction.
+- SQLite schema version 3 adds `result_inbox` and its indexes. Journal and
+  Session Store share one atomic migration transaction, including the schema
+  version update; opening either store initializes the database schema.
   Existing version 2 databases migrate automatically; unsupported older or
   newer versions retain their explicit error behaviour. Rollback to an older
   binary requires restoring a compatible database backup.

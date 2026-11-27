@@ -453,3 +453,116 @@ fn gc_waits_for_an_independent_executor_to_retire_the_outbox() {
         .unwrap();
     assert_eq!(j.gc(std::time::Duration::ZERO, false).unwrap().runs, 1);
 }
+
+#[test]
+fn both_stores_initialize_the_complete_schema_in_either_order() {
+    use autra_durable_sqlite::SqliteSessionStore;
+    for session_first in [true, false] {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("shared.db");
+        if session_first {
+            drop(SqliteSessionStore::open(&path).unwrap());
+        } else {
+            drop(SqliteEffectJournal::open(&path).unwrap());
+        }
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        for table in ["result_inbox", "effect_outbox", "sessions", "session_turns"] {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing {table} when session_first={session_first}");
+        }
+        drop(connection);
+        drop(SqliteSessionStore::open(&path).unwrap());
+        drop(SqliteEffectJournal::open(&path).unwrap());
+    }
+}
+
+#[test]
+fn failed_store_open_preserves_version_and_rolls_back_created_tables() {
+    use autra_durable_sqlite::SqliteSessionStore;
+    for session_first in [true, false] {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("failure.db");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        // Block an index creation after earlier migration DDL has run.
+        connection
+            .execute_batch("CREATE TABLE result_inbox_pending (id INTEGER); PRAGMA user_version=2;")
+            .unwrap();
+        drop(connection);
+        let failed = if session_first {
+            SqliteSessionStore::open(&path).is_err()
+        } else {
+            SqliteEffectJournal::open(&path).is_err()
+        };
+        assert!(failed);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        let created: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('effects','result_inbox','sessions')",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(created, 0);
+        connection
+            .execute("DROP TABLE result_inbox_pending", [])
+            .unwrap();
+        drop(connection);
+        drop(SqliteSessionStore::open(&path).unwrap());
+        drop(SqliteEffectJournal::open(&path).unwrap());
+    }
+}
+
+#[test]
+fn concurrent_first_opens_serialize_a_complete_migration() {
+    use autra_durable_sqlite::SqliteSessionStore;
+    use std::sync::{Arc, Barrier};
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("concurrent.db");
+    let barrier = Arc::new(Barrier::new(2));
+    let a_path = path.clone();
+    let a_barrier = barrier.clone();
+    let journal = std::thread::spawn(move || {
+        a_barrier.wait();
+        SqliteEffectJournal::open(a_path).map(drop)
+    });
+    let session = std::thread::spawn(move || {
+        barrier.wait();
+        SqliteSessionStore::open(path).map(drop)
+    });
+    journal.join().unwrap().unwrap();
+    session.join().unwrap().unwrap();
+}
+
+#[test]
+fn session_first_migrates_v2_without_losing_run_progress() {
+    use autra_durable_sqlite::SqliteSessionStore;
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("session-first-v2.db");
+    let run = RunId::new("existing-run");
+    {
+        let journal = SqliteEffectJournal::open(&path).unwrap();
+        journal
+            .save_run(&AgentState::new(run.clone(), BudgetSnapshot::new(8, 8)))
+            .unwrap();
+    }
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch("DROP TABLE result_inbox; PRAGMA user_version=2;")
+        .unwrap();
+    drop(connection);
+    drop(SqliteSessionStore::open(&path).unwrap());
+    let journal = SqliteEffectJournal::open(&path).unwrap();
+    assert!(journal.load_run(&run).unwrap().is_some());
+    assert!(journal.pending_results(&run, 10).unwrap().is_empty());
+    assert_eq!(journal.health(0).unwrap().schema_version, 3);
+}

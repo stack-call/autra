@@ -14,32 +14,12 @@ pub struct SqliteSessionStore {
 
 impl SqliteSessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SessionStoreError> {
-        let connection = Connection::open(path)
+        let mut connection = Connection::open(path)
             .map_err(|error| SessionStoreError::new(format!("cannot open sessions: {error}")))?;
         super::configure_connection(&connection).map_err(|error| {
             SessionStoreError::new(format!("cannot configure sessions: {error}"))
         })?;
-        connection
-            .execute_batch(
-                "CREATE TABLE IF NOT EXISTS sessions (
-                    session_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS session_turns (
-                    session_id TEXT NOT NULL,
-                    turn_index INTEGER NOT NULL,
-                    turn_id TEXT NOT NULL,
-                    run_id TEXT,
-                    status_json TEXT NOT NULL,
-                    input TEXT NOT NULL,
-                    answer TEXT,
-                    error TEXT,
-                    history_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (session_id, turn_index)
-                );",
-            )
+        super::migration::migrate(&mut connection)
             .map_err(|error| SessionStoreError::new(format!("cannot migrate sessions: {error}")))?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
